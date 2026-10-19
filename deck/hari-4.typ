@@ -140,12 +140,12 @@
   )
   #v(12pt)
   #bullets(size: 13.5pt,
-    [Metrik memberi tahu *bahwa* ada masalah, _trace_ menunjukkan *di mana*, _log_ menjelaskan *mengapa*.],
-    [Ketiganya dihubungkan oleh `trace_id`: dari satu titik di grafik metrik, _engineer_ bisa membuka _trace_ dan _log_ transaksi yang sama.],
+    [Metrik mendeteksi adanya masalah. _Trace_ menunjukkan service tempat waktu habis, dan _log_ berisi penyebabnya.],
+    [_Trace_ dan _log_ dihubungkan oleh `trace_id`. Dari lonjakan di grafik metrik, _engineer_ mempersempit rentang waktu lalu membuka _trace_ pada rentang tersebut. Tautan langsung dari metrik ke _trace_ membutuhkan _exemplar_ Prometheus, yang tidak dipasang di lab.],
   )
 ]
 
-#slide(kicker: "Correlation ID", title: [Satu ID mengikuti transfer melewati tiga service])[
+#slide(kicker: "Correlation ID", title: [_Correlation ID_ lintas tiga service])[
   #flow(
     node("klien", kind: "ext", width: 100pt),
     arr(label: "X-Correlation-ID", length: 130pt),
@@ -173,6 +173,7 @@
     - Setiap baris _log_ otomatis membawa `correlation_id`, `trace_id`, `span_id`
     - Kode _handler_ HTTP cukup memanggil `slog.InfoContext(ctx, ...)`
     - Output JSON ke _stdout_ sekaligus diekspor sebagai _log_ OTLP (_bridge_ `otelslog`)
+    - `WithAttrs` dan `WithGroup` membungkus ulang _handler_ hasilnya, sehingga _logger_ dari `logger.With(...)` tetap membawa ketiga atribut tersebut
   ],
 )[
 ```go
@@ -190,6 +191,14 @@ func (h ctxHandler) Handle(ctx context.Context,
             slog.String("span_id", sc.SpanID().String()))
     }
     return h.Handler.Handle(ctx, r)
+}
+
+func (h ctxHandler) WithAttrs(a []slog.Attr) slog.Handler {
+    return ctxHandler{h.Handler.WithAttrs(a)}
+}
+
+func (h ctxHandler) WithGroup(n string) slog.Handler {
+    return ctxHandler{h.Handler.WithGroup(n)}
 }
 ```
 ]
@@ -231,7 +240,7 @@ defer span.End()
     [
       #set text(size: 13pt)
       - HTTP dan gRPC: `otelhttp` dan _stats handler_ `otelgrpc` meneruskan _header_ `traceparent` secara otomatis
-      - Kafka: _relay_ berjalan di _goroutine_ lain dan beberapa detik kemudian, sehingga _trace context_ harus disimpan saat baris _outbox_ ditulis
+      - Kafka: _relay_ berjalan di _goroutine_ terpisah tanpa _context_ dari _request_ asal, dan baru mengirim _event_ hingga ±500 ms kemudian. Karena itu _trace context_ disimpan ke baris _outbox_ saat baris tersebut ditulis
       - Hasilnya, satu transfer tampil sebagai satu _trace_ yang mencakup tiga service
     ],
   )
@@ -272,13 +281,13 @@ defer span.End()
   #diagram(height: 190pt,
     at(240pt, 0pt, text(size: 10pt, fill: slate)[0 ms #h(240pt) 1.000 ms #h(240pt) 2.100 ms]),
     ..bar(24pt, 0pt, 600pt, [transfer `POST /transfers`]),
-    ..bar(54pt, 6pt, 40pt, [transfer → account `Debit`]),
-    ..bar(84pt, 52pt, 520pt, [account `Credit`], c: red),
+    ..bar(54pt, 6pt, 280pt, [account `Debit`], c: red),
+    ..bar(84pt, 292pt, 280pt, [account `Credit`], c: red),
     ..bar(114pt, 580pt, 16pt, [transfer `insert outbox`]),
     ..bar(144pt, 600pt, 24pt, [notification `process`], c: gold.darken(20%)),
   )
   #bullets(size: 13pt,
-    [_Span_ `Credit` memakan hampir seluruh durasi transfer: masalahnya ada di account, transfer hanya menunggu.],
+    [_Span_ `Debit` dan `Credit` di account memakan hampir seluruh durasi transfer. Sumber masalah ada di account, sedangkan transfer hanya menunggu.],
     [Buka atribut _span_ dan _log_ dengan `trace_id` yang sama untuk melihat penyebabnya, misalnya _fault delay_ yang sengaja dipasang di Lab 8.],
   )
 ]
@@ -287,7 +296,7 @@ defer span.End()
   [
     - Menemukan service yang lambat langsung dari data _trace_
     - Membaca status _circuit breaker_ dari _dashboard_
-    - Menghubungkan metrik, _trace_, dan _log_ melalui `trace_id`
+    - Berangkat dari lonjakan di metrik, lalu menghubungkan _trace_ dan _log_ melalui `trace_id`
   ],
   [
     - Instrumentasi `slog`, Prometheus, dan OpenTelemetry di tiga service
@@ -356,7 +365,7 @@ ENTRYPOINT ["/app"]
       - `scratch` tidak memiliki `/etc/passwd`, sehingga nama pengguna tidak bisa digunakan
     ],
     card([UID sembarang], accent: gold.darken(15%))[
-      - OpenShift dengan SCC `restricted` menjalankan _container_ dengan UID acak dari rentang milik _namespace_
+      - OpenShift dengan SCC `restricted-v2` menjalankan _container_ dengan UID acak dari rentang milik _namespace_
       - _Binary_ harus tetap berjalan dengan UID berapa pun
       - Service tidak menulis ke _filesystem_: _log_ ke _stdout_, data ke database
     ],
@@ -478,7 +487,7 @@ containers:
 ```
 ]
 
-#code-slide(kicker: "Security context", title: [_Security context_ yang lolos SCC `restricted`],
+#code-slide(kicker: "Security context", title: [_Security context_ yang lolos SCC `restricted-v2`],
   side: [
     - Tidak ada `runAsUser`: platform yang memilih UID, sesuai perilaku OpenShift
     - `readOnlyRootFilesystem` aman karena service tidak menulis _file_
@@ -500,13 +509,13 @@ securityContext:
 
 #slide(kicker: "Rolling update", title: [_Rolling update_ tanpa _downtime_])[
   #flow(
-    node("v1 · v1 · v1", sub: "3 pod ready", width: 140pt),
-    arr(label: "set image", length: 90pt),
-    node("v1 · v1 · v2", sub: "v2 menunggu ready", width: 150pt),
-    arr(length: 50pt),
-    node("v1 · v2 · v2", width: 140pt),
-    arr(length: 50pt),
-    node("v2 · v2 · v2", sub: "selesai", width: 140pt),
+    node("v1 · v1 · v1", sub: "3 pod ready", width: 120pt),
+    arr(label: "set image", length: 75pt),
+    node("v1 · v1 · v1 + v2", sub: "4 pod, v2 menunggu ready", width: 165pt),
+    arr(length: 40pt),
+    node("v1 · v1 · v2", sub: "satu v1 dihentikan", width: 135pt),
+    arr(label: "berulang", length: 70pt),
+    node("v2 · v2 · v2", sub: "selesai", width: 120pt),
   )
   #v(14pt)
   #two-col(ratio: (1fr, 1fr),
@@ -520,6 +529,7 @@ kubectl -n bank rollout undo deploy/transfer
     ],
     [
       #set text(size: 13pt)
+      - Nilai _default_ `maxSurge` 25% (dibulatkan ke atas menjadi 1) dan `maxUnavailable` 25% (dibulatkan ke bawah menjadi 0): satu _pod_ tambahan dibuat lebih dulu
       - _Pod_ lama baru dihentikan setelah _pod_ baru lolos _readiness probe_
       - _Image_ baru yang gagal _start_ menahan _rollout_; versi lama tetap melayani
       - `rollout undo` mengembalikan versi sebelumnya
@@ -548,7 +558,7 @@ kubectl -n bank rollout undo deploy/transfer
     - `make images`, `make k3d-up`, `make k3d-import`, `make k8s-apply`
     - Transfer lewat Ingress `localhost:8080`, cek hasilnya di Grafana
     - `kubectl scale` transfer menjadi 3 _replica_
-    - Ubah satu nilai ConfigMap, lalu amati _pod_ yang di-_restart_
+    - Ubah satu nilai ConfigMap, jalankan `kubectl rollout restart deploy/transfer`, lalu periksa nilai baru di _pod_
     - _Build_ _tag_ baru, `set image`, `rollout status`
   ],
   "lab-08",
@@ -582,6 +592,7 @@ kubectl -n bank rollout undo deploy/transfer
   side: [
     - Tidak ada `uses:`; setiap _step_ berupa perintah _shell_ biasa
     - Logika _build_ ada di `Makefile`, sehingga bisa dijalankan sama persis di laptop
+    - _Checkout_ menggunakan variabel dan token yang disediakan runner: `GITHUB_SERVER_URL`, `GITHUB_REPOSITORY`, `github.token`
     - Memindahkan _pipeline_ ke runner CI lain cukup dengan menyalin urutan perintah yang sama
     - _Tag image_ = SHA _commit_, sehingga setiap _image_ bisa dilacak ke kode sumbernya
   ],
@@ -594,17 +605,19 @@ on:
       - "studi-kasus/proto/**"
 jobs:
   transfer:
+    runs-on: docker
+    env:
+      TOKEN: ${{ github.token }}
+      VERSION: ${{ github.sha }}
     steps:
       - run: |   # checkout dengan perintah git
-          git clone "$REPO_URL" src
+          git -c http.extraHeader="Authorization: token $TOKEN" \
+            clone "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" src
           git -C src checkout "$GITHUB_SHA"
       - run: make -C src/studi-kasus/transfer test
       - run: make -C src/studi-kasus/transfer image
-               VERSION=$GITHUB_SHA
       - run: make -C src/studi-kasus/transfer push
-               VERSION=$GITHUB_SHA
       - run: make -C src/studi-kasus/transfer deploy
-               VERSION=$GITHUB_SHA
 ```
 ]
 
@@ -618,17 +631,15 @@ jobs:
 ```make
 IMAGE = $(REGISTRY)/$(IMAGE_OWNER)/transfer:$(VERSION)
 
-require = $(if $($(1)),,$(error $(1) is required))
+require = $(foreach v,$(1),$(if $($(v)),,$(error $(v) is required)))
 
 image:
-	$(call require,REGISTRY)
-	$(call require,IMAGE_OWNER)
-	$(call require,VERSION)
-	docker build -f transfer/Dockerfile \
-	  -t $(IMAGE) ..
+	$(call require,REGISTRY IMAGE_OWNER VERSION)
+	# Dockerfile di studi-kasus/transfer, context studi-kasus/
+	docker build -f Dockerfile -t $(IMAGE) ..
 
 deploy:
-	$(call require,NAMESPACE)
+	$(call require,REGISTRY IMAGE_OWNER VERSION NAMESPACE)
 	kubectl -n $(NAMESPACE) set image \
 	  deploy/transfer transfer=$(IMAGE)
 	kubectl -n $(NAMESPACE) rollout status \
@@ -651,11 +662,14 @@ deploy:
     edge((215pt, 218pt), (130pt, 218pt), label: "pull", dash: "dashed"),
     edge((365pt, 230pt), (740pt, 86pt), label: "pull", dash: "dashed", label-dx: 50pt, label-dy: 10pt),
   )
-  #note(kind: "warn")[Status per 19 Oktober 2026: runner pusat dan server pelatihan masih disiapkan, sehingga _pipeline_ belum diuji dari _push_ hingga _deploy_. Alamat server dan akses setiap peserta dibagikan saat lab.]
+  // TODO: runner pusat dan server pelatihan belum diuji end-to-end (push hingga deploy).
+  // Sebelum delivery: bila pipeline belum berjalan, ganti catatan di bawah dengan
+  // pernyataan tanpa tanggal tentang bagian yang hanya didemonstrasikan.
+  #note[Alamat server dan akses setiap peserta dibagikan saat lab.]
 ]
 
 #slide(kicker: "Jenkins", title: [Pemetaan ke Bitbucket dan Jenkins _on-premise_])[
-  #two-col(ratio: (1fr, 1.1fr),
+  #two-col(ratio: (0.8fr, 1.3fr),
     [
       #table(
         columns: (1fr, 1fr),
@@ -673,20 +687,23 @@ deploy:
 ```groovy
 pipeline {
   agent any
-  environment { VERSION = "${env.GIT_COMMIT}" }
+  environment {
+    VERSION     = "${env.GIT_COMMIT}"
+    REGISTRY    = 'registry.example.com'
+    IMAGE_OWNER = 'tim-app'
+    NAMESPACE   = 'bank'
+    REG = credentials('registry') // REG_USR, REG_PSW
+  }
   stages {
-    stage('Test') {
-      steps { sh 'make -C studi-kasus/transfer test' }
-    }
-    stage('Build Image') {
-      steps { sh 'make -C studi-kasus/transfer image' }
-    }
-    stage('Push') {
-      steps { sh 'make -C studi-kasus/transfer push' }
-    }
-    stage('Deploy') {
-      steps { sh 'make -C studi-kasus/transfer deploy' }
-    }
+    stage('Test') { steps {
+      sh 'make -C studi-kasus/transfer test' } }
+    stage('Build Image') { steps {
+      sh 'make -C studi-kasus/transfer image' } }
+    stage('Push') { steps {
+      sh 'echo $REG_PSW | docker login -u $REG_USR --password-stdin $REGISTRY'
+      sh 'make -C studi-kasus/transfer push' } }
+    stage('Deploy') { steps {
+      sh 'make -C studi-kasus/transfer deploy' } }
   }
 }
 ```
@@ -777,7 +794,7 @@ spec:
     card([Di dalam _cluster_ aplikasi])[
       - _Collector_ OpenTelemetry sebagai _DaemonSet_ atau _sidecar_ di setiap _cluster_
       - Penyimpanan jangka pendek dekat dengan sumber data
-      - Risiko: gangguan _cluster_ juga mematikan alat untuk menyelidikinya
+      - Risiko: gangguan _cluster_ ikut mematikan Grafana, Tempo, dan Loki yang dibutuhkan untuk menyelidiki gangguan tersebut
     ],
     card([_Cluster_ terpisah atau terpusat], accent: gold.darken(15%))[
       - Tempo, Loki, Prometheus, dan Grafana di _cluster_ khusus observability
@@ -798,7 +815,7 @@ spec:
     columns: (auto, auto, 1fr),
     [Kubernetes (lab)], [OpenShift], [Catatan],
     [Ingress (Traefik)], [Route], [OpenShift juga menerima Ingress dan mengubahnya menjadi Route. Route menambahkan opsi TLS _edge_, _passthrough_, _reencrypt_],
-    [`securityContext` + Pod Security], [SCC `restricted-v2`], [UID acak, tanpa _privilege escalation_, _capabilities_ dibuang. Manifest Lab 9 sudah memenuhinya],
+    [`securityContext` + Pod Security], [SCC `restricted-v2`], [Pengganti SCC `restricted` sejak OpenShift 4.11. UID acak, tanpa _privilege escalation_, _capabilities_ dibuang, _seccomp_ `RuntimeDefault`. Manifest Lab 9 sudah memenuhinya],
     [`kubectl`], [`oc`], [`oc` mencakup semua perintah `kubectl`, ditambah `oc login`, `oc new-project`, `oc adm`],
     [_Namespace_], [_Project_], [_Project_ = _namespace_ dengan anotasi dan kuota tambahan],
     [_Registry_ eksternal], [_Internal registry_ + ImageStream], [Pipeline bisa tetap mendorong _image_ ke _registry_ eksternal],
@@ -873,7 +890,7 @@ spec:
   )
 ]
 
-#slide(kicker: "Kartu referensi", title: "Pola Hari 4 dan kapan layak digunakan")[
+#slide(kicker: "Kartu referensi", title: "Pola Hari 4 beserta syarat penggunaannya")[
   #table(
     columns: (auto, 1fr, 1fr),
     [Pola], [Masalah yang diselesaikan], [Layak digunakan ketika],
@@ -892,7 +909,7 @@ spec:
     [Ulangi Lab 3 dan Lab 8 dengan nilai _fault_ yang berbeda, lalu cocokkan perilaku _breaker_ di _log_, metrik, dan _trace_.],
     [Tambahkan HPA untuk transfer di k3d, lalu beri beban dengan _load generator_ sederhana dan amati jumlah _replica_.],
     [Tulis _Jenkinsfile_ untuk account dan notification berdasarkan contoh transfer.],
-    [Jalankan _image_ setiap service dengan UID acak dan `--read-only` untuk memastikan kecocokan dengan SCC `restricted`.],
+    [Jalankan _image_ setiap service dengan UID acak dan `--read-only` untuk memastikan kecocokan dengan SCC `restricted-v2`.],
     [Pilih satu aplikasi internal, lalu petakan pola mana dari kartu referensi yang benar-benar dibutuhkan aplikasi tersebut.],
   )
 ]
