@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/artivisi/training-microservices-2026-01/studi-kasus/account/internal/account"
+	"github.com/artivisi/training-microservices-2026-01/studi-kasus/account/internal/fault"
 )
 
 func main() {
@@ -37,9 +38,18 @@ func run(log *slog.Logger) error {
 	}
 	defer store.Close()
 
+	// Faults apply to the account API only; probes and the admin endpoints stay fast.
+	faults := fault.NewInjector(log)
+	api := account.NewHandler(store, log).Routes()
+	mux := http.NewServeMux()
+	mux.Handle("/accounts", faults.Wrap(api))
+	mux.Handle("/accounts/", faults.Wrap(api))
+	mux.Handle("/", api)
+	faults.Register(mux)
+
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           account.NewHandler(store, log).Routes(),
+		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
