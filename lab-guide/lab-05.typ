@@ -1,5 +1,1949 @@
 #import "../_template/panduan.typ": note, perintah
 
-= Lab 5
+= Lab 5: _Saga_, _Transactional Outbox_, dan Kafka
 
-_Belum ditulis._
+== Tujuan
+
+Setelah menyelesaikan lab ini, peserta mampu:
+
+- membuat mutasi saldo di `account` menjadi _idempotent_ dengan _unique index_ atas `reference`, sehingga _retry_ setelah _timeout_ aman dilakukan;
+- menjalankan transfer sebagai _saga_ yang diatur oleh `transfer` (_orchestration_), lengkap dengan langkah kompensasi ketika _credit_ gagal setelah _debit_ berhasil;
+- menyimpan perubahan status transfer dan _event_-nya dalam satu transaksi database melalui pola _transactional outbox_;
+- mengirim _event_ dari tabel `outbox` ke Kafka dengan _relay_ dan memahami jaminan _at-least-once_ yang dihasilkannya;
+- membuat service ketiga, `notification`, yang membaca _event_ dari Kafka sebagai anggota _consumer group_.
+
+== Gambaran
+
+Di akhir Lab 4, `transfer` memanggil `account` melalui gRPC dengan _timeout_, _retry_, dan _circuit breaker_. Dua celah dari Lab 2 masih tersisa. Pertama, _debit_ yang terkena _timeout_ tidak boleh di-_retry_, karena `account` mungkin sudah memproses _debit_ tersebut dan _retry_ akan memotong saldo dua kali. Kedua, bila _credit_ ke rekening tujuan gagal setelah _debit_ berhasil, uang sudah keluar dari rekening asal tetapi tidak sampai ke mana pun. Transfer hanya ditandai `FAILED` dan seseorang harus mengembalikan uang tersebut secara manual.
+
+Lab ini menutup kedua celah tersebut dan sekaligus menambah service ketiga:
+
++ *Mutasi _idempotent_.* Setiap _debit_ dan _credit_ membawa `reference` (ID transfer). `account` menerapkan mutasi dengan kombinasi rekening, jenis, dan `reference` yang sama hanya sekali. Panggilan ulang dijawab sukses dengan saldo saat ini. Dengan jaminan tersebut, `transfer` boleh me-_retry_ _timeout_.
++ *_Saga_.* Transfer terdiri atas langkah-langkah lokal, dan setiap langkah yang sudah berhasil memiliki langkah kompensasi. Dua panggilan ke `account` tidak bisa disatukan dalam satu transaksi database, sehingga _rollback_ diganti dengan langkah yang membatalkan efek langkah sebelumnya: _credit_ balik ke rekening asal.
++ *_Transactional outbox_.* Service lain perlu mengetahui hasil transfer. `transfer` tidak mengirim _event_ langsung ke Kafka, tetapi menulisnya ke tabel `outbox` dalam transaksi yang sama dengan perubahan status. _Relay_ di dalam `transfer` kemudian mengirim isi tabel tersebut ke Kafka.
++ *`notification`.* Service baru ini membaca _event_ dari _topic_ `transfer-events`, menyimpan satu baris notifikasi per _event_, lalu mencatat log `notification sent` sebagai pengganti pengiriman SMS atau _push notification_.
+
+#perintah[```
+ channel ── POST /transfers ──▶ transfer ── gRPC Debit / Credit ──▶ account
+                                  │                                   │
+                       db-transfer: transfer + outbox       db-account: account + mutation
+                       (satu transaksi per perubahan)       (unique: account, type, reference)
+                                  │
+                         relay, setiap 500 ms
+                                  ▼
+                 Kafka, topic transfer-events (3 partition, key = transfer_id)
+                                  │
+                       consumer group "notification"
+                                  ▼
+                            notification ──▶ db-notification
+```]
+
+Status transfer mengikuti mesin status berikut. Hanya status akhir yang menarik bagi service lain yang menghasilkan _event_.
+
+#table(
+  columns: (auto, 1fr, auto),
+  [Status], [Kondisi], [_Event_],
+  [`PENDING`], [Transfer tercatat, _debit_ belum berhasil], [–],
+  [`DEBITED`], [_Debit_ rekening asal berhasil], [–],
+  [`COMPLETED`], [_Credit_ rekening tujuan berhasil], [`TransferCompleted`],
+  [`FAILED`], [_Debit_ gagal, saldo tidak berubah], [`TransferFailed`],
+  [`COMPENSATED`], [_Credit_ gagal, lalu _debit_ dikembalikan dengan _credit_ ke rekening asal], [`TransferCompensated`],
+  [`COMPENSATION_FAILED`], [_Credit_ gagal dan pengembalian juga gagal, sehingga perlu penanganan manual], [–],
+)
+
+Mengapa tidak langsung menulis ke Kafka setelah transaksi database selesai? Database dan Kafka tidak memiliki transaksi bersama. Bila proses berhenti di antara keduanya, ada dua kemungkinan buruk: status sudah tersimpan tetapi _event_-nya hilang, atau _event_ terkirim untuk perubahan yang ternyata di-_rollback_. Tabel `outbox` memindahkan masalah tersebut ke satu database saja, dan di dalam satu database transaksi tersedia.
+
+== Titik Awal
+
+Lab ini melanjutkan kondisi akhir Lab 4. Peserta yang belum menyelesaikan Lab 4 dapat memulai dari _checkpoint_-nya:
+
+#perintah[```bash
+git checkout lab-04
+cd studi-kasus
+```]
+
+Semua perintah di bab ini dijalankan dari folder `studi-kasus`, kecuali bila disebutkan lain. Database dari Lab 2–4 tidak perlu dihapus: _schema_ `account` dan `transfer` diperbarui otomatis saat service dijalankan.
+
+== Langkah
+
+=== Kafka dan Database Notification di Docker Compose
+
+Kafka dijalankan sebagai satu _node_ dalam mode KRaft: satu proses berperan sebagai _broker_ sekaligus _controller_, tanpa ZooKeeper. Service berjalan di laptop, sedangkan _container_ pembuat _topic_ berjalan di jaringan Docker Compose. Kedua kelompok _client_ tersebut membutuhkan alamat yang berbeda, karena _client_ Kafka hanya menggunakan alamat _bootstrap_ untuk kontak pertama. Setelah itu _client_ menghubungi alamat yang diumumkan _broker_ untuk _listener_ tersebut (_advertised listener_). Karena itu ada dua _listener_ untuk _client_: `HOST` (`localhost:19092`) untuk service di laptop dan `INTERNAL` (`kafka:29092`) untuk _container_. Port `HOST` di laptop adalah 19092, bukan port bawaan Kafka 9092, agar tidak bentrok dengan Kafka lain yang mungkin sudah berjalan di laptop.
+
+_Topic_ dibuat secara sengaja oleh _container_ sekali jalan `kafka-init`, dan pembuatan _topic_ otomatis dimatikan. Salah ketik nama _topic_ di konfigurasi service langsung menghasilkan _error_ dan tidak membuat _topic_ baru. _Topic_ `transfer-events` mendapat 3 _partition_: hingga tiga _instance_ `notification` dapat bekerja paralel, dan semua _event_ dengan _key_ yang sama (ID transfer) selalu masuk ke _partition_ yang sama sehingga urutannya terjaga.
+
+Tambahkan tiga service berikut ke `compose.yaml`, di bawah `db-transfer`:
+
+```yaml
+  db-notification:
+    image: postgres:18.6-alpine
+    environment:
+      POSTGRES_DB: notification
+      POSTGRES_USER: notification
+      POSTGRES_PASSWORD: notification123
+    ports:
+      - "15434:5432"
+    volumes:
+      - db-notification:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "notification", "-d", "notification"]
+      interval: 2s
+      retries: 30
+
+  # Single-node Kafka in KRaft mode: the same process is broker and controller,
+  # no ZooKeeper. Two client listeners:
+  #   HOST     localhost:19092 for the services running on the laptop
+  #   INTERNAL kafka:29092 for containers on the compose network (kafka-init)
+  # A client connects to the bootstrap address, then reconnects to the address
+  # the broker advertises for its listener; that is why each audience needs its
+  # own listener.
+  kafka:
+    image: apache/kafka:4.3.1
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: HOST://:19092,INTERNAL://:29092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: HOST://localhost:19092,INTERNAL://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: HOST:PLAINTEXT,INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      # One broker: internal topics cannot have more than one replica.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      # A new consumer gets its partitions at once instead of after 3 s.
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # Topics are created on purpose (kafka-init), never by a typo in a client.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    ports:
+      - "19092:19092"
+    volumes:
+      - kafka:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD", "/opt/kafka/bin/kafka-broker-api-versions.sh", "--bootstrap-server", "localhost:19092"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+
+  # One-shot: creates the topic and exits. 3 partitions = up to 3 consumers of
+  # one group work in parallel; events with the same key (transfer ID) always
+  # land in the same partition, so they stay in order.
+  # Profile "init" keeps it out of "up --wait", which waits for running
+  # containers and does not expect one that exits; make infra-up runs it with
+  # "docker compose run" after Kafka is healthy.
+  kafka-init:
+    image: apache/kafka:4.3.1
+    profiles: ["init"]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/opt/kafka/bin/kafka-topics.sh"]
+    command: ["--bootstrap-server", "kafka:29092", "--create", "--if-not-exists",
+              "--topic", "transfer-events", "--partitions", "3", "--replication-factor", "1"]
+```
+
+Lengkapi daftar _volume_ di akhir `compose.yaml`:
+
+```yaml
+volumes:
+  db-account:
+  db-transfer:
+  db-notification:
+  kafka:
+```
+
+`kafka-init` ditempatkan di _profile_ `init` karena `docker compose up --wait` menunggu semua _container_ berjalan sehat, sedangkan `kafka-init` memang selesai lalu berhenti. Target `infra-up` di `Makefile` (folder `studi-kasus`) menjalankannya secara terpisah setelah Kafka sehat. Target `infra-down` dan `infra-reset` juga perlu `--profile init`, karena `docker compose down` melewati service dari _profile_ yang tidak aktif, dan sisa _container_ `kafka-init` akan menghalangi penghapusan jaringan Compose. Ubah ketiga target tersebut:
+
+```make
+# kafka-init creates the topic (idempotent: --if-not-exists).
+infra-up:
+	docker compose up -d --wait
+	docker compose run --rm kafka-init
+
+# --profile init: down skips services of inactive profiles, and a leftover
+# kafka-init container would keep the network from being removed.
+infra-down:
+	docker compose --profile init down
+
+# Removes the database and Kafka volumes too: all lab data is lost.
+infra-reset:
+	docker compose --profile init down -v
+```
+
+#note[*Penting.* Baris resep di `Makefile` harus diawali karakter _tab_, bukan spasi. Bila editor mengganti _tab_ menjadi spasi, `make` berhenti dengan pesan `missing separator`.]
+
+Jalankan infrastruktur dan periksa bahwa _topic_ sudah dibuat:
+
+#perintah[```bash
+make infra-up
+docker compose exec kafka /opt/kafka/bin/kafka-topics.sh \
+  --bootstrap-server localhost:19092 --describe --topic transfer-events
+```]
+
+Pada `make infra-up` pertama, `kafka-init` mencetak `Created topic transfer-events.`. Pada pemanggilan berikutnya `kafka-init` tidak mencetak apa pun karena opsi `--if-not-exists`. Perintah `--describe` menampilkan `PartitionCount: 3` beserta tiga baris `Partition: 0`, `1`, dan `2`.
+
+=== Mutasi _Idempotent_ di Account
+
+Kunci _idempotency_ untuk mutasi sudah ada sejak Lab 2: setiap _debit_ dan _credit_ membawa `reference` berisi ID transfer. Yang belum ada adalah aturan bahwa kombinasi rekening, jenis mutasi, dan `reference` hanya boleh diterapkan sekali. Aturan tersebut paling kuat bila dijaga oleh database sendiri melalui _unique index_, karena dua _retry_ yang datang bersamaan pun tetap berhadapan dengan _index_ yang sama.
+
+Tambahkan di akhir `account/internal/account/schema.sql`:
+
+```sql
+-- Idempotency (Lab 5): one mutation per account, type and reference. A retried
+-- debit with the same reference (the transfer ID) hits this index instead of
+-- moving the money twice. Created separately so it also lands on a database
+-- created in Labs 1-4.
+create unique index if not exists mutation_idempotency
+    on mutation (account_number, type, reference);
+```
+
+Jenis mutasi ikut menjadi bagian kunci. Dengan demikian _debit_ dan _credit_ dengan `reference` yang sama tetap dianggap dua mutasi yang berbeda.
+
+Selanjutnya `Store.Mutate` perlu memberi tahu pemanggilnya apakah mutasi benar-benar diterapkan atau hanya pengulangan. Ubah deklarasi `Mutate` di _interface_ `Store` (`account/internal/account/account.go`):
+
+```go
+	// Mutate debits or credits the account and records the mutation, atomically.
+	// It returns the account with its new balance. When a mutation with the same
+	// account, type and reference exists already, nothing changes: it returns
+	// the current account and applied = false.
+	Mutate(ctx context.Context, number string, t MutationType, req MutationRequest) (a Account, applied bool, err error)
+```
+
+Di Lab 2, `PostgresStore.Mutate` mengubah saldo terlebih dahulu, lalu mencatat baris `mutation`. Urutannya sekarang dibalik: baris `mutation` ditulis lebih dahulu dengan `on conflict do nothing` sebagai pemeriksaan _idempotency_. Bila tidak ada baris yang masuk, mutasi tersebut sudah pernah diterapkan, dan saldo tidak disentuh lagi. Urutan ini juga menangani _race condition_: panggilan kedua dengan `reference` yang sama menunggu di _unique index_ sampai transaksi pertama selesai, lalu melihat konflik. Foreign key ke tabel `account` sekaligus memeriksa keberadaan rekening, sehingga pemanggilan `s.Get` untuk membedakan "rekening tidak ada" dari "saldo kurang" tidak diperlukan lagi.
+
+Ganti seluruh fungsi `Mutate` di `account/internal/account/store.go`:
+
+```go
+func (s *PostgresStore) Mutate(ctx context.Context, number string, t MutationType, req MutationRequest) (Account, bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Account{}, false, err
+	}
+	defer tx.Rollback(ctx) // no-op after Commit
+
+	// The mutation row goes in first, as the idempotency check. A concurrent call
+	// with the same reference waits on the unique index until this transaction
+	// ends and then sees the conflict, so two racing retries still apply once.
+	tag, err := tx.Exec(ctx, `
+		insert into mutation (account_number, type, amount, reference)
+		values (@number, @type, @amount, @reference)
+		on conflict (account_number, type, reference) do nothing`,
+		pgx.NamedArgs{"number": number, "type": string(t), "amount": req.Amount, "reference": req.Reference})
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23503" { // foreign_key_violation: no such account
+		return Account{}, false, ErrNotFound
+	}
+	if err != nil {
+		return Account{}, false, err
+	}
+	if tag.RowsAffected() == 0 {
+		// Applied before: this is a retry of a call whose answer got lost (timeout,
+		// dropped connection). Answer with the current account, as if it were the
+		// first call. A stricter API would also compare the amount and reject a
+		// different amount under the same reference.
+		a, err := s.Get(ctx, number)
+		return a, false, err
+	}
+
+	delta := req.Amount
+	if t == Debit {
+		delta = delta.Neg()
+	}
+	// The balance check sits in the WHERE clause, so two concurrent debits cannot
+	// both pass it: the second one waits for the row lock and re-evaluates.
+	rows, err := tx.Query(ctx, `
+		update account set balance = balance + @delta
+		where number = @number and balance + @delta >= 0
+		returning number, owner_name, balance, created_at`,
+		pgx.NamedArgs{"number": number, "delta": delta})
+	if err != nil {
+		return Account{}, false, err
+	}
+	a, err := pgx.CollectExactlyOneRow(rows, pgx.RowToStructByPos[Account])
+	if errors.Is(err, pgx.ErrNoRows) {
+		// The account exists (the foreign key accepted the mutation row), so the
+		// balance is too low. Rollback removes the mutation row again: a later
+		// retry with the same reference is evaluated afresh.
+		return Account{}, false, ErrInsufficientFunds
+	}
+	if err != nil {
+		return Account{}, false, err
+	}
+	return a, true, tx.Commit(ctx)
+}
+```
+
+Query `update account` di tengah fungsi tidak berubah dari Lab 2. Yang hilang adalah `insert into mutation` di akhir fungsi (sudah pindah ke awal) serta pemanggilan `s.Get` di cabang `pgx.ErrNoRows`.
+
+Di sisi gRPC, mutasi yang tidak diterapkan ulang tetap dijawab sukses. Pemanggil yang melakukan _retry_ setelah kehilangan jawaban pertama memang mengharapkan jawaban sukses, dan uangnya hanya berpindah sekali. Ubah bagian akhir fungsi `mutate` di `account/internal/account/grpc.go`:
+
+```go
+	a, applied, err := s.store.Mutate(ctx, number, t, req)
+	if err != nil {
+		return Account{}, s.toStatus(err)
+	}
+	if !applied {
+		// Not an error: the caller retried after losing our first answer. It gets
+		// a success with the current balance, and the money moved only once.
+		s.log.Info("mutation already applied, not repeated", "number", a.Number, "type", t, "reference", req.Reference)
+		return a, nil
+	}
+	s.log.Info("account mutated", "number", a.Number, "type", t, "amount", req.Amount, "reference", req.Reference)
+	return a, nil
+```
+
+Aturan ini adalah bagian dari kontrak API, sehingga perlu tertulis di `proto/account/v1/account.proto`. Ganti komentar _field_ `reference` di `DebitRequest` dan tambahkan komentar di `CreditRequest`:
+
+```protobuf
+message DebitRequest {
+  string number = 1;
+  string amount = 2;
+  // reference ties the mutation to the business transaction, e.g. a transfer ID.
+  // It is the idempotency key: a Debit or Credit repeated with the same number
+  // and reference is not applied again and answers with the current account,
+  // so callers may retry after a timeout.
+  string reference = 3;
+}
+
+message CreditRequest {
+  string number = 1;
+  string amount = 2;
+  // Same idempotency rule as DebitRequest.reference.
+  string reference = 3;
+}
+```
+
+Hanya komentar yang berubah, tetapi komentar tersebut ikut tersalin ke kode hasil _generate_. Jalankan ulang _generator_ agar `proto/gen` tetap sesuai dengan `.proto`:
+
+#perintah[```bash
+make proto
+```]
+
+_Test_ di `account` menggunakan `fakeStore` di `account/internal/account/http_test.go`. `fakeStore` harus mengikuti tanda tangan `Mutate` yang baru dan meniru _unique index_ dengan sebuah _map_. Ubah struktur, konstruktor, dan metode `Mutate`-nya:
+
+```go
+// fakeStore keeps accounts in memory so the HTTP layer is tested without PostgreSQL.
+type fakeStore struct {
+	accounts map[string]Account
+	// applied holds "number type reference" of every mutation, like the unique
+	// index on the mutation table.
+	applied map[string]bool
+	pingErr error
+}
+
+func newFakeStore() *fakeStore {
+	return &fakeStore{accounts: map[string]Account{}, applied: map[string]bool{}}
+}
+
+func (f *fakeStore) Mutate(_ context.Context, number string, t MutationType, req MutationRequest) (Account, bool, error) {
+	a, ok := f.accounts[number]
+	if !ok {
+		return Account{}, false, ErrNotFound
+	}
+	key := number + " " + string(t) + " " + req.Reference
+	if f.applied[key] {
+		return a, false, nil
+	}
+	if t == Debit {
+		if a.Balance.LessThan(req.Amount) {
+			return Account{}, false, ErrInsufficientFunds
+		}
+		a.Balance = a.Balance.Sub(req.Amount)
+	} else {
+		a.Balance = a.Balance.Add(req.Amount)
+	}
+	f.accounts[number] = a
+	f.applied[key] = true
+	return a, true, nil
+}
+```
+
+Tambahkan _test_ berikut di akhir `account/internal/account/grpc_test.go`. _Test_ ini mengirim _debit_ yang sama dua kali, seperti _retry_ setelah _timeout_, dan memeriksa bahwa saldo hanya berkurang sekali:
+
+```go
+func TestGRPCMutationIsIdempotent(t *testing.T) {
+	store := newFakeStore()
+	store.accounts["1234567890"] = Account{Number: "1234567890", OwnerName: "Budi", Balance: decimal.RequireFromString("500000")}
+	c := newGRPCClient(t, store)
+	ctx := context.Background()
+
+	// The same debit twice, e.g. a retry after a timeout: applied once, and both
+	// calls answer with the balance after that one debit.
+	for i := range 2 {
+		got, err := c.Debit(ctx, &accountv1.DebitRequest{Number: "1234567890", Amount: "100000", Reference: "T-1"})
+		if err != nil || got.GetAccount().GetBalance() != "400000.00" {
+			t.Fatalf("call %d: Debit = %v, %v; want balance 400000.00", i+1, got, err)
+		}
+	}
+	// Same reference, other type: a different mutation (a reversal uses its own
+	// reference anyway, see the transfer saga).
+	got, err := c.Credit(ctx, &accountv1.CreditRequest{Number: "1234567890", Amount: "100000", Reference: "T-1"})
+	if err != nil || got.GetAccount().GetBalance() != "500000.00" {
+		t.Fatalf("Credit = %v, %v; want balance 500000.00", got, err)
+	}
+}
+```
+
+#perintah[```bash
+make -C account test
+```]
+
+=== _Retry_ untuk _Timeout_ di Client Transfer
+
+Di Lab 3 dan Lab 4, fungsi `notProcessed` di `transfer/internal/accountclient/client.go` hanya mengizinkan _retry_ untuk `codes.Unavailable`. _Timeout_ sengaja tidak di-_retry_ karena _debit_ yang terlambat dijawab mungkin sudah diterapkan. Setelah mutasi menjadi _idempotent_, alasan tersebut tidak berlaku lagi: _retry_ dengan `reference` yang sama tidak menerapkan mutasi dua kali. Ganti fungsi `notProcessed` dengan `retryable`:
+
+```go
+// retryable reports whether the call may be retried:
+//   - Unavailable: the server refused the call before running it (the fault
+//     injector does exactly that) or no connection could be made.
+//   - DeadlineExceeded and our own attempt timeout: the answer was late, and the
+//     account service may have applied the mutation anyway. Retrying is safe
+//     since Lab 5 because Debit and Credit are idempotent by reference (the
+//     transfer ID): a repeated call is not applied twice. Before Lab 5 a
+//     timed-out debit was never retried, because a retry could debit twice.
+//
+// Internal and Unknown are not retried: they come from a bug or a broken
+// dependency on the server side, and the same request will most likely fail the
+// same way. Business codes are final answers.
+func retryable(_ any, err error) bool {
+	if errors.Is(err, timeout.ErrExceeded) {
+		return true
+	}
+	switch status.Code(err) {
+	case codes.Unavailable, codes.DeadlineExceeded:
+		return true
+	}
+	return false
+}
+```
+
+Sesuaikan juga pemanggilnya di fungsi `New`, pada _builder_ `retrypolicy`:
+
+```go
+	retry := retrypolicy.NewBuilder[any]().
+		HandleIf(retryable).
+		// Explicit even though retryable already ignores ErrOpen: retrying against
+		// an open breaker only burns backoff time and fails anyway.
+		AbortOnErrors(circuitbreaker.ErrOpen).
+```
+
+Dua _test_ di `transfer/internal/accountclient/client_test.go` sekarang memeriksa perilaku yang sudah tidak berlaku. Ganti `TestNoRetryOnTimeout` dan `TestNoRetryOnDeadlineExceeded` dengan dua _test_ berikut. _Test_ pertama juga memeriksa bahwa percobaan ulang membawa `reference` yang sama:
+
+```go
+// A timed-out attempt is retried since Lab 5: the account service deduplicates
+// by reference, so even a debit that was applied late is not applied twice.
+func TestRetryOnTimeout(t *testing.T) {
+	c, fake := newTestClient(t, func(ctx context.Context, n int64) error {
+		if n == 1 {
+			select {
+			case <-time.After(300 * time.Millisecond):
+			case <-ctx.Done():
+			}
+		}
+		return nil
+	})
+	if err := debit(c); err != nil {
+		t.Fatalf("err = %v, want success on the second attempt", err)
+	}
+	if got := fake.calls.Load(); got != 2 {
+		t.Fatalf("calls = %d, want 2 (timeout, then OK)", got)
+	}
+	if req := fake.last.Load(); req.GetReference() != "ref" {
+		t.Fatalf("retry reference = %q, want the same reference", req.GetReference())
+	}
+}
+
+func TestRetryOnDeadlineExceeded(t *testing.T) {
+	c, fake := newTestClient(t, always(codes.DeadlineExceeded))
+	if err := debit(c); status.Code(err) != codes.DeadlineExceeded {
+		t.Fatalf("err = %v, want DeadlineExceeded", err)
+	}
+	if got := fake.calls.Load(); got != 4 {
+		t.Fatalf("calls = %d, want 4 (1 attempt + 3 retries)", got)
+	}
+}
+```
+
+=== Status _Saga_ dan _Event_ Transfer
+
+Model domain transfer mendapat tiga tambahan: status baru, jenis _event_, dan struktur _payload_ _event_. `EventID` unik untuk setiap _event_, sehingga _consumer_ nantinya dapat mengenali _event_ yang dikirim ulang (Lab 6).
+
+Di `transfer/internal/transfer/transfer.go`, ganti komentar _package_ serta blok `Status` dan konstantanya:
+
+```go
+// Package transfer moves money between two accounts by calling the account
+// service. A transfer is a saga: a sequence of local steps, each with a
+// compensating step that undoes it when a later step fails.
+package transfer
+```
+
+```go
+// Status is the saga state:
+//
+//	PENDING -> DEBITED -> COMPLETED   happy path
+//	PENDING -> FAILED                 debit failed, nothing to undo
+//	DEBITED -> COMPENSATED            credit failed, debit reversed
+//	DEBITED -> COMPENSATION_FAILED    credit failed, reversal failed too
+type Status string
+
+const (
+	Pending   Status = "PENDING"
+	Debited   Status = "DEBITED"
+	Completed Status = "COMPLETED"
+	Failed    Status = "FAILED"
+	// Compensated: the credit failed and the debit was reversed. No money moved.
+	Compensated Status = "COMPENSATED"
+	// CompensationFailed: the source account is debited and the reversal did not
+	// go through. Needs a person (or a reconciliation job) to fix.
+	CompensationFailed Status = "COMPENSATION_FAILED"
+)
+
+// EventType names the integration events other services consume. Only the end
+// states that someone outside cares about have an event.
+type EventType string
+
+const (
+	EventCompleted   EventType = "TransferCompleted"
+	EventFailed      EventType = "TransferFailed"
+	EventCompensated EventType = "TransferCompensated"
+)
+
+// Event is the payload published to Kafka. EventID is unique per event, so a
+// consumer can recognise a redelivered one (Lab 6).
+type Event struct {
+	EventID     string          `json:"event_id"`
+	TransferID  string          `json:"transfer_id"`
+	FromAccount string          `json:"from_account"`
+	ToAccount   string          `json:"to_account"`
+	Amount      decimal.Decimal `json:"amount"`
+	Status      Status          `json:"status"`
+	Reason      string          `json:"reason,omitempty"`
+	OccurredAt  time.Time       `json:"occurred_at"`
+}
+```
+
+Tambahkan `ErrStaleState` ke blok `var` berisi _error_, tepat di bawah `ErrNotFound`:
+
+```go
+	// ErrStaleState: the transfer was not in the expected state, e.g. another
+	// process moved it on already.
+	ErrStaleState = errors.New("transfer is not in the expected state")
+```
+
+Metode `Finish` di _interface_ `Store` diganti `Transition`. Perbedaannya ada di dua hal: `Transition` hanya mengubah status bila transfer masih berada di status asal yang diharapkan, dan `Transition` menulis _event_ ke `outbox` dalam transaksi yang sama:
+
+```go
+	// Transition moves the transfer from one status to the next and, when event
+	// is not empty, writes that event to the outbox in the same database
+	// transaction: either both are stored or neither. It returns ErrStaleState
+	// when the transfer is not in status from.
+	Transition(ctx context.Context, id string, from, to Status, reason string, event EventType) (Transfer, error)
+```
+
+=== _Schema_ Transfer dan Tabel Outbox
+
+Kolom `status` di Lab 2 berukuran `varchar(10)` dengan _check constraint_ untuk tiga status saja, sedangkan `COMPENSATION_FAILED` terdiri atas 19 karakter. Perubahan kolom dan _constraint_ ditulis sebagai `alter table` yang dijalankan ulang setiap kali service dimulai. Dengan cara ini database yang dibuat di Lab 2–4 ikut diperbarui. Ganti isi `transfer/internal/transfer/schema.sql`:
+
+```sql
+create table if not exists transfer (
+    id             uuid           primary key default gen_random_uuid(),
+    from_account   varchar(10)    not null,
+    to_account     varchar(10)    not null,
+    amount         numeric(19, 2) not null check (amount > 0),
+    status         varchar(20)    not null,
+    failure_reason text,
+    created_at     timestamptz    not null default now(),
+    updated_at     timestamptz    not null default now()
+);
+
+-- Saga states (Lab 5). Re-applied on every start so a database created in
+-- Labs 2-4, with only PENDING/COMPLETED/FAILED, gets the new states as well.
+alter table transfer alter column status type varchar(20);
+alter table transfer drop constraint if exists transfer_status_check;
+alter table transfer add constraint transfer_status_check check (status in
+    ('PENDING', 'DEBITED', 'COMPLETED', 'FAILED', 'COMPENSATED', 'COMPENSATION_FAILED'));
+
+-- Transactional outbox (Lab 5). An event is inserted in the same transaction as
+-- the state change it reports; the relay publishes it to Kafka afterwards and
+-- sets published_at. Writing to the database and to Kafka directly would be two
+-- systems without a shared transaction: a crash between them loses the event
+-- or publishes one for a change that was rolled back.
+create table if not exists outbox (
+    id           uuid        primary key,
+    aggregate_id uuid        not null,
+    event_type   varchar(50) not null,
+    payload      jsonb       not null,
+    created_at   timestamptz not null default now(),
+    published_at timestamptz
+);
+
+-- The relay only ever looks for unpublished rows; a partial index stays small
+-- however many published rows pile up.
+create index if not exists outbox_unpublished on outbox (created_at) where published_at is null;
+```
+
+Kolom `aggregate_id` berisi ID transfer. Istilah _aggregate_ menunjuk entitas yang perubahannya dilaporkan oleh _event_ tersebut. Kolom `published_at` yang masih kosong menandakan _event_ belum terkirim ke Kafka.
+
+=== _Package_ Outbox dan _Relay_
+
+_Package_ baru `outbox` memiliki dua tanggung jawab. Fungsi `Insert` menulis satu baris `outbox` di dalam transaksi milik pemanggil. `Relay` berjalan sebagai _goroutine_: setiap 500 ms _relay_ mengambil hingga 100 baris yang belum terkirim, mengirimnya ke Kafka, lalu mengisi `published_at`.
+
+Tiga keputusan desain di _relay_ perlu dipahami sebelum menulis kodenya:
+
+- *Penguncian baris.* Query `for update skip locked` mengunci baris yang sedang dikirim. Bila beberapa _instance_ `transfer` berjalan, setiap _relay_ melewati baris yang sudah dikunci _relay_ lain, sehingga satu baris tidak dikirim dua kali oleh dua _relay_ dan _relay_ tidak saling menunggu.
+- *Urutan kirim lalu tandai.* Kafka mengonfirmasi penerimaan terlebih dahulu, baru kemudian `published_at` diisi dan transaksi di-_commit_. Bila proses berhenti di antara kedua langkah tersebut, baris tetap berstatus belum terkirim dan dikirim lagi pada siklus berikutnya. Cara ini menghasilkan jaminan _at-least-once_: _event_ tidak pernah hilang, tetapi sesekali terkirim dua kali. Urutan sebaliknya (tandai dulu, kirim kemudian) justru dapat menghilangkan _event_.
+- *Konfigurasi _producer_.* _Key_ Kafka berisi ID transfer dan `kafka.Hash` memilih _partition_ berdasarkan _key_ tersebut, sehingga semua _event_ satu transfer tetap berurutan. `RequireAll` menunggu konfirmasi dari semua replika yang sinkron. Pembuatan _topic_ otomatis dimatikan juga di sisi _client_.
+
+Tambahkan _dependency_ Kafka dan UUID ke modul `transfer`:
+
+#perintah[```bash
+cd transfer
+go get github.com/segmentio/kafka-go@v0.4.51 github.com/google/uuid@v1.6.0
+cd ..
+```]
+
+Buat _file_ `transfer/internal/outbox/outbox.go`:
+
+```go
+// Package outbox implements the transactional outbox: events are stored in the
+// service's own database, in the same transaction as the state change they
+// report, and a relay publishes them to Kafka afterwards.
+package outbox
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/segmentio/kafka-go"
+)
+
+// Message is one outbox row. The table itself is created by the transfer schema.
+type Message struct {
+	ID          string // event ID, also sent as Kafka header event_id
+	AggregateID string // transfer ID, used as the Kafka key
+	EventType   string
+	Payload     []byte // JSON
+}
+
+// Insert writes m inside tx. tx must be the transaction that also writes the
+// state change, otherwise the outbox gives no guarantee at all.
+func Insert(ctx context.Context, tx pgx.Tx, m Message) error {
+	_, err := tx.Exec(ctx, `
+		insert into outbox (id, aggregate_id, event_type, payload)
+		values (@id, @aggregate_id, @event_type, @payload)`,
+		pgx.NamedArgs{"id": m.ID, "aggregate_id": m.AggregateID, "event_type": m.EventType, "payload": m.Payload})
+	if err != nil {
+		return fmt.Errorf("insert outbox message: %w", err)
+	}
+	return nil
+}
+
+// Publisher is the part of kafka.Writer the relay uses; tests can fake it.
+type Publisher interface {
+	WriteMessages(ctx context.Context, msgs ...kafka.Message) error
+}
+
+// NewKafkaWriter builds the producer for the relay.
+func NewKafkaWriter(brokers []string, topic string) *kafka.Writer {
+	return &kafka.Writer{
+		Addr:  kafka.TCP(brokers...),
+		Topic: topic,
+		// Same key, same partition: all events of one transfer stay in order.
+		Balancer: &kafka.Hash{},
+		// Acknowledged by every in-sync replica before WriteMessages returns; only
+		// then may the relay mark the rows published.
+		RequiredAcks: kafka.RequireAll,
+		// The topic is created on purpose, with its partition count (compose
+		// kafka-init). A typo in KAFKA_TOPIC must fail, not create a new topic.
+		AllowAutoTopicCreation: false,
+		// The relay hands over a whole batch in one call; do not wait the default
+		// 1 s for more messages that will not come.
+		BatchTimeout: 10 * time.Millisecond,
+		BatchSize:    BatchSize,
+	}
+}
+
+const (
+	// PollInterval is how long an event waits at most before the relay looks.
+	PollInterval = 500 * time.Millisecond
+	// BatchSize caps the rows claimed per poll.
+	BatchSize = 100
+)
+
+type Relay struct {
+	pool *pgxpool.Pool
+	pub  Publisher
+	log  *slog.Logger
+}
+
+func NewRelay(pool *pgxpool.Pool, pub Publisher, log *slog.Logger) *Relay {
+	return &Relay{pool: pool, pub: pub, log: log}
+}
+
+// Run polls the outbox until ctx is cancelled. A failed batch (Kafka down,
+// database down) is logged and tried again on the next tick: the rows stay
+// unpublished, nothing is lost.
+func (r *Relay) Run(ctx context.Context) {
+	r.log.Info("outbox relay started", "interval", PollInterval.String())
+	ticker := time.NewTicker(PollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			r.log.Info("outbox relay stopped")
+			return
+		case <-ticker.C:
+		}
+		n, err := r.publishBatch(ctx)
+		if err != nil {
+			if ctx.Err() == nil {
+				r.log.Warn("outbox publish failed, will retry", "error", err)
+			}
+			continue
+		}
+		if n > 0 {
+			r.log.Info("outbox events published", "count", n)
+		}
+	}
+}
+
+// publishBatch claims up to BatchSize unpublished rows, publishes them, and marks
+// them published, all while holding the row locks of one transaction.
+//
+// "for update skip locked" lets several transfer instances run a relay each:
+// rows locked by one relay are skipped by the others instead of being published
+// twice or blocking them.
+//
+// Delivery is at-least-once. Kafka has acknowledged the batch before the update
+// commits; when the commit fails or the process dies in between, the rows are
+// still unpublished and go out again on the next poll. Consumers therefore see
+// duplicates now and then and must be idempotent (Lab 6). The opposite order,
+// commit first and publish after, would lose events instead: worse.
+func (r *Relay) publishBatch(ctx context.Context) (int, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx) // no-op after Commit
+
+	rows, err := tx.Query(ctx, `
+		select id::text, aggregate_id::text, event_type, payload
+		from outbox
+		where published_at is null
+		order by created_at
+		limit @limit
+		for update skip locked`,
+		pgx.NamedArgs{"limit": BatchSize})
+	if err != nil {
+		return 0, err
+	}
+	pending, err := pgx.CollectRows(rows, pgx.RowToStructByPos[Message])
+	if err != nil {
+		return 0, err
+	}
+	if len(pending) == 0 {
+		return 0, nil
+	}
+
+	msgs := make([]kafka.Message, len(pending))
+	ids := make([]string, len(pending))
+	for i, m := range pending {
+		msgs[i] = kafka.Message{
+			Key:   []byte(m.AggregateID),
+			Value: m.Payload,
+			Headers: []kafka.Header{
+				{Key: "event_type", Value: []byte(m.EventType)},
+				{Key: "event_id", Value: []byte(m.ID)},
+			},
+		}
+		ids[i] = m.ID
+	}
+	// Bounded, so a hanging broker does not hold the row locks forever.
+	pubCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := r.pub.WriteMessages(pubCtx, msgs...); err != nil {
+		return 0, fmt.Errorf("publish %d events: %w", len(msgs), err)
+	}
+
+	// The duplicate window described above starts here.
+	if _, err := tx.Exec(ctx, `update outbox set published_at = now() where id = any(@ids::uuid[])`,
+		pgx.NamedArgs{"ids": ids}); err != nil {
+		return 0, fmt.Errorf("mark %d events published: %w", len(ids), err)
+	}
+	return len(pending), tx.Commit(ctx)
+}
+```
+
+=== Perubahan Status dan _Event_ dalam Satu Transaksi
+
+`PostgresStore.Transition` menjalankan dua perintah dalam satu transaksi: `update transfer` dan, bila ada _event_, `outbox.Insert`. Klausa `and status = @from` menjaga mesin status. Transfer yang sudah dipindahkan ke status lain oleh proses lain tidak akan tertimpa, dan `Transition` mengembalikan `ErrStaleState`.
+
+Fungsi bantu `one` yang semula metode `PostgresStore` diubah menjadi fungsi biasa yang menerima _interface_ `querier`. _Interface_ tersebut dipenuhi oleh _pool_ maupun transaksi, sehingga query yang sama dapat dijalankan di keduanya.
+
+Di `transfer/internal/transfer/store.go`, tambahkan _import_ berikut:
+
+```go
+	"encoding/json"
+
+	"github.com/google/uuid"
+
+	"github.com/artivisi/training-microservices-2026-01/studi-kasus/transfer/internal/outbox"
+```
+
+Tambahkan metode `Pool` tepat di bawah `Close`. _Relay_ membaca tabel `outbox` dari database yang sama, sehingga cukup menggunakan _pool_ milik store:
+
+```go
+// Pool is shared with the outbox relay, which reads the outbox table of this
+// same database.
+func (s *PostgresStore) Pool() *pgxpool.Pool { return s.pool }
+```
+
+Ganti metode `Finish` dengan `Transition`:
+
+```go
+func (s *PostgresStore) Transition(ctx context.Context, id string, from, to Status, reason string, event EventType) (Transfer, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Transfer{}, err
+	}
+	defer tx.Rollback(ctx) // no-op after Commit
+
+	// "and status = @from" guards the state machine: a transfer that some other
+	// process moved on already is not overwritten.
+	t, err := one(ctx, tx, `
+		update transfer set status = @to, failure_reason = nullif(@reason, ''), updated_at = now()
+		where id = @id and status = @from
+		returning `+columns,
+		pgx.NamedArgs{"id": id, "from": string(from), "to": string(to), "reason": reason})
+	if errors.Is(err, ErrNotFound) {
+		return Transfer{}, fmt.Errorf("%s -> %s: %w", from, to, ErrStaleState)
+	}
+	if err != nil {
+		return Transfer{}, err
+	}
+
+	if event != "" {
+		e := Event{
+			EventID:     uuid.NewString(),
+			TransferID:  t.ID,
+			FromAccount: t.FromAccount,
+			ToAccount:   t.ToAccount,
+			Amount:      t.Amount,
+			Status:      t.Status,
+			Reason:      t.FailureReason,
+			OccurredAt:  t.UpdatedAt,
+		}
+		payload, err := json.Marshal(e)
+		if err != nil {
+			return Transfer{}, err
+		}
+		if err := outbox.Insert(ctx, tx, outbox.Message{
+			ID: e.EventID, AggregateID: t.ID, EventType: string(event), Payload: payload,
+		}); err != nil {
+			return Transfer{}, err
+		}
+	}
+	return t, tx.Commit(ctx)
+}
+```
+
+Terakhir, ubah `Create`, `Get`, dan fungsi bantu `one`. Isi `switch` di dalam `one` yang menerjemahkan `pgx.ErrNoRows` dan kode `22P02` menjadi `ErrNotFound` tidak berubah:
+
+```go
+func (s *PostgresStore) Create(ctx context.Context, req CreateRequest) (Transfer, error) {
+	return one(ctx, s.pool, `
+		insert into transfer (from_account, to_account, amount, status)
+		values (@from, @to, @amount, 'PENDING')
+		returning `+columns,
+		pgx.NamedArgs{"from": req.FromAccount, "to": req.ToAccount, "amount": req.Amount})
+}
+
+func (s *PostgresStore) Get(ctx context.Context, id string) (Transfer, error) {
+	return one(ctx, s.pool, `select `+columns+` from transfer where id = @id`, pgx.NamedArgs{"id": id})
+}
+
+// querier is what the pool and a transaction have in common.
+type querier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
+func one(ctx context.Context, q querier, sql string, args pgx.NamedArgs) (Transfer, error) {
+	rows, err := q.Query(ctx, sql, args)
+	// ... the rest of the former s.one is unchanged ...
+}
+```
+
+=== _Saga Orchestrator_ di Service Transfer
+
+Seluruh alur _saga_ berada di satu tempat, yaitu `Service.Execute`. Pendekatan ini disebut _orchestration_: satu service mengatur urutan langkah dan kompensasinya. Pendekatan lainnya, _choreography_, membiarkan setiap service bereaksi terhadap _event_ dari service lain tanpa pengatur pusat.
+
+Kompensasi berupa _credit_ ke rekening asal dengan `reference` tersendiri, yaitu ID transfer ditambah akhiran `:reversal`. Akhiran tersebut diperlukan karena aturan _idempotency_ di `account`. Tanpa akhiran, _credit_ pengembalian akan dianggap pengulangan _credit_ lain dengan ID yang sama. Sebaliknya, pengembalian yang di-_retry_ tetap menggunakan `reference` yang sama, sehingga pengembalian pun hanya diterapkan sekali.
+
+Bila pengembalian juga gagal, transfer berakhir di `COMPENSATION_FAILED` tanpa _event_, karena hasil akhirnya bagi nasabah belum pasti. Kondisi ini dicatat sebagai log `ERROR` untuk ditangani manual.
+
+Ganti seluruh isi `transfer/internal/transfer/service.go` mulai dari deklarasi `Service` hingga sebelum metode `Get`. Metode `Get` dan bagian sesudahnya tidak berubah:
+
+```go
+// ReversalSuffix marks the compensating credit. The reversal needs its own
+// reference: under the transfer ID alone, the account service would treat it
+// as a repeat of a credit with that ID (see the idempotency rule in
+// account.proto). A retried reversal reuses this reference and is therefore
+// applied once as well.
+const ReversalSuffix = ":reversal"
+
+type Service struct {
+	store    Store
+	accounts AccountClient
+	log      *slog.Logger
+}
+
+func NewService(store Store, accounts AccountClient, log *slog.Logger) *Service {
+	return &Service{store: store, accounts: accounts, log: log}
+}
+
+// Execute runs the transfer saga, orchestrated from here:
+//
+//  1. record the transfer                -> PENDING
+//  2. debit the source                   -> DEBITED   (failed: FAILED)
+//  3. credit the destination             -> COMPLETED (failed: step 4)
+//  4. compensate: credit the source back -> COMPENSATED
+//
+// There is no transaction across the two account calls; every step is a local
+// transaction in one service, and a failed step is undone by a compensating
+// step instead of a rollback. Each end state and its event are stored together
+// (Store.Transition), and the outbox relay publishes the event afterwards.
+//
+// The returned error is the reason the transfer did not complete; the transfer
+// itself is returned whenever it was recorded.
+func (s *Service) Execute(ctx context.Context, req CreateRequest) (Transfer, error) {
+	t, err := s.store.Create(ctx, req)
+	if err != nil {
+		return Transfer{}, fmt.Errorf("record transfer: %w", err)
+	}
+
+	if err := s.accounts.Debit(ctx, t.FromAccount, t.Amount, t.ID); err != nil {
+		// Known gap: when every attempt timed out, the debit may still have been
+		// applied, and FAILED is then wrong. Compensating blindly is no answer
+		// either: a reversal of a debit that never happened creates money. The
+		// production answer is a reconciliation job that repeats the debit with
+		// the same reference (idempotent) until it gets a definite answer, then
+		// continues or reverses. Here it stays FAILED and is logged.
+		return s.finish(ctx, t, Pending, Failed, fmt.Sprintf("debit failed: %v", err), EventFailed, err)
+	}
+
+	debited, err := s.store.Transition(ctx, t.ID, Pending, Debited, "", "")
+	if err != nil {
+		// The money left the source but our own database did not record it. The
+		// transfer stays PENDING; the reconciliation above would find it.
+		s.log.Error("debit applied but not recorded", "transfer_id", t.ID, "error", err)
+		return t, fmt.Errorf("mark transfer debited: %w", err)
+	}
+
+	if err := s.accounts.Credit(ctx, debited.ToAccount, debited.Amount, debited.ID); err != nil {
+		return s.compensate(ctx, debited, err)
+	}
+
+	return s.finish(ctx, debited, Debited, Completed, "", EventCompleted, nil)
+}
+
+// compensate undoes the debit by crediting the amount back to the source.
+//
+// Same ambiguity as the debit: a credit that timed out on every attempt may have
+// arrived, and the reversal then gives the money back twice over (destination
+// and source). Business rejections (destination not found) and an open breaker
+// are certain not to have been applied; the reconciliation job resolves the rest.
+func (s *Service) compensate(ctx context.Context, t Transfer, cause error) (Transfer, error) {
+	reason := fmt.Sprintf("credit failed: %v", cause)
+	s.log.Warn("credit failed after debit, reversing the debit", "transfer_id", t.ID, "error", cause)
+
+	if err := s.accounts.Credit(ctx, t.FromAccount, t.Amount, t.ID+ReversalSuffix); err != nil {
+		// The source account is short by the amount. The reversal is idempotent, so
+		// repeating it later is safe; production runs that from a background job.
+		// Here a person repeats it. No event: the customer outcome is not final yet.
+		s.log.Error("compensation failed, source account needs manual reversal",
+			"transfer_id", t.ID, "from_account", t.FromAccount, "amount", t.Amount, "error", err)
+		reason = fmt.Sprintf("%s; reversal failed: %v", reason, err)
+		return s.finish(ctx, t, Debited, CompensationFailed, reason, "", errors.Join(cause, err))
+	}
+	return s.finish(ctx, t, Debited, Compensated, reason, EventCompensated, cause)
+}
+
+// finish stores the end state with its event. cause is the saga's outcome error
+// (nil on success) and is returned as is, so the HTTP layer can map it.
+func (s *Service) finish(ctx context.Context, t Transfer, from, to Status, reason string, event EventType, cause error) (Transfer, error) {
+	done, err := s.store.Transition(ctx, t.ID, from, to, reason, event)
+	if err != nil {
+		s.log.Error("saga end state not recorded", "transfer_id", t.ID, "status", to, "error", err)
+		return t, errors.Join(cause, fmt.Errorf("mark transfer %s: %w", to, err))
+	}
+	switch to {
+	case Completed:
+		s.log.Info("transfer completed", "transfer_id", t.ID, "amount", t.Amount)
+	case CompensationFailed:
+		// logged in compensate
+	default:
+		s.log.Warn("transfer not completed", "transfer_id", t.ID, "status", to, "reason", reason)
+	}
+	return done, cause
+}
+```
+
+Komentar di `Execute` dan `compensate` menyebut celah yang sengaja dibiarkan. Bila semua percobaan _debit_ atau _credit_ berakhir _timeout_, hasilnya di `account` tidak pasti. Lab ini tetap menandai `FAILED` atau menjalankan kompensasi. Sistem _production_ menjalankan _reconciliation job_ yang mengulang mutasi dengan `reference` yang sama hingga jawabannya pasti, dan pengulangan tersebut aman karena mutasi sudah _idempotent_.
+
+=== Kode Status HTTP untuk Hasil _Saga_
+
+`COMPENSATION_FAILED` berarti uang tertahan karena kegagalan di sisi sistem sendiri, apa pun jawaban `account` sebelumnya. Kondisi tersebut dijawab `500`, dan pemeriksaannya harus berada sebelum pemetaan _error_ bisnis. Di `transfer/internal/transfer/http.go`, ubah `switch` di fungsi `create`:
+
+```go
+	switch {
+	case err == nil:
+		w.Header().Set("Location", "/transfers/"+t.ID)
+		writeJSON(w, http.StatusCreated, t)
+	case t.ID == "":
+		h.internalError(w, r, err)
+	case t.Status == CompensationFailed:
+		// Money is stuck on our side, whatever the account service answered: this
+		// is our failure, not the caller's.
+		writeJSON(w, http.StatusInternalServerError, t)
+	case errors.Is(err, ErrAccountNotFound), errors.Is(err, ErrInsufficientFunds):
+		// Includes COMPENSATED when the destination account does not exist.
+		writeJSON(w, http.StatusUnprocessableEntity, t)
+	case errors.Is(err, ErrAccountUnavailable):
+		// Fail fast while the breaker is open; 503 tells the caller to come back later.
+		writeJSON(w, http.StatusServiceUnavailable, t)
+	default:
+		// Recorded but not completed because a dependency failed (FAILED or
+		// COMPENSATED).
+		writeJSON(w, http.StatusBadGateway, t)
+	}
+```
+
+=== Konfigurasi dan _Relay_ di `main.go` Transfer
+
+`transfer` membutuhkan dua variabel baru, `KAFKA_BROKERS` dan `KAFKA_TOPIC`. Keduanya wajib, seperti variabel lain: nilai yang kosong menghentikan service saat _startup_. Di `transfer/config.go`, tambahkan dua _field_ di struktur `Config`:
+
+```go
+	// KafkaBrokers is a comma-separated list of host:port.
+	KafkaBrokers []string
+	KafkaTopic   string
+```
+
+lalu isi keduanya di `LoadConfig`, di bawah `AccountGRPCAddr`:
+
+```go
+		KafkaBrokers:    strings.Split(get("KAFKA_BROKERS"), ","),
+		KafkaTopic:      get("KAFKA_TOPIC"),
+```
+
+Tambahkan kedua variabel ke target `run` di `transfer/Makefile`:
+
+```make
+run:
+	HTTP_ADDR=:28082 \
+	DATABASE_URL=postgres://transfer:transfer123@localhost:15433/transfer \
+	ACCOUNT_GRPC_ADDR=localhost:29091 \
+	KAFKA_BROKERS=localhost:19092 \
+	KAFKA_TOPIC=transfer-events \
+	go run .
+```
+
+_Relay_ dijalankan sebagai _goroutine_ di `transfer/main.go`. _Writer_ Kafka baru membuka koneksi ketika pertama kali mengirim, sehingga `transfer` tetap bisa dimulai dan menerima transfer selama Kafka mati. Urutan berhenti juga penting: _relay_ harus berhenti sebelum _pool_ database ditutup oleh `defer store.Close()`. Karena `defer` dijalankan dalam urutan terbalik, fungsi penghenti _relay_ yang didaftarkan belakangan akan berjalan lebih dahulu.
+
+Tambahkan _import_ `.../transfer/internal/outbox`, lalu sisipkan blok berikut di fungsi `run`, tepat setelah `srv := &http.Server{...}` dan sebelum `errCh := make(chan error, 1)`:
+
+```go
+	// The relay connects lazily too: the service starts and accepts transfers
+	// while Kafka is down; events wait in the outbox until it is back.
+	writer := outbox.NewKafkaWriter(cfg.KafkaBrokers, cfg.KafkaTopic)
+	defer writer.Close()
+	relayCtx, stopRelay := context.WithCancel(context.Background())
+	relayDone := make(chan struct{})
+	go func() {
+		outbox.NewRelay(store.Pool(), writer, log).Run(relayCtx)
+		close(relayDone)
+	}()
+	// Runs before the deferred store.Close: the relay must stop using the pool first.
+	defer func() {
+		stopRelay()
+		<-relayDone
+	}()
+```
+
+Lengkapi log _startup_ dengan konfigurasi Kafka:
+
+```go
+		log.Info("transfer service listening", "addr", cfg.HTTPAddr, "account_grpc", cfg.AccountGRPCAddr,
+			"kafka_brokers", cfg.KafkaBrokers, "kafka_topic", cfg.KafkaTopic)
+```
+
+Di cabang `case <-ctx.Done():`, tambahkan komentar berikut tepat sebelum `srv.Shutdown`. Komentar ini menjelaskan mengapa urutan berhenti sudah benar tanpa kode tambahan:
+
+```go
+		// HTTP first: transfers in flight finish and write their outbox rows; the
+		// deferred relay stop comes after, and anything left is published by the
+		// next start.
+```
+
+=== _Test_ untuk _Saga_
+
+`fakeStore` di `transfer/internal/transfer/service_test.go` harus mengganti `Finish` dengan `Transition` dan mencatat _event_ yang ditulis, sehingga _test_ dapat memeriksa urutan panggilan ke `account` sekaligus _event_ yang masuk ke _outbox_. Bagian utamanya:
+
+```go
+// fakeStore keeps transfers in memory and records the outbox events written
+// with each transition.
+type fakeStore struct {
+	transfers map[string]Transfer
+	events    []EventType
+	seq       int
+}
+
+func (f *fakeStore) Transition(_ context.Context, id string, from, to Status, reason string, event EventType) (Transfer, error) {
+	t := f.transfers[id]
+	if t.Status != from {
+		return Transfer{}, ErrStaleState
+	}
+	t.Status, t.FailureReason = to, reason
+	f.transfers[id] = t
+	if event != "" {
+		f.events = append(f.events, event)
+	}
+	return t, nil
+}
+```
+
+_Test_ tabel `TestExecuteSaga` memeriksa lima skenario: sukses, saldo kurang, _circuit breaker_ terbuka, _credit_ gagal lalu dikembalikan, dan pengembalian yang juga gagal. Sebagai contoh, skenario kompensasi mengharapkan tiga panggilan ke `account` dan satu _event_:
+
+```go
+		{"credit fails after debit: debit reversed",
+			map[string]error{"credit 2222222222": ErrAccountNotFound}, Compensated, ErrAccountNotFound,
+			[]string{"debit 1111111111 ref=1", "credit 2222222222 ref=1", "credit 1111111111 ref=1:reversal"},
+			[]EventType{EventCompensated}},
+```
+
+_File_ _test_ lengkapnya tersedia di _checkpoint_ dan dapat diambil langsung:
+
+#perintah[```bash
+git checkout lab-05 -- transfer/internal/transfer/service_test.go
+make -C transfer test
+```]
+
+=== Notification Service
+
+`notification` adalah modul Go baru di _workspace_. Service ini mengetahui hasil transfer hanya dari _event_ di Kafka dan tidak pernah memanggil `transfer`. Struktur _payload_ _event_ ditulis ulang di modul `notification` dan tidak diimpor dari `transfer`: service berbagi format data (kontrak), tidak berbagi kode.
+
+Buat modul dan daftarkan ke `go.work`:
+
+#perintah[```bash
+mkdir -p notification/internal/notification
+cd notification
+go mod init github.com/artivisi/training-microservices-2026-01/studi-kasus/notification
+go mod edit -go=1.26.0
+cd ..
+go work use ./notification
+```]
+
+`go mod edit -go=1.26.0` menyamakan versi Go modul dengan `go.work`, karena `go mod init` menuliskan versi _toolchain_ yang terpasang di laptop.
+
+==== Konfigurasi
+
+Selain variabel yang sudah dikenal dari service lain, `notification` membutuhkan `KAFKA_GROUP_ID`. Kafka menyimpan posisi baca (_committed offset_) per _consumer group_. Semua _instance_ `notification` menggunakan _group_ yang sama, sehingga setiap _event_ ditangani oleh salah satu _instance_ saja.
+
+Buat `notification/config.go`:
+
+```go
+package main
+
+import (
+	"fmt"
+	"os"
+	"strings"
+)
+
+// Config comes from environment variables only (12-factor). Every variable is
+// required: a missing value stops the service at startup instead of running
+// with a guessed default.
+type Config struct {
+	HTTPAddr    string
+	DatabaseURL string
+	// KafkaBrokers is a comma-separated list of host:port.
+	KafkaBrokers []string
+	KafkaTopic   string
+	// KafkaGroupID is the consumer group. Kafka keeps the committed offsets per
+	// group; every instance of this service uses the same group, so each event is
+	// handled by one of them.
+	KafkaGroupID string
+}
+
+func LoadConfig() (Config, error) {
+	var missing []string
+	get := func(name string) string {
+		v := os.Getenv(name)
+		if v == "" {
+			missing = append(missing, name)
+		}
+		return v
+	}
+	cfg := Config{
+		HTTPAddr:     get("HTTP_ADDR"),
+		DatabaseURL:  get("DATABASE_URL"),
+		KafkaBrokers: strings.Split(get("KAFKA_BROKERS"), ","),
+		KafkaTopic:   get("KAFKA_TOPIC"),
+		KafkaGroupID: get("KAFKA_GROUP_ID"),
+	}
+	if len(missing) > 0 {
+		return Config{}, fmt.Errorf("missing required environment variables: %s", strings.Join(missing, ", "))
+	}
+	return cfg, nil
+}
+```
+
+Buat `notification/Makefile`. Seperti service lain, semua langkah _pipeline_ nantinya memanggil target di _file_ ini:
+
+```make
+# Every pipeline step calls a target here, so CI and laptops run the same commands.
+SERVICE := notification
+
+.PHONY: run test build clean
+
+run:
+	HTTP_ADDR=:28083 \
+	DATABASE_URL=postgres://notification:notification123@localhost:15434/notification \
+	KAFKA_BROKERS=localhost:19092 \
+	KAFKA_TOPIC=transfer-events \
+	KAFKA_GROUP_ID=notification \
+	go run .
+
+test:
+	go vet ./...
+	go test ./...
+
+build:
+	CGO_ENABLED=0 go build -o bin/$(SERVICE) .
+
+clean:
+	rm -rf bin
+```
+
+==== Model dan _Schema_
+
+Kolom `event_id` di tabel `notification` sengaja belum dibuat unik. _Event_ yang dikirim ulang akan tersimpan dan dikirim lagi sebagai notifikasi ganda. Celah ini terlihat di bagian verifikasi dan ditutup di Lab 6.
+
+Buat `notification/internal/notification/schema.sql`:
+
+```sql
+-- One row per notification sent to the customer (here: logged).
+-- event_id is deliberately NOT unique yet: a redelivered event is stored and
+-- sent again. Lab 6 makes the consumer idempotent.
+create table if not exists notification (
+    id          bigint generated always as identity primary key,
+    event_id    uuid        not null,
+    transfer_id uuid        not null,
+    event_type  varchar(50) not null,
+    message     text        not null,
+    created_at  timestamptz not null default now()
+);
+
+create index if not exists notification_transfer on notification (transfer_id);
+```
+
+Buat `notification/internal/notification/notification.go`. Fungsi `Message` menyusun teks untuk nasabah berdasarkan jenis _event_. Jenis _event_ yang tidak dikenal ditandai `ok = false` dan dilewati oleh _consumer_:
+
+```go
+// Package notification tells customers about the outcome of their transfers. It
+// learns about transfers only from events on Kafka; it never calls the transfer
+// service.
+package notification
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/shopspring/decimal"
+)
+
+type Notification struct {
+	ID         int64     `json:"id"`
+	EventID    string    `json:"event_id"`
+	TransferID string    `json:"transfer_id"`
+	EventType  string    `json:"event_type"`
+	Message    string    `json:"message"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+// TransferEvent is the payload published by the transfer service. It is
+// declared here again, not imported: services share the message format (the
+// contract), not code. This side reads only the fields it needs.
+type TransferEvent struct {
+	EventID     string          `json:"event_id"`
+	TransferID  string          `json:"transfer_id"`
+	FromAccount string          `json:"from_account"`
+	ToAccount   string          `json:"to_account"`
+	Amount      decimal.Decimal `json:"amount"`
+	Status      string          `json:"status"`
+	OccurredAt  time.Time       `json:"occurred_at"`
+}
+
+// Message builds the customer-facing text for an event type. ok is false for an
+// event type this service does not notify about.
+func Message(eventType string, e TransferEvent) (msg string, ok bool) {
+	amount := e.Amount.StringFixed(2)
+	switch eventType {
+	case "TransferCompleted":
+		return fmt.Sprintf("Transfer %s dari %s ke %s berhasil.", amount, e.FromAccount, e.ToAccount), true
+	case "TransferFailed":
+		return fmt.Sprintf("Transfer %s dari %s ke %s gagal. Saldo tidak berubah.", amount, e.FromAccount, e.ToAccount), true
+	case "TransferCompensated":
+		return fmt.Sprintf("Transfer %s dari %s ke %s dibatalkan. Dana sudah dikembalikan ke %s.",
+			amount, e.FromAccount, e.ToAccount, e.FromAccount), true
+	}
+	return "", false
+}
+
+type Store interface {
+	Insert(ctx context.Context, n Notification) (Notification, error)
+	ListByTransfer(ctx context.Context, transferID string) ([]Notification, error)
+	Ping(ctx context.Context) error
+}
+```
+
+Buat `notification/internal/notification/store.go`:
+
+```go
+package notification
+
+import (
+	"context"
+	_ "embed"
+	"fmt"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+//go:embed schema.sql
+var schema string
+
+const columns = `id, event_id::text, transfer_id::text, event_type, message, created_at`
+
+type PostgresStore struct {
+	pool *pgxpool.Pool
+}
+
+// NewPostgresStore connects, verifies the connection, and applies the schema.
+func NewPostgresStore(ctx context.Context, databaseURL string) (*PostgresStore, error) {
+	pool, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse DATABASE_URL: %w", err)
+	}
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("connect to database: %w", err)
+	}
+	if _, err := pool.Exec(ctx, schema); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("apply schema: %w", err)
+	}
+	return &PostgresStore{pool: pool}, nil
+}
+
+func (s *PostgresStore) Close() { s.pool.Close() }
+
+func (s *PostgresStore) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }
+
+func (s *PostgresStore) Insert(ctx context.Context, n Notification) (Notification, error) {
+	rows, err := s.pool.Query(ctx, `
+		insert into notification (event_id, transfer_id, event_type, message)
+		values (@event_id, @transfer_id, @event_type, @message)
+		returning `+columns,
+		pgx.NamedArgs{"event_id": n.EventID, "transfer_id": n.TransferID, "event_type": n.EventType, "message": n.Message})
+	if err != nil {
+		return Notification{}, err
+	}
+	return pgx.CollectExactlyOneRow(rows, pgx.RowToStructByPos[Notification])
+}
+
+func (s *PostgresStore) ListByTransfer(ctx context.Context, transferID string) ([]Notification, error) {
+	rows, err := s.pool.Query(ctx,
+		`select `+columns+` from notification where transfer_id = @transfer_id order by id`,
+		pgx.NamedArgs{"transfer_id": transferID})
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowToStructByPos[Notification])
+}
+```
+
+==== _Consumer_ Kafka
+
+_Consumer_ menggunakan `kafka.Reader` dari kafka-go dengan `GroupID`. Kafka membagi _partition_ _topic_ ke anggota _group_. Dengan 3 _partition_, hingga tiga _instance_ dapat berbagi pekerjaan. _Group_ yang belum memiliki _committed offset_ mulai membaca dari _event_ paling awal (`kafka.FirstOffset`), sehingga _event_ yang terbit sebelum `notification` pertama kali dijalankan tidak terlewat.
+
+Urutan pemrosesan menentukan jaminan pengiriman. _Offset_ baru di-_commit_ setelah notifikasi tersimpan di database. Bila proses berhenti di antara kedua langkah tersebut, _event_ dikirim ulang setelah _restart_ (_at-least-once_) dan tidak pernah hilang. Konsekuensinya, _event_ yang sama dapat diterima lebih dari sekali, ditambah duplikasi dari _relay_ _outbox_ yang sudah dibahas sebelumnya.
+
+Dua jenis kegagalan ditangani dengan cara berbeda. Kafka atau database yang mati ditunggu hingga kembali aktif, dan service tidak berhenti. _Event_ yang tidak mungkin diproses, misalnya JSON rusak atau jenis _event_ yang tidak dikenal, dicatat di log lalu dilewati. Di sistem _production_, _event_ seperti ini dikirim ke _dead-letter topic_ untuk diperiksa seseorang.
+
+Tambahkan _dependency_ modul:
+
+#perintah[```bash
+cd notification
+go get github.com/segmentio/kafka-go@v0.4.51 github.com/jackc/pgx/v5@v5.11.0 \
+  github.com/google/uuid@v1.6.0 github.com/shopspring/decimal@v1.6.0
+cd ..
+```]
+
+Buat `notification/internal/notification/consumer.go`:
+
+```go
+package notification
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"time"
+
+	"github.com/segmentio/kafka-go"
+)
+
+// Reader is the part of kafka.Reader the consumer uses; tests can fake it.
+type Reader interface {
+	FetchMessage(ctx context.Context) (kafka.Message, error)
+	CommitMessages(ctx context.Context, msgs ...kafka.Message) error
+}
+
+// NewKafkaReader joins the consumer group. Kafka assigns the topic's partitions
+// to the group's members; with 3 partitions, up to 3 instances share the work.
+func NewKafkaReader(brokers []string, topic, groupID string) *kafka.Reader {
+	return kafka.NewReader(kafka.ReaderConfig{
+		Brokers: brokers,
+		Topic:   topic,
+		GroupID: groupID,
+		// Where a group without a committed offset starts: from the oldest event,
+		// so nothing published before the first start is missed.
+		StartOffset: kafka.FirstOffset,
+		// 0 = CommitMessages commits synchronously, at the moment we call it.
+		CommitInterval: 0,
+	})
+}
+
+type Consumer struct {
+	reader Reader
+	store  Store
+	log    *slog.Logger
+	// retryDelay is the pause before a failed fetch or insert is tried again.
+	retryDelay time.Duration
+}
+
+func NewConsumer(reader Reader, store Store, log *slog.Logger) *Consumer {
+	return &Consumer{reader: reader, store: store, log: log, retryDelay: time.Second}
+}
+
+// Run handles events one by one until ctx is cancelled. Kafka or database
+// outages are waited out, never a reason to stop.
+//
+// The offset is committed only AFTER the notification is stored: a crash in
+// between means the event is delivered again after the restart (at-least-once),
+// never that it is lost. The price is duplicates; together with the outbox
+// relay's own duplicate window this consumer does see the same event twice
+// sometimes. It is deliberately NOT idempotent yet: a redelivered event becomes
+// a second notification. Lab 6 fixes that.
+func (c *Consumer) Run(ctx context.Context) {
+	for {
+		m, err := c.reader.FetchMessage(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			// Kafka unreachable or the group rebalancing. Not a reason to stop the
+			// service: wait and fetch again; the committed offset says where.
+			c.log.Warn("fetching event failed, retrying", "error", err)
+			if !c.pause(ctx) {
+				return
+			}
+			continue
+		}
+		if err := c.handle(ctx, m); err != nil {
+			return // only ctx cancellation ends handle with an error
+		}
+		if err := c.reader.CommitMessages(ctx, m); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			// The notification is stored but Kafka does not know. The event comes
+			// again after a restart or rebalance: one more duplicate, nothing lost.
+			c.log.Warn("committing offset failed", "partition", m.Partition, "offset", m.Offset, "error", err)
+		}
+	}
+}
+
+// handle stores the notification for m. A database error is retried until it
+// succeeds: skipping the event would lose the notification, and moving on to
+// later events of the same partition would break their order. An event that can
+// never be processed (unreadable, unknown type) is logged and skipped; in
+// production it would go to a dead-letter topic for a person to look at.
+func (c *Consumer) handle(ctx context.Context, m kafka.Message) error {
+	eventType := header(m, "event_type")
+	log := c.log.With("event_type", eventType, "partition", m.Partition, "offset", m.Offset)
+
+	var e TransferEvent
+	if err := json.Unmarshal(m.Value, &e); err != nil || e.EventID == "" || e.TransferID == "" {
+		log.Error("skipping unreadable event", "error", err, "payload", string(m.Value))
+		return nil
+	}
+	msg, ok := Message(eventType, e)
+	if !ok {
+		log.Warn("skipping event type without notification", "event_id", e.EventID)
+		return nil
+	}
+
+	n := Notification{EventID: e.EventID, TransferID: e.TransferID, EventType: eventType, Message: msg}
+	for {
+		stored, err := c.store.Insert(ctx, n)
+		if err == nil {
+			// Stand-in for the real channel (SMS, push, e-mail).
+			log.Info("notification sent", "event_id", e.EventID, "transfer_id", e.TransferID,
+				"notification_id", stored.ID, "message", msg)
+			return nil
+		}
+		log.Warn("storing notification failed, retrying", "event_id", e.EventID, "error", err)
+		if !c.pause(ctx) {
+			return errors.Join(ctx.Err(), err)
+		}
+	}
+}
+
+// pause waits retryDelay and reports false when ctx ended first.
+func (c *Consumer) pause(ctx context.Context) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(c.retryDelay):
+		return true
+	}
+}
+
+func header(m kafka.Message, key string) string {
+	for _, h := range m.Headers {
+		if h.Key == key {
+			return string(h.Value)
+		}
+	}
+	return ""
+}
+```
+
+Kegagalan menyimpan ke database di-_retry_ terus-menerus dan tidak dilewati. Melewati _event_ berarti notifikasinya hilang, dan melanjutkan ke _event_ berikutnya di _partition_ yang sama akan merusak urutan. _Event_ yang dilewati karena tidak dapat dibaca tetap di-_commit_, agar tidak menghambat _partition_ selamanya.
+
+==== API HTTP dan `main.go`
+
+API `notification` hanya menyediakan `GET /notifications?transfer_id=...` beserta _probe_. Parameter `transfer_id` wajib diisi: daftar notifikasi seluruh nasabah tanpa filter tidak boleh bisa diminta oleh _channel_. _Readiness probe_ hanya memeriksa database. Selama Kafka mati, _consumer_ cukup menunggu, dan API tetap dapat menjawab dari database.
+
+Buat `notification/internal/notification/http.go`:
+
+```go
+package notification
+
+import (
+	"context"
+	"encoding/json"
+	"log/slog"
+	"net/http"
+	"time"
+
+	"github.com/google/uuid"
+)
+
+type Handler struct {
+	store Store
+	log   *slog.Logger
+}
+
+func NewHandler(store Store, log *slog.Logger) *Handler {
+	return &Handler{store: store, log: log}
+}
+
+func (h *Handler) Routes() *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /notifications", h.list)
+	mux.HandleFunc("GET /healthz", h.healthz)
+	mux.HandleFunc("GET /readyz", h.readyz)
+	return mux
+}
+
+// list answers GET /notifications?transfer_id=... The filter is required: an
+// unfiltered list of every customer's notifications is not something a channel
+// should be able to ask for.
+func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
+	transferID := r.URL.Query().Get("transfer_id")
+	if _, err := uuid.Parse(transferID); err != nil {
+		writeError(w, http.StatusBadRequest, "query parameter transfer_id must be a transfer ID (UUID)")
+		return
+	}
+	ns, err := h.store.ListByTransfer(r.Context(), transferID)
+	if err != nil {
+		h.log.Error("request failed", "method", r.Method, "path", r.URL.Path, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if ns == nil {
+		ns = []Notification{} // [] in JSON, not null
+	}
+	writeJSON(w, http.StatusOK, ns)
+}
+
+func (h *Handler) healthz(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "UP"})
+}
+
+// readyz checks the database only. Kafka is not checked: while it is down the
+// consumer simply waits, and the HTTP API can still answer from the database.
+func (h *Handler) readyz(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	if err := h.store.Ping(ctx); err != nil {
+		h.log.Warn("readiness check failed", "error", err)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "DOWN", "database": "DOWN"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "UP", "database": "UP"})
+}
+
+func writeError(w http.ResponseWriter, status int, msg string) {
+	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+func writeJSON(w http.ResponseWriter, status int, body any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(body)
+}
+```
+
+`main.go` menjalankan server HTTP dan _consumer_ sebagai dua _goroutine_. Saat berhenti, _consumer_ dihentikan terlebih dahulu, lalu `reader.Close()` (lewat `defer`) keluar dari _consumer group_, sehingga Kafka langsung menyerahkan _partition_ ke anggota lain tanpa menunggu _session timeout_. Buat `notification/main.go`:
+
+```go
+package main
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/artivisi/training-microservices-2026-01/studi-kasus/notification/internal/notification"
+)
+
+func main() {
+	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	if err := run(log); err != nil {
+		log.Error("notification service stopped", "error", err)
+		os.Exit(1)
+	}
+}
+
+func run(log *slog.Logger) error {
+	cfg, err := LoadConfig()
+	if err != nil {
+		return err
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	store, err := notification.NewPostgresStore(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	srv := &http.Server{
+		Addr:              cfg.HTTPAddr,
+		Handler:           notification.NewHandler(store, log).Routes(),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	// Close leaves the consumer group, so Kafka hands this instance's partitions
+	// to the remaining members right away instead of after a session timeout.
+	reader := notification.NewKafkaReader(cfg.KafkaBrokers, cfg.KafkaTopic, cfg.KafkaGroupID)
+	defer reader.Close()
+	consumerCtx, stopConsumer := context.WithCancel(context.Background())
+	defer stopConsumer()
+
+	errCh := make(chan error, 1)
+	go func() {
+		log.Info("notification service listening", "addr", cfg.HTTPAddr)
+		errCh <- srv.ListenAndServe()
+	}()
+	consumerDone := make(chan struct{})
+	go func() {
+		defer close(consumerDone)
+		log.Info("consuming events", "kafka_brokers", cfg.KafkaBrokers, "topic", cfg.KafkaTopic, "group", cfg.KafkaGroupID)
+		notification.NewConsumer(reader, store, log).Run(consumerCtx)
+	}()
+
+	select {
+	case err := <-errCh:
+		stopConsumer()
+		<-consumerDone
+		return err
+	case <-ctx.Done():
+		log.Info("shutting down")
+		// The event in progress is cut off before its offset commit, so it comes
+		// again on the next start: never lost, a duplicate if its insert went through.
+		stopConsumer()
+		<-consumerDone
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			return err
+		}
+		return nil
+	}
+}
+```
+
+_Test_ untuk `notification` menggunakan _fake reader_ dan _fake store_. Tiga _test_ di dalamnya memeriksa bahwa _consumer_ menunggu Kafka dan database yang mati lalu tetap meng-_commit_ _event_ yang dilewati, bahwa _event_ ganda masih menghasilkan dua notifikasi (celah yang ditutup Lab 6), dan bahwa parameter `transfer_id` divalidasi. Ambil _file_-nya dari _checkpoint_, lalu rapikan `go.mod` dan jalankan:
+
+#perintah[```bash
+git checkout lab-05 -- notification/internal/notification/consumer_test.go
+cd notification && go mod tidy && cd ..
+make -C notification test
+```]
+
+=== _Make Target_ untuk Lab 5
+
+Tiga target baru di `Makefile` (folder `studi-kasus`) membantu mengamati alur _event_ tanpa _tools_ tambahan di laptop. Semua perintah Kafka dijalankan di dalam _container_ `kafka` yang sudah membawa skrip-skrip Kafka:
+
+- `events` menampilkan seluruh isi _topic_ beserta _partition_, _header_, dan _key_-nya.
+- `outbox` menampilkan 20 baris `outbox` terbaru; `published_at` yang kosong berarti _event_ belum terkirim.
+- `replay` mengembalikan _offset_ _group_ `notification` ke awal _topic_, sehingga semua _event_ dikirim ulang. Kafka hanya mengizinkan _reset_ pada _group_ tanpa anggota aktif, sehingga `notification` harus dihentikan terlebih dahulu.
+
+Tambahkan `notification` ke daftar service agar `make test` ikut menjalankan _test_-nya, lalu tambahkan variabel dan target berikut:
+
+```make
+SERVICES := account transfer notification
+```
+
+```make
+KAFKA_TOPIC := transfer-events
+KAFKA_BIN := /opt/kafka/bin
+
+.PHONY: infra-up infra-down infra-reset test proto fault-slow fault-error fault-clear fault-status breaker \
+	events outbox replay
+```
+
+```make
+# Lab 5 helpers.
+
+# Prints every event on the topic with its partition, headers and key, then
+# exits after 5 s without new events (that exit is logged as a TimeoutException
+# by the console consumer; it is not an error).
+events:
+	docker compose exec kafka $(KAFKA_BIN)/kafka-console-consumer.sh --bootstrap-server localhost:19092 \
+		--topic $(KAFKA_TOPIC) --from-beginning --timeout-ms 5000 \
+		--property print.key=true --property print.headers=true --property print.partition=true
+
+# The newest outbox rows in the transfer database; published_at empty = not on Kafka yet.
+outbox:
+	docker compose exec db-transfer psql -U transfer -d transfer -c \
+		"select id, aggregate_id, event_type, created_at, published_at from outbox order by created_at desc limit 20"
+
+# Rewinds the notification consumer group to the first event, so every event is
+# delivered again. Kafka only resets a group without active members: stop the
+# notification service first.
+replay:
+	docker compose exec kafka $(KAFKA_BIN)/kafka-consumer-groups.sh --bootstrap-server localhost:19092 \
+		--group notification --topic $(KAFKA_TOPIC) --reset-offsets --to-earliest --execute
+```
+
+Baris `.PHONY` di atas menggantikan baris `.PHONY` yang lama. Target `events`, `outbox`, dan `replay` diletakkan di akhir _file_.
+
+== Verifikasi
+
+Jalankan seluruh _test_ terlebih dahulu:
+
+#perintah[```bash
+make test
+```]
+
+Semua paket di `proto`, `account`, `transfer`, dan `notification` harus berakhir `ok`.
+
+Jalankan infrastruktur, lalu ketiga service di tiga terminal terpisah (semuanya dari folder `studi-kasus`):
+
+#perintah[```bash
+make infra-up
+make -C account run        # terminal 1
+make -C transfer run       # terminal 2
+make -C notification run   # terminal 3
+```]
+
+Log `transfer` menampilkan `msg="outbox relay started" interval=500ms`. Log `notification` menampilkan `msg="consuming events"` dengan `group=notification`.
+
+Siapkan dua rekening. Bila rekening sudah ada dari lab sebelumnya, `account` menjawab `409` dan rekening tersebut dapat langsung digunakan. Periksa saldonya dengan `GET /accounts/{number}`.
+
+#perintah[```bash
+curl -sS -X POST localhost:28081/accounts -H 'Content-Type: application/json' \
+  -d '{"number":"1111111111","owner_name":"Budi","initial_balance":500000}'
+curl -sS -X POST localhost:28081/accounts -H 'Content-Type: application/json' \
+  -d '{"number":"2222222222","owner_name":"Siti","initial_balance":100000}'
+```]
+
+=== Transfer Berhasil
+
+#perintah[```bash
+curl -sS -X POST localhost:28082/transfers -H 'Content-Type: application/json' \
+  -d '{"from_account":"1111111111","to_account":"2222222222","amount":100000}'
+```]
+
+Respons HTTP `201` dengan `"status":"COMPLETED"`. Catat nilai `id` dari respons tersebut. Dalam waktu kurang dari satu detik, log `transfer` menampilkan `msg="outbox events published" count=1`, dan log `notification` menampilkan baris seperti berikut:
+
+#perintah[```
+level=INFO msg="notification sent" event_type=TransferCompleted partition=1 offset=0
+  event_id=... transfer_id=<id> notification_id=1
+  message="Transfer 100000.00 dari 1111111111 ke 2222222222 berhasil."
+```]
+
+Nomor _partition_ dan _offset_ dapat berbeda karena _partition_ ditentukan oleh _hash_ ID transfer. Periksa notifikasi lewat API `notification`, dengan `<id>` diganti ID transfer:
+
+#perintah[```bash
+curl -sS "localhost:28083/notifications?transfer_id=<id>"
+make outbox
+make events
+```]
+
+API `notification` mengembalikan satu notifikasi dengan `event_type` `TransferCompleted`. `make outbox` menampilkan baris `TransferCompleted` dengan `published_at` terisi. `make events` mencetak setiap _event_ dalam satu baris: nomor _partition_, _header_ `event_type` dan `event_id`, _key_ berupa ID transfer, lalu _payload_ JSON. Perintah tersebut berhenti setelah 5 detik tanpa _event_ baru dan mencatat `TimeoutException`. Log tersebut menandai _console consumer_ berhenti secara normal.
+
+=== Saldo Kurang
+
+#perintah[```bash
+curl -sS -X POST localhost:28082/transfers -H 'Content-Type: application/json' \
+  -d '{"from_account":"2222222222","to_account":"1111111111","amount":99000000}'
+```]
+
+Respons HTTP `422` dengan `"status":"FAILED"` dan `failure_reason` berisi `debit failed: debit 2222222222: insufficient funds`. `notification` mencatat `event_type=TransferFailed` dengan pesan `... gagal. Saldo tidak berubah.`
+
+=== Kompensasi
+
+Rekening tujuan yang tidak terdaftar membuat _credit_ gagal setelah _debit_ berhasil:
+
+#perintah[```bash
+curl -sS -X POST localhost:28082/transfers -H 'Content-Type: application/json' \
+  -d '{"from_account":"1111111111","to_account":"9999999999","amount":50000}'
+```]
+
+Respons HTTP `422` dengan `"status":"COMPENSATED"` dan `failure_reason` berisi `credit failed: credit 9999999999: account not found`. Log `transfer` menampilkan `msg="credit failed after debit, reversing the debit"`. Saldo `1111111111` tidak berubah dibandingkan sebelum transfer ini. Mutasi di `db-account` menunjukkan dua baris untuk transfer tersebut, yaitu _debit_ dengan `reference` berisi ID transfer dan _credit_ dengan `reference` berakhiran `:reversal`:
+
+#perintah[```bash
+docker compose exec db-account psql -U account -d account -c \
+  "select type, amount, reference from mutation where reference like '<id>%' order by id"
+```]
+
+`notification` mencatat `event_type=TransferCompensated` dengan pesan `... dibatalkan. Dana sudah dikembalikan ke 1111111111.`
+
+=== Kafka Mati
+
+Skenario ini menunjukkan manfaat _outbox_: transfer tetap berjalan meskipun Kafka mati, dan _event_ menunggu di database.
+
+#perintah[```bash
+docker compose stop kafka
+curl -sS -X POST localhost:28082/transfers -H 'Content-Type: application/json' \
+  -d '{"from_account":"1111111111","to_account":"2222222222","amount":10000}'
+make outbox
+```]
+
+Transfer tetap `COMPLETED` dengan HTTP `201`. Log `transfer` berulang kali menampilkan `msg="outbox publish failed, will retry"`, dan `make outbox` menampilkan baris terbaru dengan `published_at` kosong. Log `notification` menampilkan `msg="fetching event failed, retrying"`. Jalankan kembali Kafka:
+
+#perintah[```bash
+docker compose start kafka
+make outbox
+```]
+
+Setelah Kafka sehat, log `transfer` menampilkan `outbox events published` dan `published_at` terisi. `notification` membutuhkan waktu lebih lama, sekitar 15–20 detik, karena _consumer group_ harus bergabung ulang terlebih dahulu. Setelah itu notifikasi untuk transfer tersebut muncul di log.
+
+=== _Replay_ dan Notifikasi Ganda
+
+Skenario ini memperlihatkan celah yang ditutup di Lab 6. Hentikan `notification` dengan `Ctrl+C` di terminal 3, lalu kembalikan _offset_ _group_ ke awal:
+
+#perintah[```bash
+make replay
+```]
+
+Keluaran `make replay` berupa tabel dengan kolom `GROUP`, `TOPIC`, `PARTITION`, dan `NEW-OFFSET`, dengan `NEW-OFFSET` bernilai `0` untuk ketiga _partition_. Jalankan kembali `notification`:
+
+#perintah[```bash
+make -C notification run
+```]
+
+Log menampilkan `notification sent` untuk setiap _event_ yang pernah terbit. Periksa isi `db-notification`:
+
+#perintah[```bash
+docker compose exec db-notification psql -U notification -d notification -c \
+  "select count(*) as baris, count(distinct event_id) as event_unik from notification"
+```]
+
+Nilai `baris` sekarang dua kali `event_unik`: setiap _event_ tersimpan dua kali. `GET /notifications` untuk transfer pertama juga mengembalikan dua notifikasi dengan `event_id` yang sama.
+
+=== Kompensasi yang Gagal
+
+Skenario terakhir membutuhkan pengaturan waktu, karena _debit_ harus berhasil dan _credit_ harus gagal. _Delay_ 1,5 detik masih di bawah _timeout_ 2 detik, sehingga _debit_ berhasil. Satu detik kemudian, selagi _debit_ masih menunggu, `account` diubah agar menolak semua panggilan berikutnya:
+
+#perintah[```bash
+curl -sS -X PUT localhost:28081/admin/fault -d '{"delay_ms":1500,"error_rate":0}'
+curl -sS -X POST localhost:28082/transfers -H 'Content-Type: application/json' \
+  -d '{"from_account":"1111111111","to_account":"2222222222","amount":10000}' &
+sleep 1
+curl -sS -X PUT localhost:28081/admin/fault -d '{"delay_ms":0,"error_rate":1}'
+wait
+make fault-clear
+```]
+
+Transfer dijawab HTTP `500` dengan `"status":"COMPENSATION_FAILED"`. Log `transfer` menampilkan `level=ERROR msg="compensation failed, source account needs manual reversal"`. Tidak ada _event_ yang terbit untuk transfer ini, sehingga `notification` tidak mencatat apa pun. Saldo `1111111111` berkurang 10000 tanpa ada uang yang masuk ke `2222222222`.
+
+Setelah `make fault-clear`, _circuit breaker_ mungkin masih terbuka karena kegagalan beruntun tadi. Tunggu 10 detik, lalu periksa dengan `make breaker` hingga statusnya `closed` sebelum melanjutkan.
+
+== Masalah Umum
+
+*`missing required environment variables: KAFKA_BROKERS, KAFKA_TOPIC`.* `transfer` dijalankan dengan perintah lama. Jalankan dengan `make -C transfer run`, yang sudah memuat kedua variabel tersebut.
+
+*Log `transfer` terus menampilkan `outbox publish failed` dengan `Unknown Topic Or Partition`.* _Topic_ belum dibuat, misalnya karena Kafka dijalankan dengan `docker compose up` tanpa `make infra-up`. Buat _topic_ dengan `docker compose run --rm kafka-init`. Pembuatan _topic_ otomatis memang dimatikan, sehingga Kafka tidak membuatnya sendiri.
+
+*`make infra-up` gagal karena port 19092 sudah digunakan.* Ada program lain di laptop yang menggunakan port tersebut. Pada Linux dan macOS, `lsof -i :19092` menampilkan proses yang menggunakan port. Hentikan program tersebut selama lab berlangsung.
+
+*`make replay` gagal dengan pesan bahwa _group_ `notification` masih aktif (`Assignments can only be reset if the group 'notification' is inactive`).* `notification` masih berjalan. Hentikan dengan `Ctrl+C`, tunggu beberapa detik, lalu ulangi `make replay`.
+
+*`notification` tidak menerima _event_ baru setelah Kafka dijalankan ulang.* _Consumer group_ kafka-go membutuhkan sekitar 15–20 detik untuk bergabung ulang. Selama itu log menampilkan `fetching event failed, retrying`. Tunggu hingga log `notification sent` muncul.
+
+*Transfer pertama setelah `transfer` dijalankan terasa lambat, dan log menunjukkan percobaan ulang.* Di macOS, resolusi nama `localhost` untuk koneksi gRPC pertama dapat memakan waktu lebih dari 2 detik saat _cold start_, sehingga percobaan pertama terkena _timeout_. Di lab ini _timeout_ di-_retry_, sehingga transfer tetap berhasil. Bila gejala ini mengganggu, ganti `ACCOUNT_GRPC_ADDR=localhost:29091` menjadi `ACCOUNT_GRPC_ADDR=127.0.0.1:29091` di `transfer/Makefile`.
+
+*`make fault-slow` sekarang membuat transfer gagal jauh lebih lama dibandingkan Lab 4.* Perilaku ini memang diharapkan. _Timeout_ kini di-_retry_ hingga tiga kali, sehingga satu transfer menunggu sekitar empat kali 2 detik ditambah _backoff_ sebelum berakhir `FAILED`. Setelah beberapa transfer, _circuit breaker_ terbuka dan transfer berikutnya langsung ditolak dengan HTTP `503`.
+
+*Transfer berakhir di `COMPENSATION_FAILED` dan tidak bisa diperbaiki.* Lab ini tidak menyediakan _tools_ untuk mengulang pengembalian. Pengembalian yang aman adalah _credit_ ke rekening asal dengan `reference` `<transfer_id>:reversal`, karena `reference` yang sama menjamin _credit_ tersebut hanya diterapkan sekali. Untuk keperluan lab, data dapat dibersihkan dengan `make infra-reset` (seluruh data lab terhapus).
+
+*`make infra-down` menampilkan peringatan jaringan masih digunakan.* Ada sisa _container_ `kafka-init` dari versi `Makefile` yang lama. Pastikan target `infra-down` sudah menggunakan `docker compose --profile init down`.
+
+== Eksplorasi Mandiri
+
++ Jalankan dua _instance_ `notification` dengan `HTTP_ADDR` berbeda (misalnya `:28083` dan `:28084`), lalu kirim beberapa transfer. Amati nilai `partition` di log setiap _instance_: Kafka membagi tiga _partition_ di antara kedua _instance_. Hentikan salah satunya dan perhatikan _partition_ berpindah ke _instance_ yang tersisa.
++ Jalankan dua _instance_ `transfer` pada port berbeda, lalu kirim transfer bergantian ke keduanya selama Kafka mati. Setelah Kafka dijalankan kembali, periksa dengan `make events` bahwa setiap `event_id` hanya terbit sekali. Hubungkan hasilnya dengan `for update skip locked` di _relay_.
++ Aturan _idempotency_ di `account` hanya membandingkan `reference`. Ubah `PostgresStore.Mutate` agar panggilan ulang dengan `reference` yang sama tetapi nominal berbeda ditolak dengan `codes.InvalidArgument`. Tentukan bagaimana `transfer` sebaiknya memperlakukan jawaban tersebut.
++ Rancang _reconciliation job_ untuk transfer yang tertahan di `PENDING`, `DEBITED`, atau `COMPENSATION_FAILED`: query apa yang menemukan transfer tersebut, panggilan apa yang diulang dengan `reference` yang sama, dan status apa yang dituju setelahnya.
+
+== Checkpoint
+
+Kondisi kode di akhir lab ini tersedia di tag `lab-05`. Bandingkan hasil kerja dengan _checkpoint_, atau lanjutkan dari _checkpoint_ bila tertinggal:
+
+#perintah[```bash
+git diff lab-05 -- studi-kasus
+git checkout lab-05
+```]
