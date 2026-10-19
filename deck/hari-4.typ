@@ -592,7 +592,7 @@ kubectl -n bank rollout undo deploy/transfer
   side: [
     - Tidak ada `uses:`; setiap _step_ berupa perintah _shell_ biasa
     - Logika _build_ ada di `Makefile`, sehingga bisa dijalankan sama persis di laptop
-    - _Checkout_ menggunakan variabel dan token yang disediakan runner: `GITHUB_SERVER_URL`, `GITHUB_REPOSITORY`, `github.token`
+    - _Checkout_ berupa `git fetch` dengan token yang diterbitkan runner untuk job tersebut; isi lengkapnya ada di `.forgejo/workflows/transfer.yaml`
     - Memindahkan _pipeline_ ke runner CI lain cukup dengan menyalin urutan perintah yang sama
     - _Tag image_ = SHA _commit_, sehingga setiap _image_ bisa dilacak ke kode sumbernya
   ],
@@ -600,50 +600,50 @@ kubectl -n bank rollout undo deploy/transfer
 ```yaml
 on:
   push:
+    branches: [main]
     paths:
-      - "studi-kasus/transfer/**"
-      - "studi-kasus/proto/**"
+      - studi-kasus/transfer/**
+      - studi-kasus/proto/**
 jobs:
-  transfer:
-    runs-on: docker
+  pipeline:
+    runs-on: host
     env:
-      TOKEN: ${{ github.token }}
+      REGISTRY: ${{ vars.REGISTRY }}
+      IMAGE_OWNER: ${{ github.repository_owner }}
+      NAMESPACE: ${{ vars.NAMESPACE }}
       VERSION: ${{ github.sha }}
     steps:
-      - run: |   # checkout dengan perintah git
-          git -c http.extraHeader="Authorization: token $TOKEN" \
-            clone "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" src
-          git -C src checkout "$GITHUB_SHA"
-      - run: make -C src/studi-kasus/transfer test
-      - run: make -C src/studi-kasus/transfer image
-      - run: make -C src/studi-kasus/transfer push
-      - run: make -C src/studi-kasus/transfer deploy
+      - name: Checkout    # git fetch dengan token job
+        run: ...
+      - run: make -C studi-kasus/transfer test
+      - run: make -C studi-kasus/transfer image
+      - run: make -C studi-kasus/transfer push
+      - run: make -C studi-kasus/transfer deploy
 ```
 ]
 
 #code-slide(kicker: "Makefile", title: [Target `image`, `push`, `deploy`],
   side: [
-    - `REGISTRY`, `IMAGE_OWNER`, `VERSION`, `NAMESPACE` wajib diisi; target berhenti dengan pesan galat bila salah satunya kosong
+    - Target ini ada di `studi-kasus/pipeline.mk` dan di-_include_ oleh `Makefile` setiap service
+    - `REGISTRY`, `IMAGE_OWNER`, `VERSION`, `NAMESPACE` wajib diisi; target berhenti dengan pesan `missing required variables` bila ada yang kosong
     - Tidak ada _tag_ `latest`: _rollout_ selalu menunjuk versi yang pasti
     - `deploy` menunggu `rollout status`, sehingga _pipeline_ gagal bila _pod_ baru tidak pernah _ready_
   ],
 )[
 ```make
-IMAGE = $(REGISTRY)/$(IMAGE_OWNER)/transfer:$(VERSION)
-
-require = $(foreach v,$(1),$(if $($(v)),,$(error $(v) is required)))
+IMAGE = $(REGISTRY)/$(IMAGE_OWNER)/$(SERVICE):$(VERSION)
 
 image:
 	$(call require,REGISTRY IMAGE_OWNER VERSION)
-	# Dockerfile di studi-kasus/transfer, context studi-kasus/
+	# Dockerfile di studi-kasus/<service>, context studi-kasus/
 	docker build -f Dockerfile -t $(IMAGE) ..
 
 deploy:
 	$(call require,REGISTRY IMAGE_OWNER VERSION NAMESPACE)
 	kubectl -n $(NAMESPACE) set image \
-	  deploy/transfer transfer=$(IMAGE)
+	  deployment/$(SERVICE) $(SERVICE)=$(IMAGE)
 	kubectl -n $(NAMESPACE) rollout status \
-	  deploy/transfer --timeout=120s
+	  deployment/$(SERVICE) --timeout=180s
 ```
 ]
 
