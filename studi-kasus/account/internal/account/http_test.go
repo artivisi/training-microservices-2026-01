@@ -44,6 +44,23 @@ func (f *fakeStore) List(context.Context) ([]Account, error) {
 	return out, nil
 }
 
+func (f *fakeStore) Mutate(_ context.Context, number string, t MutationType, req MutationRequest) (Account, error) {
+	a, ok := f.accounts[number]
+	if !ok {
+		return Account{}, ErrNotFound
+	}
+	if t == Debit {
+		if a.Balance.LessThan(req.Amount) {
+			return Account{}, ErrInsufficientFunds
+		}
+		a.Balance = a.Balance.Sub(req.Amount)
+	} else {
+		a.Balance = a.Balance.Add(req.Amount)
+	}
+	f.accounts[number] = a
+	return a, nil
+}
+
 func (f *fakeStore) Ping(context.Context) error { return f.pingErr }
 
 func do(t *testing.T, h http.Handler, method, path, body string) *httptest.ResponseRecorder {
@@ -68,6 +85,11 @@ func TestAccountAPI(t *testing.T) {
 		{"get", "GET", "/accounts/1234567890", "", 200, `"owner_name":"Budi"`},
 		{"not found", "GET", "/accounts/0000000000", "", 404, "not found"},
 		{"wrong method", "DELETE", "/accounts/1234567890", "", 405, ""},
+		{"debit", "POST", "/accounts/1234567890/debit", `{"amount":"200000","reference":"T-1"}`, 200, `"balance":"300000"`},
+		{"credit", "POST", "/accounts/1234567890/credit", `{"amount":"50000","reference":"T-2"}`, 200, `"balance":"350000"`},
+		{"insufficient funds", "POST", "/accounts/1234567890/debit", `{"amount":"350000.01","reference":"T-3"}`, 422, "insufficient funds"},
+		{"debit unknown account", "POST", "/accounts/0000000000/debit", `{"amount":"1","reference":"T-4"}`, 404, "not found"},
+		{"invalid mutation", "POST", "/accounts/1234567890/credit", `{"amount":"0","reference":""}`, 400, `"amount":"must be greater than zero"`},
 		{"liveness", "GET", "/healthz", "", 200, "UP"},
 		{"readiness", "GET", "/readyz", "", 200, `"database":"UP"`},
 	}

@@ -1,4 +1,4 @@
-SERVICES := account
+SERVICES := account transfer
 
 .PHONY: infra-up infra-down infra-reset test
 
