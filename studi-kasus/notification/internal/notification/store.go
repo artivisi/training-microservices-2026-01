@@ -39,16 +39,40 @@ func (s *PostgresStore) Close() { s.pool.Close() }
 
 func (s *PostgresStore) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }
 
-func (s *PostgresStore) Insert(ctx context.Context, n Notification) (Notification, error) {
-	rows, err := s.pool.Query(ctx, `
+func (s *PostgresStore) Insert(ctx context.Context, n Notification) (Notification, bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Notification{}, false, err
+	}
+	defer tx.Rollback(ctx) // no-op after Commit
+
+	// The processed_event row goes in first, as the duplicate check. A second
+	// delivery of the same event being handled concurrently (another instance
+	// after a rebalance) waits on the primary key until this transaction ends,
+	// then sees the conflict: the notification is stored once.
+	tag, err := tx.Exec(ctx,
+		`insert into processed_event (event_id) values (@event_id) on conflict (event_id) do nothing`,
+		pgx.NamedArgs{"event_id": n.EventID})
+	if err != nil {
+		return Notification{}, false, err
+	}
+	if tag.RowsAffected() == 0 {
+		return Notification{}, false, nil
+	}
+
+	rows, err := tx.Query(ctx, `
 		insert into notification (event_id, transfer_id, event_type, message)
 		values (@event_id, @transfer_id, @event_type, @message)
 		returning `+columns,
 		pgx.NamedArgs{"event_id": n.EventID, "transfer_id": n.TransferID, "event_type": n.EventType, "message": n.Message})
 	if err != nil {
-		return Notification{}, err
+		return Notification{}, false, err
 	}
-	return pgx.CollectExactlyOneRow(rows, pgx.RowToStructByPos[Notification])
+	stored, err := pgx.CollectExactlyOneRow(rows, pgx.RowToStructByPos[Notification])
+	if err != nil {
+		return Notification{}, false, err
+	}
+	return stored, true, tx.Commit(ctx)
 }
 
 func (s *PostgresStore) ListByTransfer(ctx context.Context, transferID string) ([]Notification, error) {

@@ -47,27 +47,35 @@ func (f *fakeReader) CommitMessages(_ context.Context, msgs ...kafka.Message) er
 	return nil
 }
 
-// fakeStore fails the first failures inserts, then stores. An insert for an
-// event ID in reject fails with that error on every try.
+// fakeStore fails the first failures inserts, then stores each event once. An
+// insert for an event ID in reject fails with that error on every try.
 type fakeStore struct {
-	rows     []Notification
-	failures int
-	reject   map[string]error
-	inserts  int
+	rows      []Notification
+	processed map[string]bool
+	failures  int
+	reject    map[string]error
+	inserts   int
 }
 
-func (f *fakeStore) Insert(_ context.Context, n Notification) (Notification, error) {
+func (f *fakeStore) Insert(_ context.Context, n Notification) (Notification, bool, error) {
 	f.inserts++
 	if err := f.reject[n.EventID]; err != nil {
-		return Notification{}, err
+		return Notification{}, false, err
 	}
 	if f.failures > 0 {
 		f.failures--
-		return Notification{}, errors.New("database down")
+		return Notification{}, false, errors.New("database down")
 	}
+	if f.processed[n.EventID] {
+		return Notification{}, false, nil
+	}
+	if f.processed == nil {
+		f.processed = map[string]bool{}
+	}
+	f.processed[n.EventID] = true
 	n.ID = int64(len(f.rows) + 1)
 	f.rows = append(f.rows, n)
-	return n, nil
+	return n, true, nil
 }
 
 func (f *fakeStore) ListByTransfer(_ context.Context, transferID string) ([]Notification, error) {
@@ -132,13 +140,21 @@ func TestConsumerStoresAndCommits(t *testing.T) {
 	}
 }
 
-// Documents the gap Lab 6 closes: the same event delivered twice (relay
-// duplicate or replay) becomes two notifications.
-func TestConsumerIsNotIdempotentYet(t *testing.T) {
+// The same event delivered twice (relay duplicate or replay) becomes one
+// notification, and both deliveries are committed.
+func TestConsumerSkipsDuplicates(t *testing.T) {
 	store := &fakeStore{}
-	runConsumer(t, store, event(0, "TransferCompensated", eventID1), event(0, "TransferCompensated", eventID1))
+	reader := runConsumer(t, store,
+		event(0, "TransferCompensated", eventID1),
+		event(1, "TransferCompleted", eventID2),
+		event(0, "TransferCompensated", eventID1), // replay from the start
+		event(1, "TransferCompleted", eventID2),
+	)
 	if len(store.rows) != 2 {
-		t.Fatalf("rows = %d, want 2 (duplicate stored)", len(store.rows))
+		t.Fatalf("rows = %d, want 2 (duplicates skipped)", len(store.rows))
+	}
+	if fmt.Sprint(reader.committed) != "[0 1 0 1]" {
+		t.Fatalf("committed = %v, want [0 1 0 1]", reader.committed)
 	}
 }
 

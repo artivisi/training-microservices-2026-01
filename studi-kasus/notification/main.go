@@ -69,7 +69,8 @@ func run(log *slog.Logger) error {
 	case <-ctx.Done():
 		log.Info("shutting down")
 		// The event in progress is cut off before its offset commit, so it comes
-		// again on the next start: never lost, a duplicate if its insert went through.
+		// again on the next start: never lost, and skipped as a duplicate if its
+		// insert went through.
 		stopConsumer()
 		<-consumerDone
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

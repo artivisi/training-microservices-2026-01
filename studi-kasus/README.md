@@ -150,7 +150,7 @@ curl "localhost:28083/notifications?transfer_id=<id>"
 
 Konfigurasi: `HTTP_ADDR`, `DATABASE_URL`, `KAFKA_BROKERS`, `KAFKA_TOPIC`, `KAFKA_GROUP_ID`.
 
-`notification` di lab ini sengaja belum _idempotent_: _event_ yang dikirim ulang menghasilkan notifikasi ganda. Lab 6 memperbaikinya.
+Di Lab 5, `notification` sengaja belum _idempotent_: _event_ yang dikirim ulang menghasilkan notifikasi ganda. Lab 6 memperbaikinya.
 
 ### _Make target_
 
@@ -168,7 +168,56 @@ Skenario uji:
 | Saldo kurang | Nominal melebihi saldo | `FAILED`, HTTP 422 |
 | Kompensasi | `to_account` yang tidak terdaftar, misalnya `9999999999` | `COMPENSATED`, saldo asal kembali, dua mutasi di `db-account` |
 | Kafka mati | `docker compose stop kafka`, transfer, `make outbox`, `docker compose start kafka` | `published_at` kosong, terisi setelah Kafka aktif |
-| _Replay_ | Hentikan `notification`, `make replay`, jalankan lagi | Semua notifikasi tersimpan dua kali |
+| _Replay_ | Hentikan `notification`, `make replay`, jalankan lagi | Lab 5: semua notifikasi tersimpan dua kali. Mulai Lab 6: tidak ada notifikasi baru |
+
+## _Idempotency_ (Lab 6)
+
+### _Idempotent consumer_
+
+Tabel `processed_event` (`event_id` sebagai _primary key_) di `db-notification` mencatat setiap _event_ yang sudah diproses. Baris `processed_event` dan baris `notification` ditulis dalam satu transaksi. _Event_ dengan `event_id` yang sudah tercatat dilewati dengan log `duplicate event skipped`, lalu _offset_-nya tetap di-_commit_.
+
+Saat `notification` dijalankan, `event_id` dari notifikasi yang tersimpan di Lab 5 ikut dimasukkan ke `processed_event`. Notifikasi ganda dari Lab 5 tetap ada di tabel `notification`; _replay_ berikutnya tidak menambah baris baru.
+
+```
+make replay       # hentikan notification dulu, lalu jalankan lagi setelah replay
+make duplicates   # event dengan lebih dari satu notifikasi; kosong = tidak ada duplikat
+```
+
+### _Header_ `Idempotency-Key`
+
+`POST /transfers` menerima _header_ `Idempotency-Key` (1–100 karakter ASCII tanpa spasi, misalnya UUID dari klien). Nilainya disimpan di kolom `transfer.idempotency_key` dengan _unique index_. _Header_ ini opsional agar _request_ dari Lab 2–5 tetap berjalan; API _channel_ di _production_ mewajibkannya.
+
+| Kondisi | Respons |
+|---|---|
+| _Key_ baru | 201, _saga_ dijalankan seperti biasa |
+| _Key_ sama, _body_ sama | Transfer asli dalam status terkini, _header_ `Idempotent-Replayed: true`, _saga_ tidak dijalankan lagi. Kode HTTP sama dengan respons pertama untuk status tersebut (tabel berikut) |
+| _Key_ sama, _body_ berbeda (`from_account`, `to_account`, atau `amount`) | 422 |
+| Format _key_ salah | 400 |
+| Tanpa _header_ | 201, setiap _request_ menjadi transfer baru |
+
+Kode HTTP untuk _request_ yang diulang (_replay_):
+
+| Status tersimpan | Kode |
+|---|---|
+| `COMPLETED` | 201 |
+| `FAILED`, `COMPENSATED` | 422, 503, atau 502, sesuai penyebab di `failure_reason` (tabel respons Lab 5) |
+| `COMPENSATION_FAILED` | 500 |
+| `PENDING`, `DEBITED` | 202: transfer pertama masih berjalan; klien memeriksa `GET /transfers/{id}` |
+
+Dengan kode yang sama, klien yang mengulang _request_ karena respons pertama hilang mengambil keputusan yang sama seperti bila respons pertama sampai. Penyebab `FAILED` dan `COMPENSATED` dibaca kembali dari teks `failure_reason`, karena hanya kolom itu yang menyimpan penyebabnya.
+
+Baris yang tertinggal di `PENDING` atau `DEBITED` karena proses `transfer` mati di tengah _saga_ tidak akan dilanjutkan (lihat celah di Lab 5). `transfer` terus menjawab _replay_ untuk transfer seperti itu dengan 202 dan status yang sama.
+
+Nominal dibandingkan sebagai desimal: `"100000"` dan `"100000.00"` dianggap sama. _Request_ paralel dengan _key_ yang sama menghasilkan satu transfer.
+
+```
+curl -i -X POST localhost:28082/transfers -H 'Idempotency-Key: 7f9c2b1e-0d4a-4c1e-9b8f-1a2b3c4d5e6f' \
+  -d '{"from_account":"1111111111","to_account":"2222222222","amount":"100000"}'
+```
+
+Lingkup _key_ di lab ini global untuk semua klien dan tidak kedaluwarsa. Di _production_, _key_ biasanya dibatasi per klien dan dihapus setelah periode tertentu, misalnya 24 jam.
+
+Database dari Lab 5 tidak perlu di-_reset_: tabel `processed_event` dan kolom `idempotency_key` dibuat otomatis saat service dijalankan.
 
 ## Checkpoint
 

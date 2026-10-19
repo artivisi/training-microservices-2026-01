@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 )
 
 // ReversalSuffix marks the compensating credit. The reversal needs its own
@@ -38,11 +39,63 @@ func NewService(store Store, accounts AccountClient, log *slog.Logger) *Service 
 //
 // The returned error is the reason the transfer did not complete; the transfer
 // itself is returned whenever it was recorded.
-func (s *Service) Execute(ctx context.Context, req CreateRequest) (Transfer, error) {
-	t, err := s.store.Create(ctx, req)
+//
+// idempotencyKey (optional, from the Idempotency-Key header) makes a retried
+// request safe: when the key was seen before, the saga does not run again and
+// the original transfer is returned in whatever state it is now, with the
+// second result (replayed) true. The error is then the one the original request
+// ended with (see replayOutcome), so the HTTP layer answers the replay with the
+// same status code. A request still in progress comes back as PENDING or
+// DEBITED with ErrInProgress; the client polls GET /transfers/{id}.
+//
+// A row left PENDING or DEBITED by a crash (SIGKILL between two steps) is never
+// resumed: nothing in this lab picks it up again (see the gap in the Lab 5
+// README). A replay of its key keeps returning that state with ErrInProgress.
+func (s *Service) Execute(ctx context.Context, req CreateRequest, idempotencyKey string) (Transfer, bool, error) {
+	t, created, err := s.store.Create(ctx, req, idempotencyKey)
 	if err != nil {
-		return Transfer{}, fmt.Errorf("record transfer: %w", err)
+		return Transfer{}, false, fmt.Errorf("record transfer: %w", err)
 	}
+	if !created {
+		if !t.SameRequest(req) {
+			s.log.Warn("idempotency key reused with a different request",
+				"idempotency_key", idempotencyKey, "transfer_id", t.ID)
+			return Transfer{}, false, ErrIdempotencyKeyReused
+		}
+		s.log.Info("idempotent replay, returning the original transfer",
+			"idempotency_key", idempotencyKey, "transfer_id", t.ID, "status", t.Status)
+		return t, true, replayOutcome(t)
+	}
+	t, err = s.run(ctx, t)
+	return t, false, err
+}
+
+// replayOutcome rebuilds, from the stored transfer, the error the original
+// request ended with: nil for COMPLETED, ErrReversalFailed for
+// COMPENSATION_FAILED, ErrInProgress for PENDING and DEBITED. For FAILED and
+// COMPENSATED the cause is only kept as text in failure_reason ("debit failed:
+// debit 1111111111: insufficient funds"); the account client wraps the
+// sentinels last, so the reason ends with the sentinel's message. Anything else
+// was a dependency failure, the 502 of the original request.
+func replayOutcome(t Transfer) error {
+	switch t.Status {
+	case Completed:
+		return nil
+	case Pending, Debited:
+		return ErrInProgress
+	case CompensationFailed:
+		return fmt.Errorf("%w: %s", ErrReversalFailed, t.FailureReason)
+	}
+	for _, cause := range []error{ErrAccountNotFound, ErrInsufficientFunds, ErrAccountUnavailable} {
+		if strings.HasSuffix(t.FailureReason, ": "+cause.Error()) {
+			return fmt.Errorf("%s: %w", t.Status, cause)
+		}
+	}
+	return fmt.Errorf("%s: %s", t.Status, t.FailureReason)
+}
+
+// run executes the saga steps on a freshly recorded transfer.
+func (s *Service) run(ctx context.Context, t Transfer) (Transfer, error) {
 
 	if err := s.accounts.Debit(ctx, t.FromAccount, t.Amount, t.ID); err != nil {
 		// Known gap: when every attempt timed out, the debit may still have been

@@ -36,34 +36,69 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "fields": err})
 		return
 	}
+	// Optional here so the requests of Labs 2-5 keep working. A channel-facing
+	// payment API in production makes it required: without it, a client that
+	// retries after a lost response cannot tell whether it pays twice.
+	key := r.Header.Get("Idempotency-Key")
+	if key != "" {
+		if err := ValidateIdempotencyKey(key); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "fields": err})
+			return
+		}
+	}
 	// WithoutCancel: a client that disconnects must not abort a transfer halfway,
 	// e.g. between the debit and the credit.
-	t, err := h.svc.Execute(context.WithoutCancel(r.Context()), req)
+	t, replayed, err := h.svc.Execute(context.WithoutCancel(r.Context()), req, key)
 	switch {
-	case err == nil:
-		w.Header().Set("Location", "/transfers/"+t.ID)
-		writeJSON(w, http.StatusCreated, t)
+	case errors.Is(err, ErrIdempotencyKeyReused):
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
 	case t.ID == "":
 		h.internalError(w, r, err)
+		return
+	}
+	if replayed {
+		// A replay answers with the status code the original request got for the
+		// stored state, so a client whose first response was lost decides the same
+		// way. The header tells it nothing was executed this time.
+		w.Header().Set("Idempotent-Replayed", "true")
+	}
+	status := createStatus(err)
+	if status == http.StatusCreated || status == http.StatusAccepted {
+		w.Header().Set("Location", "/transfers/"+t.ID)
+	}
+	writeJSON(w, status, t)
+}
+
+// createStatus maps the outcome of a recorded transfer to the HTTP status of
+// POST /transfers, for a first request and a replay alike.
+func createStatus(err error) int {
+	switch {
+	case err == nil:
+		return http.StatusCreated
+	case errors.Is(err, ErrInProgress):
+		// Replay only: the original request is still running (or was cut off by a
+		// crash, see Service.Execute).
+		return http.StatusAccepted
 	case errors.Is(err, ErrReversalFailed):
 		// Checked first: the source account is debited and the reversal did not go
 		// through (COMPENSATION_FAILED, also when that state itself could not be
 		// stored). Money is stuck on our side, whatever the account service
 		// answered: this is our failure, not the caller's, and never a 503 or 422
 		// that would invite a retry.
-		writeJSON(w, http.StatusInternalServerError, t)
+		return http.StatusInternalServerError
 	case errors.Is(err, ErrAccountNotFound), errors.Is(err, ErrInsufficientFunds):
 		// Includes COMPENSATED when the destination account does not exist.
-		writeJSON(w, http.StatusUnprocessableEntity, t)
+		return http.StatusUnprocessableEntity
 	case errors.Is(err, ErrAccountUnavailable):
 		// The open breaker refused the debit (FAILED), or refused the credit and the
 		// debit was reversed (COMPENSATED). Either way no money moved: 503 tells the
 		// caller it is safe to come back later.
-		writeJSON(w, http.StatusServiceUnavailable, t)
+		return http.StatusServiceUnavailable
 	default:
 		// Recorded but not completed because a dependency failed (FAILED or
 		// COMPENSATED).
-		writeJSON(w, http.StatusBadGateway, t)
+		return http.StatusBadGateway
 	}
 }
 

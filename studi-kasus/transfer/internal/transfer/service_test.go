@@ -16,15 +16,26 @@ import (
 // with each transition.
 type fakeStore struct {
 	transfers map[string]Transfer
+	keys      map[string]string // idempotency key -> transfer ID
 	events    []EventType
 	seq       int
 }
 
-func (f *fakeStore) Create(_ context.Context, req CreateRequest) (Transfer, error) {
+func newFakeStore() *fakeStore {
+	return &fakeStore{transfers: map[string]Transfer{}, keys: map[string]string{}}
+}
+
+func (f *fakeStore) Create(_ context.Context, req CreateRequest, key string) (Transfer, bool, error) {
+	if id, ok := f.keys[key]; ok && key != "" {
+		return f.transfers[id], false, nil
+	}
 	f.seq++
 	t := Transfer{ID: fmt.Sprint(f.seq), FromAccount: req.FromAccount, ToAccount: req.ToAccount, Amount: req.Amount, Status: Pending}
 	f.transfers[t.ID] = t
-	return t, nil
+	if key != "" {
+		f.keys[key] = t.ID
+	}
+	return t, true, nil
 }
 
 func (f *fakeStore) Transition(_ context.Context, id string, from, to Status, reason string, event EventType) (Transfer, error) {
@@ -115,11 +126,11 @@ func TestExecuteSaga(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			store := &fakeStore{transfers: map[string]Transfer{}}
+			store := newFakeStore()
 			accounts := &fakeAccounts{errs: tc.errs}
 			svc := NewService(store, accounts, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
-			got, err := svc.Execute(context.Background(), req)
+			got, _, err := svc.Execute(context.Background(), req, "")
 			if !errors.Is(err, tc.wantErr) || (tc.wantErr == nil && err != nil) {
 				t.Fatalf("err = %v, want %v", err, tc.wantErr)
 			}
@@ -136,6 +147,76 @@ func TestExecuteSaga(t *testing.T) {
 				t.Fatalf("outbox events = %v, want %v", store.events, tc.wantEvents)
 			}
 		})
+	}
+}
+
+func TestExecuteIdempotencyKey(t *testing.T) {
+	req := CreateRequest{FromAccount: "1111111111", ToAccount: "2222222222", Amount: decimal.RequireFromString("100000")}
+	store := newFakeStore()
+	accounts := &fakeAccounts{}
+	svc := NewService(store, accounts, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ctx := context.Background()
+
+	first, replayed, err := svc.Execute(ctx, req, "key-1")
+	if err != nil || replayed || first.Status != Completed {
+		t.Fatalf("first: %+v replayed=%v err=%v, want COMPLETED", first, replayed, err)
+	}
+
+	// Same key, same body written differently: the original, no new account calls.
+	same := req
+	same.Amount = decimal.RequireFromString("100000.00")
+	again, replayed, err := svc.Execute(ctx, same, "key-1")
+	if err != nil || !replayed || again.ID != first.ID {
+		t.Fatalf("replay: %+v replayed=%v err=%v, want transfer %s replayed", again, replayed, err, first.ID)
+	}
+	if len(accounts.calls) != 2 {
+		t.Fatalf("account calls = %q, want only the first transfer's debit and credit", accounts.calls)
+	}
+
+	// Same key, different body.
+	other := req
+	other.Amount = decimal.RequireFromString("5")
+	if _, _, err := svc.Execute(ctx, other, "key-1"); !errors.Is(err, ErrIdempotencyKeyReused) {
+		t.Fatalf("err = %v, want ErrIdempotencyKeyReused", err)
+	}
+
+	// Without a key every request is a new transfer.
+	a, _, _ := svc.Execute(ctx, req, "")
+	b, _, _ := svc.Execute(ctx, req, "")
+	if a.ID == b.ID || a.ID == first.ID {
+		t.Fatalf("ids %s, %s, %s: want three different transfers", first.ID, a.ID, b.ID)
+	}
+}
+
+// TestReplayOutcome: a replay gets back the error class of the original
+// request, rebuilt from the stored status and failure_reason.
+func TestReplayOutcome(t *testing.T) {
+	tests := []struct {
+		status Status
+		reason string
+		want   error
+	}{
+		{Completed, "", nil},
+		{Pending, "", ErrInProgress},
+		{Debited, "", ErrInProgress},
+		{Failed, "debit failed: debit 1111111111: insufficient funds", ErrInsufficientFunds},
+		{Failed, "debit failed: debit 1111111111: account service unavailable", ErrAccountUnavailable},
+		{Compensated, "credit failed: credit 9999999999: account not found", ErrAccountNotFound},
+		{Compensated, "credit failed: credit 2222222222: account service unavailable", ErrAccountUnavailable},
+		{CompensationFailed, "credit failed: x; reversal failed: y", ErrReversalFailed},
+	}
+	for _, tc := range tests {
+		err := replayOutcome(Transfer{Status: tc.status, FailureReason: tc.reason})
+		if !errors.Is(err, tc.want) || (tc.want == nil && err != nil) {
+			t.Errorf("%s %q: err = %v, want %v", tc.status, tc.reason, err, tc.want)
+		}
+	}
+	// A transport failure maps to none of the sentinels: the 502 of the original.
+	err := replayOutcome(Transfer{Status: Failed, FailureReason: "debit failed: debit 1111111111: rpc error: code = Unavailable"})
+	for _, s := range []error{ErrAccountNotFound, ErrInsufficientFunds, ErrAccountUnavailable, ErrReversalFailed, ErrInProgress} {
+		if err == nil || errors.Is(err, s) {
+			t.Fatalf("transport failure: err = %v, want a plain error", err)
+		}
 	}
 }
 
