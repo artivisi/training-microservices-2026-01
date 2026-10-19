@@ -10,7 +10,7 @@ KAFKA_TOPIC := transfer-events
 KAFKA_BIN := /opt/kafka/bin
 
 .PHONY: infra-up infra-down infra-reset test proto fault-slow fault-error fault-clear fault-status breaker \
-	events outbox replay
+	events outbox replay duplicates
 
 # kafka-init creates the topic (idempotent: --if-not-exists).
 infra-up:
@@ -76,3 +76,9 @@ outbox:
 replay:
 	docker compose exec kafka $(KAFKA_BIN)/kafka-consumer-groups.sh --bootstrap-server localhost:9092 \
 		--group notification --topic $(KAFKA_TOPIC) --reset-offsets --to-earliest --execute
+
+# Lab 6: events with more than one notification. Empty after a replay = the
+# consumer is idempotent. Rows from Lab 5 (before processed_event) stay listed.
+duplicates:
+	docker compose exec db-notification psql -U notification -d notification -c \
+		"select event_id, event_type, count(*) as notifications from notification group by event_id, event_type having count(*) > 1"

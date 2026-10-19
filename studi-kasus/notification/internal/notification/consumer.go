@@ -53,8 +53,9 @@ func NewConsumer(reader Reader, store Store, log *slog.Logger) *Consumer {
 // between means the event is delivered again after the restart (at-least-once),
 // never that it is lost. The price is duplicates; together with the outbox
 // relay's own duplicate window this consumer does see the same event twice
-// sometimes. It is deliberately NOT idempotent yet: a redelivered event becomes
-// a second notification. Lab 6 fixes that.
+// sometimes. It is idempotent (Lab 6): the store remembers every processed
+// event_id, and a redelivered event is skipped instead of notifying twice.
+// at-least-once delivery + idempotent processing = each effect exactly once.
 func (c *Consumer) Run(ctx context.Context) {
 	for {
 		m, err := c.reader.FetchMessage(ctx)
@@ -78,7 +79,7 @@ func (c *Consumer) Run(ctx context.Context) {
 				return
 			}
 			// The notification is stored but Kafka does not know. The event comes
-			// again after a restart or rebalance: one more duplicate, nothing lost.
+			// again after a restart or rebalance and is skipped as a duplicate.
 			c.log.Warn("committing offset failed", "partition", m.Partition, "offset", m.Offset, "error", err)
 		}
 	}
@@ -121,9 +122,19 @@ func (c *Consumer) handle(ctx context.Context, m kafka.Message) error {
 
 	n := Notification{EventID: e.EventID, TransferID: e.TransferID, EventType: eventType, Message: msg}
 	for {
-		stored, err := c.store.Insert(ctx, n)
+		stored, inserted, err := c.store.Insert(ctx, n)
+		if err == nil && !inserted {
+			// The offset is still committed by Run: the event is done, its
+			// redelivery must not block the partition.
+			log.Info("duplicate event skipped", "event_id", e.EventID, "transfer_id", e.TransferID)
+			return nil
+		}
 		if err == nil {
-			// Stand-in for the real channel (SMS, push, e-mail).
+			// Stand-in for the real channel (SMS, push, e-mail). A real channel call
+			// is outside the database transaction: send after commit and a crash in
+			// between loses the message; send before commit and it may go twice. With
+			// a provider that accepts an idempotency key (the event_id), sending
+			// before the commit is safe.
 			log.Info("notification sent", "event_id", e.EventID, "transfer_id", e.TransferID,
 				"notification_id", stored.ID, "message", msg)
 			return nil

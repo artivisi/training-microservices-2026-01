@@ -50,7 +50,10 @@ func Message(eventType string, e TransferEvent) (msg string, ok bool) {
 }
 
 type Store interface {
-	Insert(ctx context.Context, n Notification) (Notification, error)
+	// Insert stores the notification and marks its event as processed, in one
+	// transaction. inserted is false, and nothing is stored, when the event was
+	// processed before.
+	Insert(ctx context.Context, n Notification) (stored Notification, inserted bool, err error)
 	ListByTransfer(ctx context.Context, transferID string) ([]Notification, error)
 	Ping(ctx context.Context) error
 }

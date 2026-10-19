@@ -59,12 +59,22 @@ func (s *PostgresStore) Pool() *pgxpool.Pool { return s.pool }
 
 func (s *PostgresStore) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }
 
-func (s *PostgresStore) Create(ctx context.Context, req CreateRequest) (Transfer, error) {
-	return one(ctx, s.pool, `
-		insert into transfer (from_account, to_account, amount, status)
-		values (@from, @to, @amount, 'PENDING')
+func (s *PostgresStore) Create(ctx context.Context, req CreateRequest, idempotencyKey string) (Transfer, bool, error) {
+	// "on conflict do nothing" + no row returned = the key exists. A concurrent
+	// request with the same key waits on the unique index until the first insert
+	// commits, then takes this path too: one transfer per key, even under a race.
+	t, err := one(ctx, s.pool, `
+		insert into transfer (from_account, to_account, amount, status, idempotency_key)
+		values (@from, @to, @amount, 'PENDING', nullif(@key, ''))
+		on conflict (idempotency_key) do nothing
 		returning `+columns,
-		pgx.NamedArgs{"from": req.FromAccount, "to": req.ToAccount, "amount": req.Amount})
+		pgx.NamedArgs{"from": req.FromAccount, "to": req.ToAccount, "amount": req.Amount, "key": idempotencyKey})
+	if errors.Is(err, ErrNotFound) && idempotencyKey != "" {
+		existing, err := one(ctx, s.pool, `select `+columns+` from transfer where idempotency_key = @key`,
+			pgx.NamedArgs{"key": idempotencyKey})
+		return existing, false, err
+	}
+	return t, err == nil, err
 }
 
 func (s *PostgresStore) Transition(ctx context.Context, id string, from, to Status, reason string, event EventType) (Transfer, error) {

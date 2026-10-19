@@ -33,3 +33,12 @@ create table if not exists outbox (
 -- The relay only ever looks for unpublished rows; a partial index stays small
 -- however many published rows pile up.
 create index if not exists outbox_unpublished on outbox (created_at) where published_at is null;
+
+-- Idempotency key (Lab 6): the value of the Idempotency-Key header of POST
+-- /transfers. A channel that retries a request whose answer it never got
+-- (timeout, dropped connection) sends the same key again and gets the original
+-- transfer back instead of a second debit. NULL for requests without the
+-- header; PostgreSQL treats NULLs as distinct, so they never collide on the
+-- unique index.
+alter table transfer add column if not exists idempotency_key varchar(100);
+create unique index if not exists transfer_idempotency_key on transfer (idempotency_key);
