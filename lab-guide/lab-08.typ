@@ -177,11 +177,11 @@ Ketiga service membutuhkan dua variabel baru. Nama variabel mengikuti standar Op
 #table(
   columns: (auto, auto, 1fr),
   [Variabel], [Nilai di Laptop], [Keterangan],
-  [`OTEL_EXPORTER_OTLP_ENDPOINT`], [`http://localhost:14317`], [Alamat OTLP gRPC _collector_, wajib berbentuk URL `http://host:port` atau `https://host:port`],
+  [`OTEL_EXPORTER_OTLP_ENDPOINT`], [`http://localhost:14317`], [Alamat OTLP gRPC _collector_, wajib berbentuk URL `http://host:port` atau `https://host:port` dengan port tertulis],
   [`OTEL_SERVICE_NAME`], [`account`, `transfer`, `notification`], [Nama service di Tempo dan Loki],
 )
 
-Pemeriksaan format URL diperlukan karena _exporter_ OTLP mengabaikan nilai yang formatnya salah lalu mengirim ke alamat bawaan tanpa peringatan apa pun. Akibatnya service tampak normal, tetapi _trace_ tidak pernah sampai. Tambahkan di `Config` pada `transfer/config.go`:
+Pemeriksaan format URL diperlukan karena _exporter_ OTLP mengabaikan nilai yang formatnya salah lalu mengirim ke alamat bawaan tanpa peringatan apa pun. Akibatnya service tampak normal, tetapi _trace_ tidak pernah sampai. Port juga wajib ditulis. Untuk URL tanpa port, misalnya `http://localhost`, gRPC menghubungi port 443, sehingga service tetap berjalan tetapi setiap _export_ gagal setelah _startup_. Tambahkan di `Config` pada `transfer/config.go`:
 
 ```go
 	// Lab 8: the OpenTelemetry collector's OTLP gRPC endpoint as a URL
@@ -207,11 +207,15 @@ Lalu di `LoadConfig`, isi kedua _field_ dengan fungsi `get` yang sudah ada dan p
 
 // checkEndpointURL rejects anything but scheme://host:port. The OTLP exporter
 // would otherwise ignore a malformed value and silently send to its built-in
-// default address.
+// default address. The port is required too: without it gRPC dials port 443,
+// and http://localhost (no port) would fail on every export, not at startup.
 func checkEndpointURL(name, v string) error {
 	u, err := url.Parse(v)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
 		return fmt.Errorf("%s must be a URL like http://localhost:14317, got %q", name, v)
+	}
+	if u.Port() == "" {
+		return fmt.Errorf("%s must name the port explicitly, like http://localhost:14317, got %q", name, v)
 	}
 	return nil
 }
@@ -307,8 +311,13 @@ func Setup(ctx context.Context, serviceName, otlpEndpoint string) (*Telemetry, e
 	otel.SetTracerProvider(tp)
 	// W3C Trace Context: the traceparent header (HTTP), metadata (gRPC) and
 	// Kafka header that carry the trace from one service to the next.
-	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
-		propagation.TraceContext{}, propagation.Baggage{}))
+	//
+	// Baggage is left out on purpose: it would accept arbitrary key-value pairs
+	// from any caller of the channel-facing REST API and forward them to every
+	// service downstream. A public edge (API gateway, the first service behind
+	// it) often also ignores an incoming traceparent and starts a new trace, so
+	// an outside caller cannot pick trace IDs or force sampling.
+	otel.SetTextMapPropagator(propagation.TraceContext{})
 
 	logExp, err := otlploggrpc.New(ctx, otlploggrpc.WithEndpointURL(otlpEndpoint))
 	if err != nil {
@@ -331,7 +340,9 @@ func (t *Telemetry) Shutdown(ctx context.Context) error {
 }
 ```
 
-Tiga hal perlu diperhatikan. `slog.NewMultiHandler` (tersedia sejak Go 1.26) meneruskan setiap _record_ ke dua _handler_ sekaligus: _stdout_ untuk `docker logs` atau `kubectl logs`, dan `otelslog` untuk Loki. _Sampler_ `AlwaysSample` menyimpan semua _trace_, cocok untuk lab dengan beberapa _request_ per detik; di _production_ biaya penyimpanan _trace_ bisa melebihi biaya service itu sendiri bila semua disimpan. Terakhir, `Shutdown` harus dipanggil paling akhir agar _span_ dan log dari proses _shutdown_ ikut terkirim.
+Empat hal perlu diperhatikan. _Propagator_ hanya berisi `propagation.TraceContext{}`, sehingga yang berpindah antar-service hanya `traceparent` (dan `tracestate` bila ada): di _header_ HTTP, _metadata_ gRPC, _header_ Kafka, dan kolom `trace_context` di tabel `outbox`. _Baggage_ (W3C _Baggage_, pasangan _key-value_ bebas yang ikut berpindah bersama _trace_) sengaja tidak dipasang. REST API `transfer` dipanggil aplikasi _channel_ dari luar, sehingga _baggage_ dari pemanggil luar akan diteruskan ke setiap service di belakangnya. Di _production_, _public edge_ (API _gateway_ atau service pertama di belakangnya) sering juga mengabaikan `traceparent` dari luar dan memulai _trace_ baru, agar pemanggil luar tidak dapat menentukan _trace ID_ atau memaksa _sampling_. Lab ini tetap menerima `traceparent` dari pemanggil agar peserta dapat mengikuti satu _trace_.
+
+`slog.NewMultiHandler` (tersedia sejak Go 1.26) meneruskan setiap _record_ ke dua _handler_ sekaligus: _stdout_ untuk `docker logs` atau `kubectl logs`, dan `otelslog` untuk Loki. _Sampler_ `AlwaysSample` menyimpan semua _trace_, cocok untuk lab dengan beberapa _request_ per detik; di _production_ biaya penyimpanan _trace_ bisa melebihi biaya service itu sendiri bila semua disimpan. Terakhir, `Shutdown` harus dipanggil paling akhir agar _span_ dan log dari proses _shutdown_ ikut terkirim.
 
 ==== `log.go`: ID di setiap baris log
 
@@ -684,11 +695,12 @@ Tambahkan _import_ `promhttp`, `otelhttp`, `golang.org/x/oauth2`, dan paket `tel
 
 === Telemetri pada Client gRPC dan _Circuit Breaker_
 
-Di `transfer/internal/accountclient/client.go`, client gRPC mendapat tiga tambahan. _Interceptor_ `UnaryClientCorrelation` ditaruh paling depan di rantai _interceptor_ agar _correlation ID_ ditambahkan satu kali, sebelum _token_ dan kebijakan _resiliency_. `otelgrpc.NewClientHandler` dipasang sebagai _stats handler_, sehingga setiap percobaan, termasuk setiap _retry_, menjadi satu _span_ tersendiri. Ganti bagian opsi `grpc.NewClient`:
+Di `transfer/internal/accountclient/client.go`, client gRPC mendapat tiga tambahan. _Interceptor_ `UnaryClientCorrelation` ditaruh paling depan di rantai _interceptor_ agar _correlation ID_ ditambahkan satu kali, sebelum _token_ dan kebijakan _resiliency_. `otelgrpc.NewClientHandler` dipasang sebagai _stats handler_, sehingga setiap percobaan, termasuk setiap _retry_, menjadi satu _span_ tersendiri. Kedua opsi ini ditambahkan di fungsi `dial`, sehingga berlaku untuk koneksi utama (`Debit`, `Credit`) maupun koneksi _reversal_ dari Lab 5. Ganti bagian opsi di `dial`:
 
 ```go
 		grpc.WithPerRPCCredentials(tokens),
-		// First interceptor = outermost. The correlation ID is added once,
+		// First interceptor = outermost: a call repeated with a new token goes
+		// through the resiliency policies again. The correlation ID is added once,
 		// before all of them.
 		grpc.WithChainUnaryInterceptor(telemetry.UnaryClientCorrelation(),
 			tokens.refreshOnUnauthenticated, resilience),
@@ -741,12 +753,21 @@ Perbarui kedua _metric_ di `OnStateChanged` dan isi nilai awal _gauge_ setelah `
 	breakerState.WithLabelValues("account").Set(stateValue(breaker.State()))
 ```
 
-Log _retry_ diubah menjadi `WarnContext` dengan _context_ percobaan, agar baris log tersebut muncul di bawah _trace_ transfer yang sama:
+Log _retry_ di kedua kebijakan diubah menjadi `WarnContext` dengan _context_ percobaan, agar baris log tersebut muncul di bawah _trace_ transfer yang sama. Di kebijakan `retry`:
 
 ```go
 		OnRetry(func(e failsafe.ExecutionEvent[any]) {
 			log.WarnContext(e.Context(), "retrying account call",
 				"next_attempt", e.Attempts(), "cause", e.LastError())
+		}).
+```
+
+Di kebijakan `reversalRetry`:
+
+```go
+		OnRetry(func(e failsafe.ExecutionEvent[any]) {
+			log.WarnContext(e.Context(), "retrying reversal", "next_attempt",
+				e.Attempts(), "elapsed", e.ElapsedTime(), "cause", e.LastError())
 		}).
 ```
 
@@ -990,6 +1011,7 @@ _Import_ yang ditambahkan: `prometheus`, `promauto`, `go.opentelemetry.io/otel`,
 
 #perintah[```bash
 git checkout lab-08 -- \
+  transfer/config_test.go \
   transfer/internal/telemetry/telemetry_test.go \
   transfer/internal/outbox/outbox_test.go \
   transfer/internal/accountclient/client_test.go \
@@ -1111,12 +1133,13 @@ Di `account/main.go`, lakukan perubahan yang sama dengan `transfer`: _logger_ JS
 
 Urutan rantai ini menentukan hasil pengukuran. `UnaryServerCorrelation` berada paling depan agar semua _interceptor_ berikutnya menulis log dengan _correlation ID_. `Metrics` berada sebelum `auth` dan _fault injector_, sehingga durasi yang tercatat mencakup penolakan dan _delay_ simulasi, sama seperti yang dialami pemanggil.
 
-Ubah juga log di dalam penanganan _request_ menjadi varian `...Context`: `mutate` dan `toStatus` di `internal/account/grpc.go` (`toStatus` kini menerima `ctx` sebagai parameter pertama), ketiga log `grpc call rejected` dan log `no scope configured` di `internal/auth/grpc.go`, serta `internalError` dan `readyz` di `internal/account/http.go`. `interceptor.Logging` sudah memanggil `log.Log(ctx, ...)`, sehingga tidak perlu diubah.
+Ubah juga log di dalam penanganan _request_ menjadi varian `...Context`: `mutate` dan `toStatus` di `internal/account/grpc.go`, termasuk log `caller gave up before the request finished` dari Lab 4. `toStatus` kini menerima `ctx` sebagai parameter pertama, sehingga semua pemanggilnya ikut diubah, termasuk jalur kesalahan `parseAmount` di awal `mutate` (`s.toStatus(ctx, err)`). Lakukan hal yang sama pada ketiga log `grpc call rejected` dan log `no scope configured` di `internal/auth/grpc.go`, serta log di `internalError` dan `readyz` pada `internal/account/http.go`. `interceptor.Logging` sudah memanggil `log.Log(ctx, ...)`, sehingga tidak perlu diubah.
 
 Ambil _unit test_ `account` dari _checkpoint_, lalu jalankan pengujian:
 
 #perintah[```bash
 git checkout lab-08 -- \
+  account/config_test.go \
   account/internal/telemetry/correlation_test.go \
   account/internal/interceptor/metrics_test.go
 cd account && go mod tidy && make test && cd ..
@@ -1184,7 +1207,8 @@ func (c *Consumer) process(ctx context.Context, m kafka.Message) error {
 //	sent       notification stored and sent
 //	duplicate  event seen before, skipped (Lab 6); a burst after a replay or
 //	           a rebalance is expected
-//	skipped    unreadable or without a notification; should stay at 0
+//	skipped    unreadable, invalid, rejected by the database, or without a
+//	           notification; should stay at 0
 var processed = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name: "notifications_processed_total",
 	Help: "Events handled by the notification consumer, by result.",
@@ -1203,18 +1227,24 @@ Di `handle`, ambil _span_ dengan `span := trace.SpanFromContext(ctx)` di awal fu
   columns: (1fr, 1fr),
   [Cabang di `handle`], [Tambahan],
   [_Payload_ tidak terbaca (`skipping unreadable event`)], [`processed.WithLabelValues("skipped").Inc()` dan `span.SetStatus(codes.Error, "unreadable event")`],
-  [Setelah _payload_ terbaca], [`span.SetAttributes(attribute.String("transfer.id", e.TransferID))`],
+  [`event_id` atau `transfer_id` bukan UUID (`skipping event with invalid event_id or transfer_id`, Lab 5)], [`processed.WithLabelValues("skipped").Inc()` dan `span.SetStatus(codes.Error, "invalid event_id or transfer_id")`],
+  [Setelah kedua ID lolos pemeriksaan], [`span.SetAttributes(attribute.String("transfer.id", e.TransferID))`],
   [Jenis _event_ tanpa notifikasi], [`processed.WithLabelValues("skipped").Inc()`],
   [Duplikat (`duplicate event skipped`)], [`processed.WithLabelValues("duplicate").Inc()` dan `span.SetAttributes(attribute.Bool("event.duplicate", true))`],
   [Berhasil (`notification sent`)], [`processed.WithLabelValues("sent").Inc()`],
+  [Ditolak database, `permanentDBError` (`skipping event the database rejects`, Lab 5)], [`processed.WithLabelValues("skipped").Inc()` dan `span.SetStatus(codes.Error, "event rejected by the database")`],
 )
 
-Log `storing notification failed, retrying` di dalam _loop_ juga diubah menjadi `log.WarnContext(ctx, ...)`.
+Keempat cabang `skipped` mencatat _event_ yang dilewati tanpa notifikasi. Nilai normalnya 0. Kenaikan nilai ini berarti ada _event_ rusak yang perlu diperiksa dari log `ERROR`. Di _production_, _event_ seperti ini biasanya dikirim ke _dead-letter topic_ untuk diperiksa petugas.
+
+Log di dalam _loop_ penyimpanan juga diubah: `skipping event the database rejects` menjadi `log.ErrorContext(ctx, ...)` dan `storing notification failed, retrying` menjadi `log.WarnContext(ctx, ...)`.
 
 Ubah juga log `request failed` di `list` dan log di `readyz` pada `internal/notification/http.go` menjadi varian `...Context` (dengan `r.Context()`). Setelah itu ambil _unit test_ `notification` dari _checkpoint_ dan jalankan seluruh pengujian:
 
 #perintah[```bash
-git checkout lab-08 -- notification/internal/notification/tracing_test.go
+git checkout lab-08 -- \
+  notification/config_test.go \
+  notification/internal/notification/tracing_test.go
 cd notification && go mod tidy && make test && cd ..
 make test
 ```]
@@ -1365,6 +1395,7 @@ Pengujian baru yang diambil dari _checkpoint_:
 #table(
   columns: (1fr, 1fr),
   [Pengujian], [Lokasi],
+  [`TestCheckEndpointURL`], [`account`, `transfer`, `notification` (paket `main`)],
   [`TestCorrelationMiddleware`, `TestLogCarriesCorrelationAndTraceIDs`, `TestMetricsUseRoutePattern`], [`transfer/internal/telemetry`],
   [`TestMessageContinuesTheRequestTrace`], [`transfer/internal/outbox`],
   [`TestSendsCorrelationID`, `TestBreakerMetrics`], [`transfer/internal/accountclient`],
@@ -1377,6 +1408,12 @@ Konfigurasi yang salah menghentikan service saat _startup_. Bila nilai `OTEL_EXP
 
 ```
 {"time":"...","level":"ERROR","msg":"transfer service stopped","error":"OTEL_EXPORTER_OTLP_ENDPOINT must be a URL like http://localhost:14317, got \"localhost:14317\""}
+```
+
+Nilai `http://localhost`, tanpa port, juga ditolak:
+
+```
+{"time":"...","level":"ERROR","msg":"transfer service stopped","error":"OTEL_EXPORTER_OTLP_ENDPOINT must name the port explicitly, like http://localhost:14317, got \"http://localhost\""}
 ```
 
 _Metric_ domain dapat dibaca langsung dari `/metrics`, tanpa Grafana. Setelah beberapa transfer berhasil, `make metrics` menampilkan kira-kira:
