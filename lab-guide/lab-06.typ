@@ -34,7 +34,8 @@ Masalah yang sama muncul di sisi _channel_. Aplikasi _mobile banking_ mengirim `
   POST /transfers  ------------->  tabel transfer
   Idempotency-Key: K               unique(idempotency_key)
   (diulang dengan K yang sama)     K sudah ada? kembalikan
-                                   transfer asli, HTTP 200
+                                   transfer asli, kode HTTP
+                                   sama dengan request pertama
                                         |
                                         | gRPC Debit/Credit, reference = transfer_id
                                         +--------------------->  unique(account_number,
@@ -132,6 +133,11 @@ Tambahkan bagian berikut di akhir `notification/internal/notification/schema.sql
 -- inserted in the same transaction as the notification, so "handled" and
 -- "notification stored" are always both true or both false. A redelivered event
 -- (relay duplicate, rebalance, replay) hits the primary key and is skipped.
+--
+-- A separate table, not a unique index on notification.event_id: the dedup rule
+-- is "this event was handled", which also covers events that produce no row
+-- or several rows. It also keeps the duplicate notifications of Lab 5 as they
+-- are instead of failing the index creation on them.
 create table if not exists processed_event (
     event_id     uuid        primary key,
     processed_at timestamptz not null default now()
@@ -218,7 +224,7 @@ Beberapa hal yang perlu diperhatikan dari kode tersebut:
 
 === _Consumer_ melewati duplikat
 
-Di `notification/internal/notification/consumer.go`, fungsi `handle` memanggil `Insert`. Sesuaikan isi perulangan `for` di bagian akhir `handle` dengan tiga nilai kembalian yang baru:
+Di `notification/internal/notification/consumer.go`, fungsi `handle` memanggil `Insert`. Sesuaikan isi perulangan `for` di bagian akhir `handle` dengan tiga nilai kembalian yang baru. Cabang `permanentDBError` dari Lab 5 tetap ada di antara jalur berhasil dan jalur _retry_:
 
 ```go
 	n := Notification{EventID: e.EventID, TransferID: e.TransferID, EventType: eventType, Message: msg}
@@ -238,6 +244,11 @@ Di `notification/internal/notification/consumer.go`, fungsi `handle` memanggil `
 			// before the commit is safe.
 			log.Info("notification sent", "event_id", e.EventID, "transfer_id", e.TransferID,
 				"notification_id", stored.ID, "message", msg)
+			return nil
+		}
+		if permanentDBError(err) {
+			log.Error("skipping event the database rejects", "event_id", e.EventID, "error", err,
+				"payload", string(m.Value))
 			return nil
 		}
 		log.Warn("storing notification failed, retrying", "event_id", e.EventID, "error", err)
@@ -268,17 +279,24 @@ Dua komentar lain juga berubah: komentar di jalur gagal `CommitMessages` di dala
 
 === Memperbarui _test_ `notification`
 
-`fakeStore` di `notification/internal/notification/consumer_test.go` mengimplementasikan `Store`, sehingga harus mengikuti kontrak baru. Ganti `fakeStore` dan fungsi `Insert`-nya dengan versi yang mengingat `event_id`:
+`fakeStore` di `notification/internal/notification/consumer_test.go` mengimplementasikan `Store`, sehingga harus mengikuti kontrak baru. Ganti `fakeStore` dan fungsi `Insert`-nya dengan versi yang mengingat `event_id`. _Field_ `reject` dan `inserts` dari Lab 5 tetap dipertahankan karena digunakan oleh _test_ _poison message_:
 
 ```go
-// fakeStore fails the first failures inserts, then stores each event once.
+// fakeStore fails the first failures inserts, then stores each event once. An
+// insert for an event ID in reject fails with that error on every try.
 type fakeStore struct {
 	rows      []Notification
 	processed map[string]bool
 	failures  int
+	reject    map[string]error
+	inserts   int
 }
 
 func (f *fakeStore) Insert(_ context.Context, n Notification) (Notification, bool, error) {
+	f.inserts++
+	if err := f.reject[n.EventID]; err != nil {
+		return Notification{}, false, err
+	}
 	if f.failures > 0 {
 		f.failures--
 		return Notification{}, false, errors.New("database down")
@@ -296,7 +314,7 @@ func (f *fakeStore) Insert(_ context.Context, n Notification) (Notification, boo
 }
 ```
 
-_Test_ `TestConsumerIsNotIdempotentYet` dari Lab 5 mendokumentasikan celah yang sekarang sudah ditutup. Ganti _test_ tersebut dengan _test_ yang membuktikan perilaku baru: empat _event_ masuk, dua di antaranya duplikat, hasilnya dua notifikasi dan keempat _offset_ tetap di-_commit_.
+_Test_ `TestConsumerIsNotIdempotentYet` dari Lab 5 mendokumentasikan celah yang sekarang sudah ditutup. Ganti _test_ tersebut dengan _test_ yang membuktikan perilaku baru: empat _event_ masuk, dua di antaranya duplikat, hasilnya dua notifikasi dan keempat _offset_ tetap di-_commit_. `eventID1` dan `eventID2` adalah konstanta UUID yang sudah ada di file _test_ sejak Lab 5, karena `handle` melewati _event_ dengan `event_id` yang bukan UUID.
 
 ```go
 // The same event delivered twice (relay duplicate or replay) becomes one
@@ -304,10 +322,10 @@ _Test_ `TestConsumerIsNotIdempotentYet` dari Lab 5 mendokumentasikan celah yang 
 func TestConsumerSkipsDuplicates(t *testing.T) {
 	store := &fakeStore{}
 	reader := runConsumer(t, store,
-		event(0, "TransferCompensated", "e-1"),
-		event(1, "TransferCompleted", "e-2"),
-		event(0, "TransferCompensated", "e-1"), // replay from the start
-		event(1, "TransferCompleted", "e-2"),
+		event(0, "TransferCompensated", eventID1),
+		event(1, "TransferCompleted", eventID2),
+		event(0, "TransferCompensated", eventID1), // replay from the start
+		event(1, "TransferCompleted", eventID2),
 	)
 	if len(store.rows) != 2 {
 		t.Fatalf("rows = %d, want 2 (duplicates skipped)", len(store.rows))
@@ -357,16 +375,21 @@ Kolom tersebut boleh `NULL`. _Request_ tanpa _header_ menyimpan `NULL`, dan Post
 
 === Validasi dan pembanding _request_ di `transfer.go`
 
-Tiga hal ditambahkan di `transfer/internal/transfer/transfer.go`: _error_ untuk _key_ yang digunakan ulang dengan isi berbeda, fungsi pembanding _request_, dan validasi format _key_.
+Tiga hal ditambahkan di `transfer/internal/transfer/transfer.go`: dua _error_ baru, fungsi pembanding _request_, dan validasi format _key_.
 
-Tambahkan `ErrIdempotencyKeyReused` di dalam blok `var (...)` yang berisi `ErrStaleState`:
+Tambahkan `ErrIdempotencyKeyReused` dan `ErrInProgress` di dalam blok `var (...)`, tepat setelah `ErrStaleState`:
 
 ```go
 	// ErrIdempotencyKeyReused: the Idempotency-Key was used before for a
 	// different transfer. Most likely a client bug (a key reused for a new
 	// request); executing it would silently drop one of the two.
 	ErrIdempotencyKeyReused = errors.New("idempotency key already used for a different request")
+	// ErrInProgress: an Idempotency-Key replay found the original transfer still
+	// PENDING or DEBITED.
+	ErrInProgress = errors.New("transfer still in progress")
 ```
+
+`ErrIdempotencyKeyReused` dikembalikan ketika _key_ yang sama datang dengan isi berbeda. `ErrInProgress` dikembalikan ketika pengulangan menemukan transfer asli yang belum selesai; _handler_ menerjemahkannya menjadi `202 Accepted`.
 
 Setelah blok `var (...)` tersebut, tambahkan `SameRequest`. Ketika _key_ yang sama datang lagi, `transfer` harus memastikan bahwa _request_ tersebut memang pengulangan, bukan transfer baru yang secara keliru menggunakan _key_ lama. Nominal dibandingkan sebagai desimal dengan `Equal`, sehingga `"100000"` dan `"100000.00"` dianggap sama.
 
@@ -379,7 +402,7 @@ func (t Transfer) SameRequest(req CreateRequest) bool {
 }
 ```
 
-Setelah deklarasi `numberPattern`, tambahkan validasi _key_. Batas 100 karakter mengikuti ukuran kolom, dan karakter yang diizinkan hanya ASCII yang dapat dicetak tanpa spasi (`\x21`–`\x7e`):
+Setelah deklarasi `maxAmount` (di bawah `numberPattern`), tambahkan validasi _key_. Batas 100 karakter mengikuti ukuran kolom, dan karakter yang diizinkan hanya ASCII yang dapat dicetak tanpa spasi (`\x21`–`\x7e`):
 
 ```go
 // keyPattern bounds the Idempotency-Key: printable ASCII, up to the column
@@ -435,15 +458,21 @@ Cara kerjanya:
 
 === `Execute` di `service.go`
 
-Fungsi `Execute` di `transfer/internal/transfer/service.go` sekarang menerima _key_ dan mengembalikan nilai tambahan `replayed`. Bagian _saga_ (_debit_, _credit_, kompensasi) tidak berubah, hanya dipindahkan ke fungsi baru `run`. Ganti _signature_ dan bagian awal `Execute`, hingga dan termasuk baris `if err := s.accounts.Debit(...)`, menjadi:
+Fungsi `Execute` di `transfer/internal/transfer/service.go` sekarang menerima _key_ dan mengembalikan nilai tambahan `replayed`. Bagian _saga_ (_debit_, _credit_, kompensasi) tidak berubah, hanya dipindahkan ke fungsi baru `run`. Tambahkan `"strings"` ke daftar _import_, lalu ganti _signature_ dan bagian awal `Execute`, hingga dan termasuk baris `if err := s.accounts.Debit(...)`, menjadi:
 
 ```go
 //
 // idempotencyKey (optional, from the Idempotency-Key header) makes a retried
 // request safe: when the key was seen before, the saga does not run again and
 // the original transfer is returned in whatever state it is now, with the
-// second result (replayed) true. A request still in progress comes back as
-// PENDING or DEBITED; the client polls GET /transfers/{id}.
+// second result (replayed) true. The error is then the one the original request
+// ended with (see replayOutcome), so the HTTP layer answers the replay with the
+// same status code. A request still in progress comes back as PENDING or
+// DEBITED with ErrInProgress; the client polls GET /transfers/{id}.
+//
+// A row left PENDING or DEBITED by a crash (SIGKILL between two steps) is never
+// resumed: nothing in this lab picks it up again (see the gap in the Lab 5
+// README). A replay of its key keeps returning that state with ErrInProgress.
 func (s *Service) Execute(ctx context.Context, req CreateRequest, idempotencyKey string) (Transfer, bool, error) {
 	t, created, err := s.store.Create(ctx, req, idempotencyKey)
 	if err != nil {
@@ -457,10 +486,34 @@ func (s *Service) Execute(ctx context.Context, req CreateRequest, idempotencyKey
 		}
 		s.log.Info("idempotent replay, returning the original transfer",
 			"idempotency_key", idempotencyKey, "transfer_id", t.ID, "status", t.Status)
-		return t, true, nil
+		return t, true, replayOutcome(t)
 	}
 	t, err = s.run(ctx, t)
 	return t, false, err
+}
+
+// replayOutcome rebuilds, from the stored transfer, the error the original
+// request ended with: nil for COMPLETED, ErrReversalFailed for
+// COMPENSATION_FAILED, ErrInProgress for PENDING and DEBITED. For FAILED and
+// COMPENSATED the cause is only kept as text in failure_reason ("debit failed:
+// debit 1111111111: insufficient funds"); the account client wraps the
+// sentinels last, so the reason ends with the sentinel's message. Anything else
+// was a dependency failure, the 502 of the original request.
+func replayOutcome(t Transfer) error {
+	switch t.Status {
+	case Completed:
+		return nil
+	case Pending, Debited:
+		return ErrInProgress
+	case CompensationFailed:
+		return fmt.Errorf("%w: %s", ErrReversalFailed, t.FailureReason)
+	}
+	for _, cause := range []error{ErrAccountNotFound, ErrInsufficientFunds, ErrAccountUnavailable} {
+		if strings.HasSuffix(t.FailureReason, ": "+cause.Error()) {
+			return fmt.Errorf("%s: %w", t.Status, cause)
+		}
+	}
+	return fmt.Errorf("%s: %s", t.Status, t.FailureReason)
 }
 
 // run executes the saga steps on a freshly recorded transfer.
@@ -471,7 +524,11 @@ func (s *Service) run(ctx context.Context, t Transfer) (Transfer, error) {
 
 Sisa isi fungsi lama, mulai dari penanganan _error_ `Debit` hingga akhir, tetap seperti semula dan sekarang menjadi isi `run`. Komentar di atas fungsi yang menjelaskan langkah _saga_ tetap dipertahankan; paragraf `idempotencyKey` di atas ditambahkan di bawahnya.
 
-Perhatikan bahwa jawaban untuk pengulangan berisi transfer asli dengan status saat ini. Bila _request_ pertama masih berjalan, misalnya sedang menunggu `account`, _request_ kedua menerima status `PENDING` atau `DEBITED`. _Saga_ tidak dijalankan untuk kedua kalinya; klien cukup memeriksa `GET /transfers/{id}` hingga statusnya final.
+Perhatikan bahwa jawaban untuk pengulangan berisi transfer asli dengan status saat ini, ditambah _error_ yang sama dengan hasil _request_ pertama. _Error_ tersebut disusun ulang oleh `replayOutcome` dari data yang tersimpan, sehingga _handler_ dapat menjawab pengulangan dengan kode HTTP yang sama. Klien yang kehilangan jawaban pertama lalu mengulang _request_ mengambil keputusan yang sama seperti bila jawaban pertama sampai.
+
+Untuk status `FAILED` dan `COMPENSATED`, satu-satunya catatan penyebab kegagalan adalah teks di kolom `failure_reason`. `replayOutcome` memeriksa apakah teks tersebut diakhiri pesan salah satu _sentinel error_, misalnya `: insufficient funds`. Cara ini bergantung pada format teks dan cukup untuk lab. Rancangan di _production_ menyimpan kode kegagalan di kolom tersendiri.
+
+Bila _request_ pertama masih berjalan, misalnya sedang menunggu `account`, _request_ kedua menerima status `PENDING` atau `DEBITED` bersama `ErrInProgress`. _Saga_ tidak dijalankan untuk kedua kalinya; klien cukup memeriksa `GET /transfers/{id}` hingga statusnya final. Celah dari Lab 5 tetap berlaku: transfer yang tertinggal di `PENDING` atau `DEBITED` karena proses `transfer` mati di antara dua langkah tidak pernah dilanjutkan, sehingga pengulangan dengan _key_ tersebut terus menerima status yang sama.
 
 === _Handler_ `POST /transfers`
 
@@ -490,29 +547,85 @@ Di `transfer/internal/transfer/http.go`, fungsi `create` membaca _header_, memva
 	}
 ```
 
-Lalu ubah pemanggilan `Execute` dan tambahkan dua `case` pertama di awal blok `switch`. Urutan ini penting: pengulangan dan _key_ yang digunakan ulang harus ditangani sebelum `case err == nil`.
+Pemilihan kode HTTP dari Lab 5 sekarang digunakan oleh dua jalur: _request_ pertama dan pengulangan. Karena itu, blok `switch` lama dipindahkan dari `create` ke fungsi baru `createStatus`. Ganti bagian `create` mulai dari komentar `WithoutCancel` di atas pemanggilan `Execute` hingga akhir fungsi, lalu tambahkan `createStatus` di bawahnya:
 
 ```go
+	// WithoutCancel: a client that disconnects must not abort a transfer halfway,
+	// e.g. between the debit and the credit.
 	t, replayed, err := h.svc.Execute(context.WithoutCancel(r.Context()), req, key)
 	switch {
-	case replayed:
-		// 200, not 201: nothing was created by this request. The body is the
-		// original transfer in its current state, whatever its outcome was.
-		w.Header().Set("Location", "/transfers/"+t.ID)
-		w.Header().Set("Idempotent-Replayed", "true")
-		writeJSON(w, http.StatusOK, t)
 	case errors.Is(err, ErrIdempotencyKeyReused):
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	case t.ID == "":
+		h.internalError(w, r, err)
+		return
+	}
+	if replayed {
+		// A replay answers with the status code the original request got for the
+		// stored state, so a client whose first response was lost decides the same
+		// way. The header tells it nothing was executed this time.
+		w.Header().Set("Idempotent-Replayed", "true")
+	}
+	status := createStatus(err)
+	if status == http.StatusCreated || status == http.StatusAccepted {
+		w.Header().Set("Location", "/transfers/"+t.ID)
+	}
+	writeJSON(w, status, t)
+}
+
+// createStatus maps the outcome of a recorded transfer to the HTTP status of
+// POST /transfers, for a first request and a replay alike.
+func createStatus(err error) int {
+	switch {
 	case err == nil:
-		// ... case lama dari Lab 5 berlanjut di sini, tanpa perubahan
+		return http.StatusCreated
+	case errors.Is(err, ErrInProgress):
+		// Replay only: the original request is still running (or was cut off by a
+		// crash, see Service.Execute).
+		return http.StatusAccepted
+	case errors.Is(err, ErrReversalFailed):
+		// Checked first: the source account is debited and the reversal did not go
+		// through (COMPENSATION_FAILED, also when that state itself could not be
+		// stored). Money is stuck on our side, whatever the account service
+		// answered: this is our failure, not the caller's, and never a 503 or 422
+		// that would invite a retry.
+		return http.StatusInternalServerError
+	case errors.Is(err, ErrAccountNotFound), errors.Is(err, ErrInsufficientFunds):
+		// Includes COMPENSATED when the destination account does not exist.
+		return http.StatusUnprocessableEntity
+	case errors.Is(err, ErrAccountUnavailable):
+		// The open breaker refused the debit (FAILED), or refused the credit and the
+		// debit was reversed (COMPENSATED). Either way no money moved: 503 tells the
+		// caller it is safe to come back later.
+		return http.StatusServiceUnavailable
+	default:
+		// Recorded but not completed because a dependency failed (FAILED or
+		// COMPENSATED).
+		return http.StatusBadGateway
+	}
+}
 ```
 
-Pilihan kode HTTP-nya:
+Isi `createStatus` sama dengan `switch` dari Lab 5; perbedaannya, setiap `case` mengembalikan kode HTTP alih-alih menulis jawaban, dan ada satu `case` baru untuk `ErrInProgress`. Dua kondisi tetap ditangani langsung di `create` karena tidak memiliki transfer untuk dikembalikan: _key_ yang digunakan ulang dengan _body_ berbeda, dan kegagalan sebelum transfer tersimpan (`t.ID == ""`).
 
-- *201 Created* hanya untuk _request_ yang benar-benar membuat transfer.
-- *200 OK* untuk pengulangan, karena _request_ tersebut tidak membuat apa pun. _Header_ `Idempotent-Replayed: true` memberi tahu klien bahwa jawaban tersebut berasal dari transfer yang sudah ada. Transfer asli dikembalikan apa pun hasilnya, termasuk `FAILED` atau `COMPENSATED`.
+Kode HTTP untuk pengulangan dengan _key_ yang sama:
+
+#table(
+  columns: (auto, 1fr),
+  [Status Transfer yang Tersimpan], [Kode HTTP Pengulangan],
+  [`COMPLETED`], [201 Created, sama dengan _request_ pertama],
+  [`FAILED` atau `COMPENSATED`], [422, 503, atau 502, sesuai penyebab kegagalan di `failure_reason`],
+  [`COMPENSATION_FAILED`], [500 Internal Server Error],
+  [`PENDING` atau `DEBITED`], [202 Accepted: _request_ pertama masih berjalan (atau terhenti oleh _crash_)],
+)
+
+Setiap jawaban pengulangan membawa _header_ `Idempotent-Replayed: true`, yang memberi tahu klien bahwa kali ini tidak ada yang dijalankan. _Header_ `Location` hanya diisi pada jawaban 201 dan 202. Kondisi lain di luar tabel:
+
 - *422 Unprocessable Entity* ketika _key_ yang sama datang dengan _body_ berbeda. Kemungkinan besar kondisi ini adalah _bug_ di klien yang menggunakan _key_ lama untuk transfer baru. Menjalankannya berarti salah satu dari dua transfer tersebut hilang tanpa diketahui klien.
 - *400 Bad Request* ketika format _key_ tidak valid.
+
+Pengulangan sengaja tidak dijawab dengan kode tersendiri seperti `200 OK`. Klien yang tidak menerima jawaban pertama harus dapat mengambil keputusan dari jawaban kedua dengan aturan yang sama: 201 berarti transfer selesai, 503 berarti tidak ada dana yang berpindah, 500 berarti dana tertahan dan perlu penanganan manual. Transfer yang tersimpan dengan status `FAILED` atau `COMPENSATED` sudah final. Pengulangan dengan _key_ yang sama selalu mengembalikan hasil yang sama, sehingga klien yang ingin mencoba lagi setelah 503 mengirim transfer baru dengan _key_ baru.
 
 _Header_ ini sengaja dibuat opsional agar perintah `curl` dari Lab 2–5 tetap berjalan. API pembayaran yang diakses _channel_ di _production_ mewajibkannya.
 
@@ -596,38 +709,128 @@ func TestExecuteIdempotencyKey(t *testing.T) {
 }
 ```
 
-Buat juga file baru `transfer/internal/transfer/http_test.go` untuk menguji kode HTTP dari _handler_ dengan `httptest`:
+Tambahkan juga _test_ untuk `replayOutcome`. _Test_ ini memeriksa bahwa setiap kombinasi status dan `failure_reason` menghasilkan kelompok _error_ yang sama dengan _request_ pertama, dan bahwa kegagalan jaringan tidak dikenali sebagai _sentinel_ mana pun (sehingga tetap dijawab 502):
 
 ```go
-package transfer
+// TestReplayOutcome: a replay gets back the error class of the original
+// request, rebuilt from the stored status and failure_reason.
+func TestReplayOutcome(t *testing.T) {
+	tests := []struct {
+		status Status
+		reason string
+		want   error
+	}{
+		{Completed, "", nil},
+		{Pending, "", ErrInProgress},
+		{Debited, "", ErrInProgress},
+		{Failed, "debit failed: debit 1111111111: insufficient funds", ErrInsufficientFunds},
+		{Failed, "debit failed: debit 1111111111: account service unavailable", ErrAccountUnavailable},
+		{Compensated, "credit failed: credit 9999999999: account not found", ErrAccountNotFound},
+		{Compensated, "credit failed: credit 2222222222: account service unavailable", ErrAccountUnavailable},
+		{CompensationFailed, "credit failed: x; reversal failed: y", ErrReversalFailed},
+	}
+	for _, tc := range tests {
+		err := replayOutcome(Transfer{Status: tc.status, FailureReason: tc.reason})
+		if !errors.Is(err, tc.want) || (tc.want == nil && err != nil) {
+			t.Errorf("%s %q: err = %v, want %v", tc.status, tc.reason, err, tc.want)
+		}
+	}
+	// A transport failure maps to none of the sentinels: the 502 of the original.
+	err := replayOutcome(Transfer{Status: Failed, FailureReason: "debit failed: debit 1111111111: rpc error: code = Unavailable"})
+	for _, s := range []error{ErrAccountNotFound, ErrInsufficientFunds, ErrAccountUnavailable, ErrReversalFailed, ErrInProgress} {
+		if err == nil || errors.Is(err, s) {
+			t.Fatalf("transport failure: err = %v, want a plain error", err)
+		}
+	}
+}
+```
 
-import (
-	"io"
-	"log/slog"
-	"net/http"
-	"net/http/httptest"
-	"strings"
-	"testing"
-)
+_Test_ kode HTTP sudah ada sejak Lab 3 di `transfer/internal/transfer/http_test.go` (`TestCreateStatus`). Di Lab 6, file tersebut mendapat tiga perubahan.
 
+Pertama, tambahkan `"github.com/shopspring/decimal"` ke daftar _import_, lalu tambahkan fungsi bantu `post` di bawah `fails`. Fungsi ini mengirim `POST /transfers` dengan _header_ `Idempotency-Key`:
+
+```go
+func post(t *testing.T, url, key string) *http.Response {
+	t.Helper()
+	body := `{"from_account":"1111111111","to_account":"2222222222","amount":"100000"}`
+	req, err := http.NewRequest(http.MethodPost, url+"/transfers", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Idempotency-Key", key)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	return resp
+}
+```
+
+Kedua, `TestCreateStatus` menjalankan setiap kasus dua kali dengan _key_ yang sama. Pengulangan harus menghasilkan kode HTTP yang sama, membawa `Idempotent-Replayed: true`, dan tidak memanggil `account` lagi. Tambahkan paragraf berikut di akhir komentar di atas `TestCreateStatus`:
+
+```go
+//
+// The same cases run twice with an Idempotency-Key: the replay must answer with
+// the status of the first request, plus Idempotent-Replayed: true, without
+// calling the account service again.
+```
+
+Lalu ganti isi `t.Run` di dalam perulangan kasus:
+
+```go
+		t.Run(tc.name, func(t *testing.T) {
+			log := slog.New(slog.NewTextHandler(io.Discard, nil))
+			svc := NewService(newFakeStore(), tc.accounts, log)
+			srv := httptest.NewServer(NewHandler(svc, log).Routes())
+			defer srv.Close()
+
+			first := post(t, srv.URL, "k-1")
+			if first.StatusCode != tc.want || first.Header.Get("Idempotent-Replayed") != "" {
+				t.Fatalf("first: status = %d, replayed = %q, want %d", first.StatusCode, first.Header.Get("Idempotent-Replayed"), tc.want)
+			}
+			calls := len(tc.accounts.calls)
+			replay := post(t, srv.URL, "k-1")
+			if replay.StatusCode != tc.want || replay.Header.Get("Idempotent-Replayed") != "true" {
+				t.Fatalf("replay: status = %d, replayed = %q, want %d, true", replay.StatusCode, replay.Header.Get("Idempotent-Replayed"), tc.want)
+			}
+			if len(tc.accounts.calls) != calls {
+				t.Fatalf("account calls = %q, want none for the replay", tc.accounts.calls[calls:])
+			}
+		})
+```
+
+Dengan perubahan ini, setiap baris tabel `TestCreateStatus` (201, 422, 503, 502, 500) sekaligus membuktikan bahwa `replayOutcome` menyusun ulang penyebab kegagalan dengan benar.
+
+Ketiga, tambahkan _test_ baru di akhir file untuk perilaku khusus _header_:
+
+```go
 func TestCreateIdempotencyKeyHTTP(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	h := NewHandler(NewService(newFakeStore(), &fakeAccounts{}, log), log).Routes()
+	store := newFakeStore()
+	h := NewHandler(NewService(store, &fakeAccounts{}, log), log).Routes()
 	body := `{"from_account":"1111111111","to_account":"2222222222","amount":"100000"}`
 
+	// A transfer whose first request is still running (or was cut off by a crash).
+	store.transfers["99"] = Transfer{ID: "99", FromAccount: "1111111111", ToAccount: "2222222222",
+		Amount: decimal.RequireFromString("100000"), Status: Debited}
+	store.keys["k-running"] = "99"
+
 	tests := []struct {
-		name       string
-		key        string
-		body       string
-		wantStatus int
-		wantBody   string
+		name         string
+		key          string
+		body         string
+		wantStatus   int
+		wantBody     string
+		wantReplayed string
 	}{
-		{"new transfer", "k-1", body, http.StatusCreated, `"status":"COMPLETED"`},
-		{"same key again", "k-1", body, http.StatusOK, `"id":"1"`},
+		{"new transfer", "k-1", body, http.StatusCreated, `"status":"COMPLETED"`, ""},
+		{"same key again", "k-1", body, http.StatusCreated, `"id":"1"`, "true"},
+		{"same key, still in progress", "k-running", body, http.StatusAccepted, `"status":"DEBITED"`, "true"},
 		{"same key, different body", "k-1", strings.Replace(body, "100000", "1", 1),
-			http.StatusUnprocessableEntity, "idempotency key"},
-		{"invalid key", "has space", body, http.StatusBadRequest, "Idempotency-Key"},
-		{"no key", "", body, http.StatusCreated, `"id":"2"`},
+			http.StatusUnprocessableEntity, "idempotency key", ""},
+		{"invalid key", "has space", body, http.StatusBadRequest, "Idempotency-Key", ""},
+		{"no key", "", body, http.StatusCreated, `"id":"2"`, ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -640,12 +843,15 @@ func TestCreateIdempotencyKeyHTTP(t *testing.T) {
 			if rec.Code != tc.wantStatus || !strings.Contains(rec.Body.String(), tc.wantBody) {
 				t.Fatalf("%d %s, want %d containing %q", rec.Code, rec.Body, tc.wantStatus, tc.wantBody)
 			}
+			if got := rec.Header().Get("Idempotent-Replayed"); got != tc.wantReplayed {
+				t.Fatalf("Idempotent-Replayed = %q, want %q", got, tc.wantReplayed)
+			}
 		})
 	}
 }
 ```
 
-Kasus-kasus di tabel tersebut berjalan berurutan dan berbagi satu _store_, sehingga kasus kedua dapat memeriksa bahwa _key_ `k-1` mengembalikan transfer `1` dari kasus pertama. Jalankan seluruh _test_ dari direktori `studi-kasus`:
+Transfer `99` berstatus `DEBITED` dimasukkan langsung ke _store_ untuk meniru _request_ pertama yang belum selesai, sehingga jalur 202 dapat diuji tanpa _goroutine_ paralel. Kasus-kasus lain di tabel berjalan berurutan dan berbagi satu _store_, sehingga kasus kedua dapat memeriksa bahwa _key_ `k-1` mengembalikan transfer `1` dari kasus pertama dengan kode 201. Jalankan seluruh _test_ dari direktori `studi-kasus`:
 
 #perintah[```bash
 make test
@@ -712,10 +918,10 @@ Location: /transfers/3f1e...
 {"id":"3f1e...","from_account":"1111111111","to_account":"2222222222","amount":"100000","status":"COMPLETED",...}
 ```]
 
-Ulangi perintah yang sama persis. Jawabannya sekarang `200 OK` dengan `id` yang sama dan _header_ tambahan:
+Ulangi perintah yang sama persis. Kode HTTP-nya tetap `201 Created`, karena transfer asli berstatus `COMPLETED`, tetapi jawabannya membawa _header_ tambahan dan `id` yang sama:
 
 #perintah[```
-HTTP/1.1 200 OK
+HTTP/1.1 201 Created
 Content-Type: application/json
 Idempotent-Replayed: true
 Location: /transfers/3f1e...
@@ -742,7 +948,19 @@ Jawabannya `422 Unprocessable Entity`:
 {"error":"idempotency key already used for a different request"}
 ```]
 
-Nominal `"100000.00"` dengan _key_ yang sama tetap dijawab `200`, karena nominal dibandingkan sebagai desimal. _Key_ yang mengandung spasi, misalnya `-H 'Idempotency-Key: ada spasi'`, dijawab `400` dengan `fields` yang menyebut `Idempotency-Key`.
+Nominal `"100000.00"` dengan _key_ yang sama tetap dianggap pengulangan (`201` dengan `Idempotent-Replayed: true`), karena nominal dibandingkan sebagai desimal. _Key_ yang mengandung spasi, misalnya `-H 'Idempotency-Key: ada spasi'`, dijawab `400` dengan `fields` yang menyebut `Idempotency-Key`.
+
+Pengulangan juga mempertahankan kode HTTP untuk transfer yang gagal. Kirim transfer ke rekening tujuan yang tidak ada dengan _key_ baru, dua kali:
+
+#perintah[```bash
+for i in 1 2; do
+  curl -s -o /dev/null -w '%{http_code}\n' -X POST localhost:8082/transfers \
+    -H 'Idempotency-Key: gagal-001' \
+    -d '{"from_account":"1111111111","to_account":"9999999999","amount":"100000"}'
+done
+```]
+
+Kedua jawaban adalah `422`. _Request_ pertama menjalankan _debit_, gagal di _credit_, lalu membalikkan _debit_ (status `COMPENSATED`, `failure_reason` diakhiri `account not found`). _Request_ kedua tidak menjalankan apa pun; `replayOutcome` membaca `failure_reason` tersebut dan menghasilkan kode yang sama.
 
 === _Request_ paralel dengan _key_ yang sama
 
@@ -759,32 +977,32 @@ done; wait
 curl localhost:8081/accounts/1111111111
 ```]
 
-Bila `uuidgen` tidak tersedia, isi `KEY` dengan teks unik apa saja, misalnya `KEY=paralel-001`. Hasilnya satu `201` dan lima `200`, dengan urutan acak:
+Bila `uuidgen` tidak tersedia, isi `KEY` dengan teks unik apa saja, misalnya `KEY=paralel-001`. Setiap jawaban berupa `201` atau `202`, dengan urutan dan jumlah yang berbeda pada setiap percobaan, misalnya:
 
 #perintah[```
-200
+202
 201
-200
-200
-200
-200
+202
+202
+201
+202
 ```]
 
-Saldo rekening asal berkurang tepat 100000. _Unique index_ pada `idempotency_key` menjamin hanya satu `insert` yang berhasil; kelima _request_ lain mengambil transfer yang sudah tersimpan. Sebagian dari jawaban `200` tersebut dapat berisi status `PENDING` atau `DEBITED` karena _saga_ dari _request_ pertama belum selesai.
+Saldo rekening asal berkurang tepat 100000. _Unique index_ pada `idempotency_key` menjamin hanya satu `insert` yang berhasil; kelima _request_ lain mengambil transfer yang sudah tersimpan. `202 Accepted` adalah jawaban pengulangan yang tiba ketika _saga_ dari _request_ pertama belum selesai, sehingga transfer masih berstatus `PENDING` atau `DEBITED`. Pengulangan yang tiba setelah _saga_ selesai menerima `201`, sama dengan _request_ pertama. Dari kode HTTP saja, _request_ pertama tidak dapat dibedakan dari pengulangan; pembedanya adalah _header_ `Idempotent-Replayed: true` yang hanya ada pada pengulangan.
 
 == Masalah Umum
 
-*`make replay` gagal dengan `Assignments can only be reset if the group 'notification' is inactive`.* `notification` masih berjalan, atau baru saja dihentikan dan Kafka belum mencatat bahwa anggota tersebut keluar dari group. Pastikan `notification` sudah berhenti di terminalnya, tunggu beberapa detik, lalu ulangi `make replay`.
+*`make replay` gagal dengan `Assignments can only be reset if the group 'notification' is inactive, but the current state is Stable`.* `notification` masih berjalan, atau baru saja dihentikan dan Kafka belum mencatat bahwa anggota tersebut keluar dari group. Kafka baru mengeluarkan anggota group setelah _session_-nya habis. Pastikan `notification` sudah berhenti di terminalnya, tunggu sekitar 10–30 detik, lalu ulangi `make replay`.
 
 *Kompilasi gagal dengan `does not implement Store (wrong type for method Insert)` atau `wrong type for method Create`.* Kontrak `Store` sudah diubah, tetapi `fakeStore` di _test_ belum. Perbarui `fakeStore` di `consumer_test.go` (untuk `notification`) atau `service_test.go` (untuk `transfer`) sesuai bagian _test_ di atas.
 
 *Kompilasi gagal dengan `assignment mismatch: 2 variables but h.svc.Execute returns 3 values`.* Ada pemanggilan `Execute` yang belum diubah. Cari semua pemanggilan dengan `grep -rn "Execute(" transfer/` lalu tambahkan variabel `replayed` (atau `_`) dan argumen _key_.
 
-*Pengulangan dengan _key_ yang sama tetap menghasilkan `201` dan transfer baru.* `transfer` yang berjalan masih versi lama, karena service belum dijalankan ulang setelah kode diubah. Periksa juga penulisan nama _header_ di perintah `curl`: `Idempotency-Key`, dengan tanda hubung.
+*Pengulangan dengan _key_ yang sama menghasilkan transfer baru dengan `id` berbeda, tanpa _header_ `Idempotent-Replayed`.* `transfer` yang berjalan masih versi lama, karena service belum dijalankan ulang setelah kode diubah. Periksa juga penulisan nama _header_ di perintah `curl`: `Idempotency-Key`, dengan tanda hubung.
 
 *`make duplicates` masih menampilkan baris setelah semua langkah selesai.* Baris tersebut berasal dari _replay_ di Lab 5 atau di langkah pertama lab ini, sebelum `processed_event` ada. Selama jumlahnya tidak bertambah setelah _replay_ berikutnya, _consumer_ sudah _idempotent_. Untuk memulai dari database bersih, jalankan `make infra-reset` lalu `make infra-up`; perintah tersebut menghapus semua data lab, termasuk rekening, sehingga rekening contoh perlu dibuat ulang.
 
-*Jawaban `200` berisi status `PENDING`.* Kondisi ini benar. _Request_ pertama dengan _key_ tersebut masih berjalan, dan _request_ pengulangan tidak menunggunya. Periksa `GET /transfers/{id}` beberapa saat kemudian.
+*Pengulangan dijawab `202 Accepted` dengan status `PENDING` atau `DEBITED`.* Kondisi ini benar. _Request_ pertama dengan _key_ tersebut masih berjalan, dan _request_ pengulangan tidak menunggunya. Periksa `GET /transfers/{id}` (alamatnya ada di _header_ `Location`) beberapa saat kemudian. Bila statusnya tidak pernah berubah, proses `transfer` kemungkinan mati di tengah _saga_; transfer tersebut tidak dilanjutkan oleh siapa pun di lab ini, sehingga pengulangan terus dijawab `202`.
 
 *Aplikasi klien mendapat `422` padahal hanya mengulang _request_.* Klien membuat _body_ yang berbeda pada pengulangan, atau menggunakan ulang _key_ untuk transfer baru. Setiap transfer baru harus memiliki _key_ sendiri, dan pengulangan harus mengirim _body_ yang sama.
 
