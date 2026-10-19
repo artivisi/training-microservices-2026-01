@@ -89,7 +89,7 @@ _Image_ yang dibangun di lab ini harus memenuhi tiga syarat:
 
 _Multi-stage build_ memisahkan tahap kompilasi dari _image_ akhir. Tahap pertama (`build`) menggunakan `golang:1.27.2-alpine` yang berisi _compiler_; tahap kedua (`FROM scratch`) hanya menyalin hasil kompilasi dari tahap pertama.
 
-_Build context_ adalah direktori `studi-kasus/`, satu tingkat di atas direktori service. Alasannya, `go.mod` service `account` memiliki _replace directive_ ke `../proto`, sehingga modul `proto` harus ikut masuk ke _build context_.
+_Build context_ adalah direktori `studi-kasus/`, satu tingkat di atas direktori service. Alasannya, `go.mod` service `account` dan `transfer` memiliki _replace directive_ ke `../proto`, sehingga modul `proto` harus ikut masuk ke _build context_. `notification` tidak menggunakan `proto`, tetapi tetap dibangun dengan _build context_ yang sama agar ketiga _image_ dibangun dengan perintah yang sama.
 
 Buat _file_ `account/Dockerfile`:
 
@@ -176,6 +176,35 @@ EXPOSE 8083
 
 `EXPOSE` hanya berfungsi sebagai dokumentasi. Port yang sebenarnya dibuka ditentukan oleh `HTTP_ADDR` dan `GRPC_ADDR` dari _environment variable_.
 
+`notification` membutuhkan satu perubahan lagi. Service ini tidak mengimpor modul `proto`, karena _event_ dikirim sebagai JSON di Kafka, sehingga `go.mod`-nya tidak memiliki _replace directive_ ke `../proto`. Di `notification/Dockerfile`, hapus kedua baris yang menyalin `proto` (`COPY proto/go.mod proto/go.sum proto/` dan `COPY proto/ /src/proto/`), lalu sesuaikan komentarnya. Bagian atas _file_ menjadi:
+
+#perintah[```dockerfile
+# Multi-stage build of the notification service. Build context: studi-kasus/ (not this
+# directory), the same as for account and transfer, so make images builds all
+# three the same way. Notification does not import the proto module (the
+# events are JSON on Kafka), so only notification/ is copied:
+#   docker build -f notification/Dockerfile -t studi-kasus/notification:1.0.0 .
+FROM golang:1.27.2-alpine AS build
+
+# GOWORK=off: build this module with its own go.mod/go.sum, not the workspace.
+# The image then depends only on this service; a change in another
+# service's go.mod does not invalidate the cache here, and the CI pipeline of
+# one service builds it alone (Lab 10).
+# CGO_ENABLED=0: a static binary without libc, which runs in an empty image.
+ENV GOWORK=off CGO_ENABLED=0
+
+# Module files first: the download layer stays cached until go.mod/go.sum
+# change, not on every source edit.
+WORKDIR /src
+COPY notification/go.mod notification/go.sum notification/
+WORKDIR /src/notification
+RUN go mod download
+
+COPY notification/ /src/notification/
+```]
+
+Bagian sesudahnya (`RUN go build ...` hingga `ENTRYPOINT`) tetap sama dengan hasil `sed`.
+
 === _File_ `.dockerignore`
 
 Saat `docker build` dijalankan, seluruh isi _build context_ dikirim ke _builder_. Direktori `k8s/`, `observability/`, dan dokumentasi tidak dibutuhkan untuk kompilasi; jika ikut terkirim, setiap perubahan pada _file_ tersebut juga membatalkan _cache_. Buat `studi-kasus/.dockerignore`:
@@ -194,14 +223,19 @@ Makefile
 
 === Target `make images`
 
-Tambahkan bagian berikut di akhir `studi-kasus/Makefile`. `VERSION` sengaja tidak memiliki nilai _default_: _tag_ yang tertimpa tanpa sengaja membuat _image_ di _cluster_ tidak lagi sesuai dengan kode yang dikira sedang berjalan.
+Tambahkan bagian berikut di akhir `studi-kasus/Makefile`. `VERSION` sengaja tidak memiliki nilai _default_, sehingga nama _image_ selalu menyebut _build_ yang mana.
 
 #perintah[```makefile
 # Lab 9 helpers.
 
-# Images for k3d. VERSION is the tag, e.g. make images VERSION=1.0.0; there is
-# no default, so a tag is never overwritten by accident. Build context is this
-# directory: the Dockerfiles copy proto/ next to the service.
+# Images for k3d. VERSION is the tag, e.g. make images VERSION=1.0.0, and is
+# required: the image name says which build it is. Nothing stops a rebuild under
+# an existing tag, and that rebuild never reaches the cluster: the Deployments
+# use imagePullPolicy IfNotPresent, and an unchanged image reference rolls
+# nothing. A change = a new VERSION (1.0.1), make k3d-import with it, then
+# kubectl set image or newTag in k8s/overlays/k3d/kustomization.yaml.
+# Build context is this directory: account and transfer copy proto/ next to the
+# service (go.mod replace ../proto); notification does not import it.
 IMAGE_REPO := studi-kasus
 CLUSTER := bank
 NAMESPACE := bank
@@ -214,6 +248,8 @@ images:
 
 Baris perintah di bawah target diawali karakter _tab_, bukan spasi. Tambahkan juga `images` ke daftar `.PHONY` di bagian atas `Makefile`. Variabel `SERVICES` sudah ada sejak lab sebelumnya (`account transfer notification`).
 
+`make` tidak mencegah _build_ ulang dengan _tag_ yang sudah ada, tetapi _image_ hasil _build_ ulang tersebut tidak pernah sampai ke _pod_. Deployment menggunakan `imagePullPolicy: IfNotPresent`, dan referensi _image_ yang tidak berubah tidak memicu _rollout_. Karena itu setiap perubahan kode mendapat `VERSION` baru (`1.0.1`, `1.0.2`, dan seterusnya), seperti di latihan _rolling update_.
+
 Bangun ketiga _image_:
 
 #perintah[```bash
@@ -221,7 +257,12 @@ make images VERSION=1.0.0
 docker images 'studi-kasus/*'
 ```]
 
-Hasilnya tiga _image_ dengan _tag_ `1.0.0`. Isi setiap _image_ hanya _binary_ (sekitar 21–23 MB) dan sertifikat CA. Angka yang tampil di `docker images` bergantung pada _image store_ Docker: sekitar 8 MB jika Docker menggunakan _containerd image store_ (ukuran terkompresi), atau sekitar 21–23 MB pada _image store_ klasik (ukuran tanpa kompresi). Keduanya jauh lebih kecil dibanding _image_ berbasis `golang:alpine`.
+Hasilnya tiga _image_ dengan _tag_ `1.0.0`. Isi setiap _image_ hanya _binary_ (sekitar 21–23 MB) dan sertifikat CA. Angka yang tampil di `docker images` bergantung pada _image store_ Docker:
+
+- _containerd image store_ (Docker Engine 29, Docker Desktop versi baru) menampilkan dua kolom: `CONTENT SIZE` sekitar 8–9 MB (ukuran terkompresi) dan `DISK USAGE` sekitar 31–34 MB (ukuran terkompresi ditambah hasil ekstraknya);
+- _image store_ klasik menampilkan satu kolom `SIZE` sekitar 21–23 MB (ukuran tanpa kompresi).
+
+Semua angka tersebut jauh lebih kecil dibanding _image_ berbasis `golang:alpine`.
 
 Pastikan _image_ dapat berjalan dengan UID sembarang dan _root filesystem_ _read-only_, seperti di OpenShift. Tanpa _environment variable_ apa pun, service harus berhenti dengan pesan yang menyebut semua variabel yang belum diisi:
 
@@ -354,6 +395,10 @@ Tambahkan ketiga service berikut di `compose.yaml`, di bawah `hydra-init` dan se
       OAUTH_TOKEN_URL: http://hydra:4444/oauth2/token
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-lgtm:4317
       OTEL_SERVICE_NAME: transfer
+    # Docker sends SIGKILL 10 s after SIGTERM by default; transfer waits up to
+    # 60 s for sagas in flight (shutdownGrace in main.go) plus 5 s for the
+    # telemetry flush.
+    stop_grace_period: 70s
     ports:
       - "8082:8082"
     depends_on:
@@ -388,6 +433,8 @@ Tambahkan ketiga service berikut di `compose.yaml`, di bawah `hydra-init` dan se
       kafka:
         condition: service_healthy
 ```]
+
+`stop_grace_period: 70s` pada `transfer` berkaitan dengan _graceful shutdown_ dari Lab 5. Setelah menerima `SIGTERM`, `transfer` menunggu transfer yang sedang berjalan hingga 60 detik (`shutdownGrace` di `transfer/main.go`) agar tidak ada _saga_ yang terpotong di antara _debit_ dan _credit_. Docker secara _default_ mengirim `SIGKILL` 10 detik setelah `SIGTERM`, sehingga tanpa pengaturan ini _saga_ yang sedang berjalan dapat terhenti di tengah.
 
 _Profile_ `apps` membuat ketiga service tersebut tidak ikut berjalan saat `make infra-up`; service baru berjalan jika _profile_ tersebut diaktifkan. Sisipkan kedua target berikut tepat di bawah komentar `# Lab 9 helpers.` di `Makefile`, sebelum `IMAGE_REPO :=`, dan tambahkan keduanya ke daftar `.PHONY`:
 
@@ -493,7 +540,36 @@ Kutipan dari `k8s/base/account/deployment.yaml`:
 - *_Liveness probe_* (`/healthz`) hanya memeriksa bahwa proses masih melayani HTTP. Pemeriksaan dependensi sengaja tidak dilakukan di sini. Jika database mati dan _liveness probe_ ikut gagal, Kubernetes me-_restart_ semua _pod_ sekaligus, padahal _restart_ tidak memperbaiki database.
 - *`maxSurge: 1`, `maxUnavailable: 0`.* Saat _rolling update_, Kubernetes membuat satu _pod_ baru terlebih dahulu dan baru menghentikan _pod_ lama setelah _pod_ baru lolos _readiness probe_. _Image_ yang gagal berjalan menghentikan proses _rollout_, sementara _pod_ lama tetap melayani.
 
-`terminationGracePeriodSeconds: 30` memberi waktu bagi _graceful shutdown_ di `main.go` (maksimal 10 detik untuk _request_ yang sedang diproses) sebelum kubelet mengirim `SIGKILL`.
+==== Deployment: Menghentikan _Pod_ dengan Aman
+
+Kutipan lain dari `k8s/base/account/deployment.yaml`:
+
+#perintah[```yaml
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: account
+          ...
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 5
+```]
+
+Saat _pod_ dihentikan (_rolling update_, _scale down_), Kubernetes mengeluarkan _pod_ dari daftar _endpoint_ Service dan dari Traefik bersamaan dengan proses penghentiannya, bukan sebelumnya. Selama beberapa detik, _request_ baru masih dikirim ke _pod_ tersebut. Tanpa jeda, server di dalam _pod_ sudah mulai ditutup dan menolak _request_ tersebut.
+
+_Hook_ `preStop` dijalankan kubelet sebelum `SIGTERM`. Aksi `sleep` menunda `SIGTERM` selama 5 detik, cukup lama hingga _pod_ tidak lagi menerima _request_ baru. Setelah itu, _graceful shutdown_ di `main.go` menyelesaikan _request_ yang sedang diproses. Aksi `sleep` bawaan Kubernetes (tersedia sejak versi 1.30) tidak membutuhkan _shell_. Bentuk `exec` dengan perintah `sleep 5` tidak dapat digunakan, karena _image_ `scratch` tidak memiliki _shell_ maupun _binary_ `sleep`.
+
+`terminationGracePeriodSeconds` dihitung sejak `preStop` dimulai. Setelah batas tersebut lewat, kubelet mengirim `SIGKILL`. Nilainya harus mencakup jeda `preStop`, batas waktu _shutdown_ service, dan 5 detik untuk mengirim sisa telemetri:
+
+#table(
+  columns: (auto, auto, 1fr),
+  [Service], [`terminationGracePeriodSeconds`], [Rincian],
+  [`account`], [30], [5 detik `preStop` + 10 detik untuk panggilan HTTP dan gRPC yang sedang berjalan + 5 detik telemetri, ditambah cadangan],
+  [`notification`], [30], [5 detik `preStop` + _consumer_ berhenti dan 10 detik untuk _request_ HTTP + 5 detik telemetri, ditambah cadangan],
+  [`transfer`], [75], [5 detik `preStop` + 60 detik `shutdownGrace` agar _saga_ tidak terpotong di antara _debit_ dan _credit_ + 5 detik telemetri, ditambah cadangan],
+)
+
+Nilai _default_ Kubernetes (30 detik) tidak cukup untuk `transfer`. Jika `shutdownGrace` di `transfer/main.go` diperbesar, `terminationGracePeriodSeconds` harus ikut diperbesar.
 
 ==== _Security Context_ tanpa `runAsUser`
 
@@ -585,8 +661,19 @@ Tambahkan target berikut ke bagian Lab 9 di `Makefile` (dan ke daftar `.PHONY`):
 # One server node; port 8080 on the laptop goes to the cluster's ingress
 # controller (Traefik, port 80). The k3s image is pinned; k3d itself pulls its
 # helper images (k3d-proxy, k3d-tools) in the version of the k3d binary.
+# k3d writes host.k3d.internal into the CoreDNS ConfigMap, but CoreDNS answers
+# for it only after the ConfigMap reaches its pod, up to a minute later; pods
+# started before that crash with "lookup host.k3d.internal ... no such host".
+# So k3d-up waits until the cluster DNS (k3s default 10.43.0.10) resolves the
+# name, asked from the server node container (its image has nslookup).
 k3d-up:
 	k3d cluster create $(CLUSTER) --image rancher/k3s:v1.36.5-k3s1 -p 8080:80@loadbalancer
+	@echo "waiting until the cluster DNS resolves host.k3d.internal"
+	@for i in $$(seq 90); do \
+		docker exec k3d-$(CLUSTER)-server-0 nslookup host.k3d.internal 10.43.0.10 >/dev/null 2>&1 && exit 0; \
+		sleep 2; \
+	done; \
+	echo "host.k3d.internal does not resolve in the cluster DNS after 180 s" >&2; exit 1
 
 # Copies the images from the local Docker into the cluster's containerd, so no
 # registry is needed (Lab 10 pushes to one).
@@ -606,6 +693,8 @@ k3d-down:
 
 _Image_ k3s di-_pin_ ke `rancher/k3s:v1.36.5-k3s1`. k3d mengunduh sendiri _image_ pendukungnya (`k3d-proxy` untuk _load balancer_ dan `k3d-tools` untuk `image import`) dengan versi yang sama dengan _binary_ k3d.
 
+Bagian kedua `k3d-up` menunggu DNS _cluster_. k3d menulis nama `host.k3d.internal` ke ConfigMap CoreDNS, tetapi CoreDNS baru menjawab nama tersebut setelah ConfigMap sampai ke _pod_-nya, hingga sekitar satu menit kemudian. _Pod_ yang dijalankan sebelum itu berhenti dengan pesan `lookup host.k3d.internal ... no such host` dan di-_restart_ berulang kali. Perulangan di atas menanyakan nama tersebut ke DNS _cluster_ (alamat _default_ k3s `10.43.0.10`) dari _container node_ k3d setiap 2 detik, dan menyerah setelah 180 detik.
+
 === Menjalankan Sistem di k3d
 
 Pastikan infrastruktur berjalan dan _image_ sudah dibangun, lalu buat _cluster_, masukkan _image_, dan terapkan _manifest_:
@@ -618,7 +707,7 @@ make k3d-import VERSION=1.0.0
 make k8s-apply
 ```]
 
-`make k3d-up` membuat _cluster_ bernama `bank` dan menjadikan _context_ `k3d-bank` sebagai _context_ aktif kubectl. `make k8s-apply` selesai jika ketiga Deployment sudah _rolled out_:
+`make k3d-up` membuat _cluster_ bernama `bank` dan menjadikan _context_ `k3d-bank` sebagai _context_ aktif kubectl. Setelah baris `waiting until the cluster DNS resolves host.k3d.internal`, perintah ini biasanya menunggu sekitar 40–60 detik sebelum selesai. `make k8s-apply` selesai jika ketiga Deployment sudah _rolled out_:
 
 // TODO(endy): confirm the exact rollout status lines on a real k3d 5.9.0 run before D-1.
 #perintah[```
@@ -637,7 +726,7 @@ Periksa objek yang dibuat:
 kubectl -n bank get pods,svc,ingress
 ```]
 
-Ketiga _pod_ berstatus `Running` dengan kolom `READY` bernilai `1/1`.
+Ketiga _pod_ berstatus `Running` dengan kolom `READY` bernilai `1/1`, dan kolom `RESTARTS` bernilai `0`.
 
 === Transfer melalui Ingress
 
@@ -733,6 +822,10 @@ kubectl -n bank rollout restart deployment/notification
 kubectl -n bank rollout status deployment/notification
 ```]
 
+`rollout restart` tetap diperlukan setelah nilai dikembalikan. _Pod_ yang berstatus `CrashLoopBackOff` baru mencoba berjalan lagi setelah jeda _backoff_, yang dapat mencapai 5 menit, sedangkan `rollout restart` langsung membuat _pod_ baru.
+
+Setiap `kubectl apply -k k8s/overlays/k3d` melaporkan Secret sebagai `configured`, walaupun isinya tidak berubah. Penyebabnya bagian `stringData` di _overlay_: API _server_ memindahkan isinya ke `data`, sehingga `kubectl apply` selalu melihat perbedaan. Laporan tersebut tidak menandakan masalah.
+
 #note[*Mengapa latihan ini mengubah ConfigMap, bukan Secret.* `kubectl apply` menghapus _key_ yang dihilangkan dari bagian `data` ConfigMap. Untuk Secret yang ditulis dengan `stringData`, hal tersebut tidak terjadi: API _server_ menyimpan isinya di bagian `data` dalam bentuk base64, sehingga _key_ yang dihapus dari `stringData` tetap ada di Secret yang berjalan. Untuk menghapus _key_ dari Secret, hapus objek Secret-nya (`kubectl -n bank delete secret notification`), lalu _apply_ lagi.]
 
 ==== _Rolling Update_ dengan _Tag_ Baru
@@ -746,7 +839,7 @@ kubectl -n bank set image deployment/transfer transfer=studi-kasus/transfer:1.0.
 kubectl -n bank rollout status deployment/transfer
 ```]
 
-Kode tidak perlu diubah. Perubahan _tag_ di _pod template_ sudah cukup untuk memicu _rollout_. Di terminal `get pods -w`, _pod_ baru dibuat dan menjadi _ready_ (`1/1`) terlebih dahulu, baru kemudian _pod_ lama berstatus `Terminating`. Riwayat _rollout_ dapat dilihat dengan:
+Kode tidak perlu diubah. Perubahan _tag_ di _pod template_ sudah cukup untuk memicu _rollout_. Sebaliknya, _build_ ulang dengan _tag_ `1.0.0` yang sama tidak memicu _rollout_ apa pun, karena referensi _image_ di Deployment tidak berubah. Di terminal `get pods -w`, _pod_ baru dibuat dan menjadi _ready_ (`1/1`) terlebih dahulu, baru kemudian _pod_ lama berstatus `Terminating`. Riwayat _rollout_ dapat dilihat dengan:
 
 #perintah[```bash
 kubectl -n bank rollout history deployment/transfer
@@ -763,7 +856,7 @@ kubectl -n bank rollout status deployment/transfer
 kubectl -n bank get deployment transfer -o jsonpath='{.spec.template.spec.containers[0].image}'
 ```]
 
-_Image_ kembali ke `studi-kasus/transfer:1.0.0`, dengan pola penggantian _pod_ yang sama seperti _rolling update_.
+_Image_ kembali ke `studi-kasus/transfer:1.0.0`, dengan pola penggantian _pod_ yang sama seperti _rolling update_. `rollout undo` dapat menampilkan peringatan tentang anotasi `last-applied-configuration`. Peringatan tersebut tidak berpengaruh pada _rollback_ dan dapat diabaikan.
 
 === Menghapus _Cluster_
 
@@ -779,7 +872,7 @@ Untuk menjalankan sistem di k3d lagi, buat ulang _cluster_ dengan `make k3d-up`,
 
 Jalankan pemeriksaan berikut dari direktori `studi-kasus/` dengan _cluster_ `bank` dan infrastruktur yang berjalan.
 
-+ Ketiga _image_ ada, masing-masing sekitar 8 MB (_containerd image store_) atau 21–23 MB (_image store_ klasik):
++ Ketiga _image_ ada, masing-masing dengan `CONTENT SIZE` sekitar 8–9 MB (_containerd image store_) atau `SIZE` sekitar 21–23 MB (_image store_ klasik):
   #perintah[```bash
   docker images 'studi-kasus/*'
   ```]
@@ -817,6 +910,8 @@ Jalankan pemeriksaan berikut dari direktori `studi-kasus/` dengan _cluster_ `ban
 == Masalah Umum
 
 *_Pod_ berstatus `ErrImagePull` atau `ImagePullBackOff`.* _Image_ dengan _tag_ yang diminta tidak ada di _cluster_, sehingga kubelet mencoba mengunduhnya dari Docker Hub. Penyebabnya `make k3d-import` belum dijalankan, dijalankan dengan `VERSION` yang berbeda, atau _cluster_ dibuat ulang setelah _import_. Jalankan `make k3d-import VERSION=<tag>` dengan _tag_ yang sama dengan `newTag` di `kustomization.yaml`, lalu hapus _pod_ yang gagal agar dibuat ulang.
+
+*_Pod_ berstatus `CrashLoopBackOff` setelah Docker atau laptop di-_restart_.* _Container_ k3d berjalan lagi tanpa nama `host.k3d.internal` di DNS _cluster_, dan log _pod_ memuat `lookup host.k3d.internal ... no such host`. Jalankan `k3d cluster stop bank`, lalu `k3d cluster start bank`. k3d menulis nama tersebut lagi, dan _pod_ berjalan normal dalam satu hingga dua menit tanpa perintah tambahan.
 
 *_Pod_ berstatus `CrashLoopBackOff`.* Baca lognya dengan `kubectl -n bank logs <pod> --previous`. Pesan `missing required environment variables` berarti ada _key_ yang belum diisi di ConfigMap atau Secret _overlay_. Pesan koneksi database atau Kafka yang gagal berarti `host.k3d.internal` tidak menjangkau port di laptop; pastikan `make infra-up` sudah berjalan dan `docker compose ps` menampilkan port yang dibutuhkan.
 
