@@ -14,7 +14,7 @@ Setelah menyelesaikan lab ini, peserta mampu:
 
 == Gambaran
 
-Pada Lab 1, sistem baru berisi satu service: account service dengan database `account`. Lab 2 menambahkan transfer service. Satu transfer memindahkan sejumlah uang dari rekening sumber ke rekening tujuan. Data rekening dan saldo tetap dimiliki account service, sehingga transfer service tidak boleh membaca atau mengubah tabel `account` secara langsung. Satu-satunya jalan adalah memanggil API milik account service.
+Sampai akhir Lab 1, sistem hanya berisi account service dengan database `account`. Lab 2 menambahkan transfer service. Transfer memindahkan sejumlah uang dari rekening sumber ke rekening tujuan. Data rekening dan saldo tetap dimiliki account service, sehingga transfer service tidak boleh membaca atau mengubah tabel `account` secara langsung. Satu-satunya jalan adalah memanggil API milik account service.
 
 ```
                  POST /transfers
@@ -37,11 +37,11 @@ Setiap service memiliki database sendiri di _container_ PostgreSQL yang berbeda.
 - *Tanpa _timeout_.* Jika account service lambat, setiap transfer ikut menunggu tanpa batas. Lab 3 menambahkan _timeout_, _retry_, dan _circuit breaker_.
 - *Tanpa kompensasi.* Jika debit berhasil lalu kredit gagal, uang sudah keluar dari rekening sumber tetapi tidak masuk ke rekening tujuan. Transfer ditandai `FAILED` dan dicatat di _log_ untuk dikoreksi manual. Lab 5 menyelesaikan masalah ini dengan pola _saga_.
 
-Perubahan pada lab ini terbagi dua bagian. Bagian pertama melengkapi account service dengan endpoint debit dan kredit. Bagian kedua membangun transfer service dari awal.
+Perubahan pada lab ini terbagi dua bagian. Bagian pertama melengkapi account service dengan _endpoint_ debit dan kredit. Bagian kedua membangun transfer service dari awal.
 
 == Titik Awal
 
-Lab ini dimulai dari checkpoint `lab-01`. Peserta yang sudah menyelesaikan Lab 1 dapat melanjutkan dari kode sendiri. Peserta yang tertinggal atau ingin memulai dari kondisi yang bersih dapat membuat _branch_ kerja dari tag `lab-01`:
+Lab ini dimulai dari _checkpoint_ `lab-01`. Peserta yang sudah menyelesaikan Lab 1 dapat melanjutkan dari kode sendiri. Peserta yang tertinggal atau ingin memulai dari kondisi yang bersih dapat membuat _branch_ kerja dari tag `lab-01`:
 
 #perintah[```bash
 cd training-microservices-2026-01
@@ -190,7 +190,7 @@ func (s *PostgresStore) Mutate(ctx context.Context, number string, t MutationTyp
 
 === Endpoint debit dan kredit
 
-Account service kini membutuhkan dua endpoint baru: `POST /accounts/{number}/debit` dan `POST /accounts/{number}/credit`. Logika keduanya identik kecuali `MutationType`, sehingga satu fungsi pembuat _handler_ cukup untuk keduanya.
+Account service kini membutuhkan dua _endpoint_ baru: `POST /accounts/{number}/debit` dan `POST /accounts/{number}/credit`. Logika keduanya identik kecuali `MutationType`, sehingga satu fungsi pembuat _handler_ cukup untuk keduanya.
 
 Kode pembacaan JSON dari Lab 1 juga akan dibutuhkan oleh _handler_ baru. Pindahkan kode tersebut ke fungsi `decode` supaya tidak ditulis dua kali. Tambahkan fungsi berikut di `account/internal/account/http.go`, tepat sebelum `writeError`:
 
@@ -339,9 +339,12 @@ Setiap service adalah modul Go tersendiri dengan `go.mod` sendiri. Pemisahan ini
 mkdir -p transfer/internal/transfer transfer/internal/accountclient
 cd transfer
 go mod init github.com/artivisi/training-microservices-2026-01/studi-kasus/transfer
+go mod edit -go=1.26.0
 cd ..
 go work use ./transfer
 ```]
+
+Seperti pada Lab 1, `go mod init` menuliskan versi Go yang terpasang di laptop, sehingga `go mod edit -go=1.26.0` menurunkan versi minimal modul `transfer` ke 1.26.0, sama dengan _checkpoint_. Jika baris `go` di `go.work` ikut naik setelah `go work use`, kembalikan dengan `go work edit -go=1.26.0`.
 
 Setelah perintah di atas, `go.work` berisi dua modul:
 
@@ -653,7 +656,7 @@ Fungsi `fail` mengembalikan `cause` apa adanya, yaitu _error_ dari account clien
 
 === REST client ke account service
 
-Paket `accountclient` mengimplementasikan _interface_ `AccountClient` dengan memanggil endpoint debit dan kredit milik account service. Tugas utamanya adalah menerjemahkan respons HTTP menjadi _error_ yang dipahami paket `transfer`:
+Paket `accountclient` mengimplementasikan _interface_ `AccountClient` dengan memanggil _endpoint_ debit dan kredit milik account service. Tugas utamanya adalah menerjemahkan respons HTTP menjadi _error_ yang dipahami paket `transfer`:
 
 #table(
   columns: (auto, 1fr),
@@ -1215,7 +1218,7 @@ Keluaran berisi baris `ok` untuk paket `account/internal/account`, `transfer/int
 
 === Konfigurasi wajib
 
-Jalankan transfer service tanpa variabel _environment_ untuk memastikan service menolak berjalan:
+Jalankan transfer service tanpa variabel _environment_. Service harus langsung berhenti dan menyebutkan variabel yang belum diisi:
 
 #perintah[```bash
 cd transfer && go run . ; cd ..
@@ -1324,7 +1327,7 @@ Transfer menghasilkan `502 Bad Gateway` dengan `"status":"FAILED"` dan `failure_
 
 == Masalah Umum
 
-*`main module (...) does not contain package` atau paket transfer tidak ditemukan.* Modul `transfer` belum terdaftar di `go.work`. Jalankan `go work use ./transfer` dari folder `studi-kasus/`, lalu periksa isi `go.work`.
+*`current directory is contained in a module that is not one of the workspace modules listed in go.work` atau `directory prefix . does not contain modules listed in go.work`.* Modul `transfer` belum terdaftar di `go.work`. Pesan pertama muncul dari `go run .`, pesan kedua dari `go test ./...` di folder `transfer/`. Jalankan `go work use ./transfer` dari folder `studi-kasus/`, lalu periksa isi `go.work`.
 
 *`missing go.sum entry` atau `no required module provides package`.* _Dependency_ belum diunduh. Jalankan `go get` dan `go mod tidy` di folder `transfer/` seperti pada langkah Makefile dan _dependency_.
 
@@ -1336,26 +1339,28 @@ Transfer menghasilkan `502 Bad Gateway` dengan `"status":"FAILED"` dan `failure_
 
 *`relation "mutation" does not exist` di _log_ account service.* Account service yang sedang berjalan masih versi lama. Hentikan dengan `Ctrl+C` dan jalankan ulang `make -C account run` supaya schema baru diterapkan.
 
-*Semua transfer gagal dengan `502` padahal account service berjalan.* Periksa nilai `ACCOUNT_SERVICE_URL` pada _log_ `transfer service listening`. Nilainya harus `http://localhost:8081`, tanpa garis miring di akhir dan tanpa `/accounts`.
+*Semua transfer gagal dengan `502` dan `failure_reason` berisi `405 Method Not Allowed`, padahal account service berjalan.* Nilai `ACCOUNT_SERVICE_URL` diakhiri garis miring, misalnya `http://localhost:8081/`. Path permintaan menjadi `//accounts/...`, ServeMux mengalihkannya dengan `301`, dan _HTTP client_ mengikuti pengalihan tersebut sebagai `GET`, yang ditolak account service dengan `405`. Periksa nilai tersebut pada _log_ `transfer service listening`. Nilainya harus `http://localhost:8081`.
+
+*Semua transfer gagal dengan `422` dan `failure_reason` `debit failed: debit ...: account not found`, termasuk untuk rekening yang ada.* Nilai `ACCOUNT_SERVICE_URL` diakhiri `/accounts`, sehingga path permintaan menjadi `/accounts/accounts/{number}/debit` dan account service menjawab `404`. Paket `accountclient` menerjemahkan setiap `404` menjadi `ErrAccountNotFound`, sehingga kesalahan konfigurasi ini terlihat seperti penolakan bisnis. Hapus `/accounts` dari nilai tersebut.
 
 *`bind: address already in use` pada port 8081 atau 8082.* Masih ada proses lama yang berjalan, misalnya dari terminal lain. Hentikan proses tersebut, atau cari dengan `lsof -i :8082`.
 
 == Eksplorasi Mandiri
 
-+ *Account service yang lambat.* Lab ini menyebut _HTTP client_ tanpa _timeout_ sebagai kelemahan. Buktikan dengan membekukan proses account service. Cari PID _binary_ hasil `go run` dengan `pgrep -f 'exe/account'`, bekukan dengan `kill -STOP <pid>`, lalu kirim transfer. Amati bahwa `curl` menunggu tanpa batas. Cairkan kembali dengan `kill -CONT <pid>` dan perhatikan bahwa transfer yang tertunda langsung selesai. Bayangkan dampaknya jika ratusan transfer menunggu bersamaan.
++ *Account service yang lambat.* Lab ini menyebut _HTTP client_ tanpa _timeout_ sebagai kelemahan. Buktikan dengan menghentikan sementara proses account service. Cari PID _binary_ hasil `go run` dengan `pgrep -f 'exe/account'`, hentikan sementara dengan `kill -STOP <pid>`, lalu kirim transfer. Amati bahwa `curl` menunggu tanpa batas. Lanjutkan kembali proses tersebut dengan `kill -CONT <pid>` dan perhatikan bahwa transfer yang tertunda langsung selesai. Bayangkan dampaknya jika ratusan transfer menunggu bersamaan.
 + *Debit bersamaan.* Buat rekening dengan saldo 100000, lalu kirim sepuluh transfer masing-masing 20000 secara paralel, misalnya dengan `for i in $(seq 10); do curl ... & done; wait`. Hitung jumlah transfer `COMPLETED` dan periksa bahwa saldo tidak pernah negatif. Jelaskan peran klausa `where balance + @delta >= 0` dalam hasil tersebut.
 + *Rekonsiliasi.* Tulis _query_ SQL di database `account` yang menampilkan referensi transfer dengan `DEBIT` tetapi tanpa `CREDIT`. _Query_ ini adalah bentuk paling sederhana dari laporan rekonsiliasi untuk koreksi manual pada _known gap_.
-+ *Context yang dibatalkan.* Ganti sementara `context.WithoutCancel(r.Context())` dengan `r.Context()`, gabungkan dengan percobaan nomor 1, lalu hentikan `curl` dengan `Ctrl+C` sebelum account service dicairkan. Amati status akhir transfer tersebut, lalu kembalikan kodenya.
++ *Context yang dibatalkan.* Ganti sementara `context.WithoutCancel(r.Context())` dengan `r.Context()`, gabungkan dengan percobaan nomor 1, lalu hentikan `curl` dengan `Ctrl+C` sebelum proses account service dilanjutkan dengan `kill -CONT`. Amati status akhir transfer tersebut, lalu kembalikan kodenya.
 
 == Checkpoint
 
-Kondisi akhir lab ini tersedia sebagai tag `lab-02`. Bandingkan hasil kerja dengan checkpoint untuk menemukan bagian yang terlewat:
+Kondisi akhir lab ini tersedia sebagai tag `lab-02`. Bandingkan hasil kerja dengan _checkpoint_ untuk menemukan bagian yang terlewat:
 
 #perintah[```bash
 git diff lab-02 -- studi-kasus
 ```]
 
-Peserta yang ingin langsung melanjutkan ke Lab 3 dari kondisi checkpoint dapat menjalankan:
+Peserta yang ingin langsung melanjutkan ke Lab 3 dari kondisi _checkpoint_ dapat menjalankan:
 
 #perintah[```bash
 git switch -c kerja-lab-03 lab-02
