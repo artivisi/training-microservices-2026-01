@@ -55,13 +55,13 @@ Setiap pola menambah komponen yang harus dioperasikan. Pola yang tidak menjawab 
   [API untuk kanal (_mobile_, web, mitra). Klien beragam dan interoperabilitas lebih penting dibandingkan efisiensi],
   [Panggilan internal yang sering dengan kontrak ketat (gunakan gRPC). Pemanggil tidak menunggu hasil (gunakan _messaging_)],
   [Pemanggil ikut lambat atau gagal saat service tujuan bermasalah. Kontrak hanya tercatat di dokumentasi dan tidak diperiksa _compiler_],
-  [2, 3],
+  [1, 2, 3],
 
   [*gRPC*],
   [Kontrak antar-service internal tidak terdefinisi tegas. Serialisasi JSON boros untuk panggilan internal yang sering],
   [Panggilan antar-service internal. Kontrak perlu diperiksa saat kompilasi (protobuf). Autentikasi, log, dan _resiliency_ ditangani terpusat di _interceptor_],
   [Klien berupa _browser_ atau mitra eksternal. Tim belum siap mengelola protoc dan versi kontrak],
-  [Kode hasil _generate_ harus dikelola. Perubahan kontrak wajib kompatibel mundur, nomor _field_ tidak boleh digunakan ulang. _Debugging_ membutuhkan grpcurl atau _reflection_. _Load balancer_ harus mendukung HTTP/2],
+  [Kode hasil _generate_ harus dikelola. Perubahan kontrak wajib kompatibel mundur, nomor _field_ tidak boleh digunakan ulang. _Debugging_ membutuhkan grpcurl, dengan _reflection_ aktif di server atau file `.proto`. Koneksi HTTP/2 bersifat persisten, sehingga _Service_ Kubernetes (L4) mengarahkan semua panggilan ke satu _pod_. Pembagian beban membutuhkan _load balancing_ di sisi klien atau _proxy_ L7],
   [4],
 
   [*_Messaging_ asinkron* (Kafka)],
@@ -72,19 +72,19 @@ Setiap pola menambah komponen yang harus dioperasikan. Pola yang tidak menjawab 
   [5, 6],
 )
 
-= Resiliency
+= _Resiliency_
 
 #pola(
   [*Timeout*],
   [Service tujuan yang lambat menahan _goroutine_, koneksi, dan permintaan pemanggil tanpa batas waktu],
-  [Selalu, pada setiap panggilan jaringan. Nilainya ditentukan dari latensi p99 service tujuan dan batas waktu yang dijanjikan ke pemanggil],
+  [Setiap panggilan jaringan, tanpa kecuali. Nilainya ditentukan dari latensi p99 service tujuan dan batas waktu yang dijanjikan ke pemanggil],
   [Tidak ada pengecualian untuk panggilan jaringan],
   [Timeout yang terlalu pendek menggagalkan permintaan yang sebenarnya akan berhasil. Setelah timeout, status di sisi tujuan tidak diketahui: debit mungkin sudah tercatat],
   [3, 4],
 
   [*Retry* dengan _backoff_],
   [Gangguan sesaat (koneksi ditolak, HTTP 503, _pod restart_) menggagalkan permintaan yang akan berhasil pada percobaan berikutnya],
-  [Gangguan bersifat sementara, dan operasi idempoten atau permintaan terbukti belum diproses (koneksi ditolak, HTTP 503, `Unavailable`)],
+  [Gangguan bersifat sementara, dan operasi idempoten atau permintaan terbukti belum diproses (koneksi ditolak). HTTP 503 dan `Unavailable` hanya aman di-retry bila server menjamin status tersebut dikirim sebelum operasi dijalankan (di studi kasus: _fault injection_ di account). Bila tidak ada jaminan tersebut, operasi harus dibuat idempoten lebih dahulu (Lab 5)],
   [Operasi tidak idempoten setelah timeout (risiko debit ganda). Kesalahan bisnis (4xx, saldo tidak cukup). _Circuit breaker_ sedang _open_],
   [Retry tanpa _backoff_ dan _jitter_ memperberat service yang sedang bermasalah (_retry storm_). Retry di beberapa tingkat panggilan berlipat ganda. Latensi total bertambah],
   [3, 4, 5],
@@ -103,8 +103,8 @@ Setiap pola menambah komponen yang harus dioperasikan. Pola yang tidak menjawab 
   [*Saga*],
   [Satu transaksi bisnis mengubah data di beberapa _database_. _Two-phase commit_ membuat transaksi bergantung pada ketersediaan semua peserta sekaligus],
   [Proses bisnis lintas service dengan aksi kompensasi untuk setiap langkah (debit dibatalkan dengan kredit balik)],
-  [Seluruh data berada dalam satu _database_ (transaksi lokal sudah cukup). Langkah tidak dapat dibatalkan dan tidak memiliki kompensasi],
-  [State antara (`DEBITED`) terlihat oleh pembaca. Kompensasi dapat gagal dan membutuhkan penanganan manual (`COMPENSATION_FAILED`). Setiap langkah dan kompensasi harus idempoten],
+  [Seluruh data berada dalam satu _database_ (transaksi lokal sudah cukup)],
+  [State antara (`DEBITED`) terlihat oleh pembaca. Kompensasi dapat gagal dan membutuhkan penanganan manual (`COMPENSATION_FAILED`). Setiap langkah dan kompensasi harus idempoten. Langkah yang tidak dapat dikompensasi (misalnya pengiriman dana ke bank lain) diletakkan paling akhir (_pivot transaction_), dan langkah sesudahnya wajib dapat di-retry hingga berhasil],
   [5],
 
   [*Transactional outbox*],
@@ -129,7 +129,7 @@ Setiap pola menambah komponen yang harus dioperasikan. Pola yang tidak menjawab 
   [6],
 )
 
-== Saga: _Orchestration_ dan _Choreography_
+== Perbandingan _Orchestration_ dan _Choreography_ pada Saga
 
 #{
   set text(size: 8pt)
@@ -142,7 +142,7 @@ Setiap pola menambah komponen yang harus dioperasikan. Pola yang tidak menjawab 
     [Ketergantungan], [Orkestrator mengenal semua peserta], [Peserta hanya mengenal _event_, tetapi alur bisnis tersirat di banyak service],
     [Cocok untuk], [Alur dengan urutan ketat dan kompensasi bertingkat, seperti transfer dana], [Alur pendek dengan sedikit peserta dan langkah yang saling lepas],
     [Risiko], [Orkestrator menampung terlalu banyak logika bisnis], [Siklus _event_ antar-service dan alur yang sulit diubah tanpa menyentuh semua peserta],
-    [Di studi kasus], [Transfer sebagai orkestrator: `PENDING` → `DEBITED` → `COMPLETED`, atau `COMPENSATED` / `FAILED` (Lab 5)], [Notification bereaksi terhadap _event_ transfer tanpa dipanggil langsung (Lab 5)],
+    [Di studi kasus], [Transfer sebagai orkestrator: `PENDING` → `DEBITED` → `COMPLETED`, atau `COMPENSATED` / `FAILED` (Lab 5)], [Tidak diterapkan. Notification hanya _consumer_ _event_ akhir transfer dan tidak menjadi langkah saga. Versi _choreography_: account mem-_publish_ `AccountDebited`, lalu service lain bereaksi terhadap _event_ tersebut dan melakukan kredit tanpa orkestrator],
   )
 }
 
@@ -164,9 +164,9 @@ Setiap pola menambah komponen yang harus dioperasikan. Pola yang tidak menjawab 
   [8],
 
   [*Metrics* (Prometheus)],
-  [Laju error, latensi, state _breaker_, dan antrean outbox baru diketahui setelah pengguna mengeluh],
+  [Laju _error_, latensi, state _breaker_, dan antrean outbox baru diketahui setelah pengguna mengeluh],
   [Setiap service: _rate_, _error_, _duration_ per _route_, ditambah metrik bisnis (`transfers_total`) dan metrik pola (`circuit_breaker_state`, `outbox_pending`)],
-  [Tidak ada pengecualian. Yang perlu dibatasi adalah jumlah dan isi label],
+  [Selalu diperlukan. Jumlah dan isi label harus dibatasi],
   [Label berkardinalitas tinggi (ID transfer, nomor rekening) membebani Prometheus. Metrik tanpa _alert_ dan _dashboard_ tidak pernah dibaca],
   [8],
 
@@ -185,11 +185,11 @@ Setiap pola menambah komponen yang harus dioperasikan. Pola yang tidak menjawab 
   [Konfigurasi tertanam di kode atau _image_, sehingga _image_ yang sama tidak dapat dipindahkan antar-_environment_],
   [Service yang di-_deploy_ ke lebih dari satu _environment_. Nilai rahasia dipisahkan ke Secret, nilai lain ke ConfigMap],
   [Konstanta bisnis yang sama di semua _environment_ tetap ditulis di kode],
-  [Variabel wajib yang hilang harus menghentikan _startup_ dengan pesan error yang menyebut nama variabelnya. Nilai _default_ menyembunyikan konfigurasi yang terlewat hingga _production_],
+  [Variabel wajib yang hilang harus menghentikan _startup_ dengan pesan _error_ yang menyebut nama variabelnya. Nilai _default_ menyembunyikan konfigurasi yang terlewat hingga _production_],
   [1, 9],
 
   [*Container image*: _multi-stage_, _static_, _non-root_],
-  [_Image_ yang memuat _compiler_ dan _shell_ berukuran besar dan memperluas permukaan serangan. Proses _root_ ditolak platform dengan kebijakan ketat (OpenShift _restricted SCC_)],
+  [_Image_ yang memuat _compiler_ dan _shell_ berukuran besar dan memperluas _attack surface_. Proses _root_ ditolak platform dengan kebijakan ketat (OpenShift _restricted SCC_)],
   [Setiap service yang berjalan di Kubernetes atau OpenShift. Go dengan `CGO_ENABLED=0` menghasilkan _binary_ statis yang cukup dijalankan di `FROM scratch`],
   [Aplikasi membutuhkan _library_ C (CGO) atau _tools_ di dalam _container_. Gunakan _base image_ minimal sebagai pengganti `scratch`],
   [_Shell_ untuk _debugging_ tidak tersedia (gunakan `kubectl debug`). Sertifikat CA harus disalin manual. Aplikasi wajib berjalan dengan UID acak dan _filesystem read-only_],
@@ -198,7 +198,7 @@ Setiap pola menambah komponen yang harus dioperasikan. Pola yang tidak menjawab 
   [*Rolling update*],
   [Mengganti semua _pod_ sekaligus menghentikan layanan selama versi baru dijalankan],
   [Versi baru kompatibel dengan versi lama selama masa transisi, baik API maupun skema _database_],
-  [Dua versi tidak dapat berjalan bersamaan (perubahan skema yang tidak kompatibel). Gunakan strategi _recreate_ atau _blue-green_],
+  [Perubahan skema yang tidak kompatibel: gunakan migrasi _expand/contract_ (kolom baru ditambahkan lebih dahulu, kolom lama dihapus setelah versi lama berhenti), atau strategi _recreate_ dengan jeda layanan. API yang tidak kompatibel: gunakan _blue-green_, karena trafik dipindahkan sekaligus],
   [Dua versi melayani trafik bersamaan. _Readiness_ yang keliru meloloskan _pod_ yang rusak. _Rollback_ membutuhkan _tag image_ yang tidak berubah, sehingga tag `latest` harus dihindari],
   [9, 10],
 
@@ -212,7 +212,7 @@ Setiap pola menambah komponen yang harus dioperasikan. Pola yang tidak menjawab 
   [*CI/CD per service*],
   [Rilis satu service menunggu service lain. _Deployment_ manual tidak seragam dan tidak tercatat],
   [Service dirilis independen. Setiap _commit_ diuji, dijadikan _image_ dengan _tag_ berupa _commit hash_, lalu di-_deploy_ otomatis. _Pipeline_ hanya memanggil target `make`, sehingga dapat dipetakan ke Jenkinsfile],
-  [Service selalu dirilis bersamaan. Kondisi ini menandakan _distributed monolith_; batas service perlu diperbaiki lebih dahulu],
+  [Service selalu dirilis bersamaan. Kondisi ini menandakan _distributed monolith_, sehingga batas service perlu diperbaiki lebih dahulu],
   [Jumlah _pipeline_ sebanding dengan jumlah service. Perubahan modul bersama (`proto`) memicu _pipeline_ beberapa service. _Credential_ _registry_ dan _cluster_ harus dikelola di _runner_],
   [10],
 
