@@ -16,7 +16,7 @@ Setelah menyelesaikan lab ini, peserta mampu:
 
 == Gambaran
 
-Ketiga sinyal tersebut saling melengkapi. _Metric_ menunjukkan bahwa ada masalah dan seberapa besar dampaknya, _trace_ menunjukkan di service mana waktu habis, sedangkan log menjelaskan apa yang terjadi di dalam service tersebut.
+Ketiga sinyal tersebut saling melengkapi. _Metric_ menunjukkan adanya masalah beserta besar dampaknya. _Trace_ menunjukkan service yang menghabiskan waktu paling lama, dan log menjelaskan kejadian di dalam service tersebut.
 
 #table(
   columns: (auto, 1fr, 1fr),
@@ -40,7 +40,7 @@ notification :28083 -+                               |- Collector -> Tempo (trac
 
 Arah _metric_ berlawanan dengan dua sinyal lainnya. Log dan _trace_ didorong (_push_) oleh service ke _collector_, sedangkan _metric_ diambil (_pull_, _scrape_) oleh Prometheus dari service. Karena service berjalan di laptop dan Prometheus di dalam _container_, Prometheus menghubungi laptop lewat nama `host.docker.internal`.
 
-Bagian tersulit lab ini adalah menjaga satu _trace_ tetap utuh di tiga service. Untuk HTTP dan gRPC, OpenTelemetry sudah menyediakan instrumentasi (`otelhttp`, `otelgrpc`) yang menulis dan membaca _header_ `traceparent` (standar W3C _Trace Context_). Jalur Kafka lebih rumit: _relay outbox_ mengirim _event_ dari _goroutine_ terpisah, setelah _request_ asal selesai. Pada saat itu _context_ milik _request_ sudah tidak ada. Karena itu _correlation ID_ dan _trace context_ disimpan di baris tabel `outbox` dalam transaksi yang sama dengan _event_, lalu _relay_ menyalinnya ke _header_ Kafka. Hasilnya satu _trace_ seperti berikut:
+Tantangan utama lab ini terletak pada upaya menjaga satu _trace_ tetap utuh melintasi tiga service. Untuk HTTP dan gRPC, OpenTelemetry sudah menyediakan instrumentasi (`otelhttp`, `otelgrpc`) yang menulis dan membaca _header_ `traceparent` (standar W3C _Trace Context_). Jalur Kafka lebih rumit: _relay outbox_ mengirim _event_ dari _goroutine_ terpisah, setelah _request_ asal selesai. Pada saat itu _context_ milik _request_ sudah tidak ada. Karena itu _correlation ID_ dan _trace context_ disimpan di baris tabel `outbox` dalam transaksi yang sama dengan _event_, lalu _relay_ menyalinnya ke _header_ Kafka. Hasilnya satu _trace_ seperti berikut:
 
 ```
 transfer      POST /transfers
@@ -53,7 +53,7 @@ transfer        publish transfer-events            (relay outbox)
 notification      process transfer-events
 ```
 
-_Correlation ID_ dan _trace ID_ memiliki peran berbeda. _Correlation ID_ adalah ID tingkat bisnis yang dapat disebut oleh pemanggil, misalnya aplikasi _channel_ yang melaporkan "transfer dengan _correlation ID_ X gagal". _Trace ID_ adalah ID teknis buatan OpenTelemetry. Keduanya ditulis di setiap baris log.
+_Correlation ID_ dan _trace ID_ memiliki peran berbeda. _Correlation ID_ merupakan ID di sisi bisnis yang diketahui pemanggil, sehingga pemanggil, misalnya aplikasi _channel_, dapat melaporkan "transfer dengan _correlation ID_ X gagal". _Trace ID_ adalah ID teknis buatan OpenTelemetry. Keduanya ditulis di setiap baris log.
 
 #table(
   columns: (auto, 1fr, 1fr),
@@ -69,10 +69,14 @@ Lab ini melanjutkan kode dari akhir Lab 7. Peserta yang belum menyelesaikan Lab 
 
 #perintah[```bash
 cd training-microservices-2026-01
-git switch -c latihan-lab-08 lab-07
+git switch -c lab-08-kerja lab-07
 cd studi-kasus
 make infra-up
 ```]
+
+Semua perintah di bab ini dijalankan dari folder `studi-kasus`, kecuali disebutkan lain.
+
+Pastikan service lama sudah berhenti. Hentikan `account`, `transfer`, dan `notification` dengan Ctrl+C di terminal masing-masing. Ketiganya dijalankan ulang dengan variabel `OTEL_*` yang baru di langkah berikutnya.
 
 Database dari Lab 7 tidak perlu di-_reset_. Kolom baru di tabel `outbox` dibuat otomatis oleh _schema_ `transfer` saat service dijalankan.
 
@@ -85,11 +89,11 @@ Rekening `1111111111` dan `2222222222` dari lab sebelumnya digunakan di seluruh 
 Konfigurasi Prometheus dan _dashboard_ Grafana sudah disediakan, sama seperti konfigurasi Hydra di Lab 7. Fokus lab ini ada di kode service, sehingga _file_ konfigurasi tersebut cukup disalin dari _checkpoint_:
 
 #perintah[```bash
-git checkout lab-08 -- studi-kasus/observability
-ls studi-kasus/observability studi-kasus/observability/dashboards
+git checkout lab-08 -- observability Makefile
+ls observability observability/dashboards
 ```]
 
-Folder tersebut berisi tiga _file_:
+`Makefile` di folder `studi-kasus` mendapat _target_ `metrics`, yang membaca `/metrics` dari ketiga service lalu menyaring _metric_ domain. Folder `observability` berisi tiga _file_:
 
 #table(
   columns: (auto, 1fr),
@@ -133,7 +137,6 @@ Folder tersebut berisi tiga _file_:
 _Container_ ini tidak memiliki _volume_ data: semua log, _trace_, dan _metric_ hilang ketika _container_ dibuat ulang. Untuk lab, kondisi tersebut justru memudahkan, karena setiap sesi dimulai dari data kosong.
 
 #perintah[```bash
-cd studi-kasus
 make infra-up
 docker compose ps otel-lgtm
 ```]
@@ -460,7 +463,7 @@ Atribut _span_ `correlation.id` membuat _trace_ dapat dicari di Tempo dengan _co
 
 _Metric_ durasi _request_ diberi _label_ `method`, `route`, dan `status`. Isi `route` adalah _pattern_ ServeMux (`/transfers/{id}`), tidak boleh _path_ lengkap (`/transfers/8f3c...`). Setiap kombinasi nilai _label_ menjadi satu _time series_ di Prometheus. Bila _path_ lengkap dijadikan _label_, setiap ID transfer menambah satu _series_ baru, jumlahnya tumbuh tanpa batas, dan akhirnya Prometheus kehabisan memori. Masalah ini dikenal sebagai _high cardinality_.
 
-ServeMux menulis _pattern_ yang cocok ke `r.Pattern` pada `*http.Request` yang diterimanya. Nilai tersebut hanya terbaca bila pembungkus `route` memegang `*http.Request` yang sama, sehingga `route` harus membungkus _mux_ secara langsung, tanpa _middleware_ lain yang memanggil `r.WithContext` di antaranya. Buat `transfer/internal/telemetry/http.go`:
+ServeMux menulis _pattern_ yang cocok ke `r.Pattern` pada `*http.Request` yang diterimanya. Nilai tersebut hanya terbaca bila pembungkus `route` menerima objek `*http.Request` yang sama dengan yang diproses ServeMux, sehingga `route` harus membungkus _mux_ secara langsung, tanpa _middleware_ lain yang memanggil `r.WithContext` di antaranya. Buat `transfer/internal/telemetry/http.go`:
 
 ```go
 package telemetry
@@ -667,6 +670,8 @@ _Relay outbox_ kini menerima nama _topic_ untuk menamai _span_-nya (perubahan `N
 		outbox.NewRelay(store.Pool(), writer, cfg.KafkaTopic, log).Run(relayCtx)
 ```
 
+Log `transfer service listening` mendapat atribut `"otlp_endpoint", cfg.OTelEndpoint` agar alamat _collector_ terlihat saat _startup_.
+
 Tambahkan _import_ `promhttp`, `otelhttp`, `golang.org/x/oauth2`, dan paket `telemetry`:
 
 ```go
@@ -677,7 +682,7 @@ Tambahkan _import_ `promhttp`, `otelhttp`, `golang.org/x/oauth2`, dan paket `tel
 	"github.com/artivisi/training-microservices-2026-01/studi-kasus/transfer/internal/telemetry"
 ```
 
-=== Client gRPC: _Correlation ID_, _Span_, dan _Metric_ _Circuit Breaker_
+=== Telemetri pada Client gRPC dan _Circuit Breaker_
 
 Di `transfer/internal/accountclient/client.go`, client gRPC mendapat tiga tambahan. _Interceptor_ `UnaryClientCorrelation` ditaruh paling depan di rantai _interceptor_ agar _correlation ID_ ditambahkan satu kali, sebelum _token_ dan kebijakan _resiliency_. `otelgrpc.NewClientHandler` dipasang sebagai _stats handler_, sehingga setiap percobaan, termasuk setiap _retry_, menjadi satu _span_ tersendiri. Ganti bagian opsi `grpc.NewClient`:
 
@@ -749,7 +754,7 @@ _Import_ yang ditambahkan: `prometheus`, `promauto`, `otelgrpc`, dan paket `tele
 
 === _Metric_ Bisnis dan Atribut _Span_ Transfer
 
-_Metric_ HTTP menunjukkan kondisi _request_, sedangkan `transfers_total` menunjukkan kondisi uang. Kenaikan jumlah `COMPENSATED` atau `FAILED` adalah insiden bisnis, walaupun setiap _request_ dijawab dengan cepat. Buat `transfer/internal/transfer/metrics.go`:
+_Metric_ HTTP menunjukkan kesehatan pemrosesan _request_, sedangkan `transfers_total` menunjukkan hasil transfer dana. Kenaikan jumlah `COMPENSATED` atau `FAILED` adalah insiden bisnis, walaupun setiap _request_ dijawab dengan cepat. Buat `transfer/internal/transfer/metrics.go`:
 
 ```go
 package transfer
@@ -981,9 +986,14 @@ func (r *Relay) updatePending(ctx context.Context) {
 }
 ```
 
-_Import_ yang ditambahkan: `prometheus`, `promauto`, `go.opentelemetry.io/otel`, `.../otel/attribute`, `.../otel/propagation`, `.../otel/trace`, dan paket `telemetry`. Jalankan pengujian `transfer` untuk memastikan semua bagian tersambung:
+_Import_ yang ditambahkan: `prometheus`, `promauto`, `go.opentelemetry.io/otel`, `.../otel/attribute`, `.../otel/propagation`, `.../otel/trace`, dan paket `telemetry`. Ambil _unit test_ `transfer` dari _checkpoint_, lalu jalankan pengujian untuk memastikan semua bagian tersambung. `go mod tidy` dijalankan setelah _test_ diambil agar _dependency_ yang hanya digunakan oleh _test_ ikut tercatat di `go.sum`:
 
 #perintah[```bash
+git checkout lab-08 -- \
+  transfer/internal/telemetry/telemetry_test.go \
+  transfer/internal/outbox/outbox_test.go \
+  transfer/internal/accountclient/client_test.go \
+  transfer/internal/transfer/service_test.go
 cd transfer && go mod tidy && make test && cd ..
 ```]
 
@@ -1103,7 +1113,12 @@ Urutan rantai ini menentukan hasil pengukuran. `UnaryServerCorrelation` berada p
 
 Ubah juga log di dalam penanganan _request_ menjadi varian `...Context`: `mutate` dan `toStatus` di `internal/account/grpc.go` (`toStatus` kini menerima `ctx` sebagai parameter pertama), ketiga log `grpc call rejected` dan log `no scope configured` di `internal/auth/grpc.go`, serta `internalError` dan `readyz` di `internal/account/http.go`. `interceptor.Logging` sudah memanggil `log.Log(ctx, ...)`, sehingga tidak perlu diubah.
 
+Ambil _unit test_ `account` dari _checkpoint_, lalu jalankan pengujian:
+
 #perintah[```bash
+git checkout lab-08 -- \
+  account/internal/telemetry/correlation_test.go \
+  account/internal/interceptor/metrics_test.go
 cd account && go mod tidy && make test && cd ..
 ```]
 
@@ -1194,14 +1209,17 @@ Di `handle`, ambil _span_ dengan `span := trace.SpanFromContext(ctx)` di awal fu
   [Berhasil (`notification sent`)], [`processed.WithLabelValues("sent").Inc()`],
 )
 
-Ubah juga `internalError` dan `readyz` di `internal/notification/http.go` menjadi varian `...Context`.
+Log `storing notification failed, retrying` di dalam _loop_ juga diubah menjadi `log.WarnContext(ctx, ...)`.
+
+Ubah juga log `request failed` di `list` dan log di `readyz` pada `internal/notification/http.go` menjadi varian `...Context` (dengan `r.Context()`). Setelah itu ambil _unit test_ `notification` dari _checkpoint_ dan jalankan seluruh pengujian:
 
 #perintah[```bash
+git checkout lab-08 -- notification/internal/notification/tracing_test.go
 cd notification && go mod tidy && make test && cd ..
 make test
 ```]
 
-=== Satu Transfer, Satu _Trace_
+=== Menelusuri Satu Transfer di Tempo
 
 Jalankan ketiga service di tiga terminal, masing-masing dari folder `studi-kasus`:
 
@@ -1220,7 +1238,7 @@ curl -s -i -X POST localhost:28082/transfers \
   -d '{"from_account":"1111111111","to_account":"2222222222","amount":"1000"}'
 ```]
 
-Respons membawa _correlation ID_ yang sama. Go menulis nama _header_ dalam bentuk kanonis, sehingga yang tampil adalah `X-Correlation-Id`:
+Respons membawa _correlation ID_ yang sama. Go menulis nama _header_ dalam _canonical form_ (huruf besar di awal setiap kata), sehingga yang tampil adalah `X-Correlation-Id`:
 
 ```
 HTTP/1.1 201 Created
@@ -1232,7 +1250,7 @@ X-Correlation-Id: lab8-1
  "amount":"1000","status":"COMPLETED",...}
 ```
 
-Log ketiga service kini berbentuk JSON, dan baris yang ditulis dalam konteks _request_ atau _event_ membawa ID yang sama. Contoh berikut dipotong dan dipecah agar muat di halaman; di terminal setiap _record_ berupa satu baris:
+Log ketiga service kini berbentuk JSON, dan baris yang ditulis dengan _context_ milik _request_ atau _event_ membawa ID yang sama. Contoh berikut dipotong dan dipecah agar muat di halaman; di terminal setiap _record_ berupa satu baris:
 
 ```
 account
@@ -1260,7 +1278,7 @@ Latihan ini mensimulasikan insiden: `account` menjadi lambat, dan tugas peserta 
 
 #table(
   columns: (auto, 1fr),
-  [Panel], [Query Utama],
+  [Panel], [_Query_ Utama],
   [Transfer per status], [`sum by (status) (rate(transfers_total[1m]))`],
   [Latensi p95 REST per service], [`histogram_quantile(0.95, ...)` atas `http_server_request_duration_seconds_bucket` per `job`],
   [Circuit breaker transfer → account], [`circuit_breaker_state{target="account"}`, ditampilkan sebagai `CLOSED`, `HALF-OPEN`, `OPEN`],
@@ -1330,7 +1348,7 @@ Akhiri gangguan:
 make fault-clear
 ```]
 
-Panel _circuit breaker_ berubah menjadi `HALF-OPEN`, lalu `CLOSED` setelah tiga panggilan berhasil, dan transfer kembali `COMPLETED`. Perpindahan dari `open` ke `half-open` hanya terjadi pada panggilan pertama setelah 10 detik. Tanpa beban transfer, _circuit breaker_ dari latihan sebelumnya tetap berstatus `open` walaupun `account` sudah normal. Hentikan _loop_ beban dengan Ctrl+C.
+Panel _circuit breaker_ kembali ke `CLOSED`, dan transfer kembali `COMPLETED`. Status `HALF-OPEN` hanya berlangsung sekitar satu detik, sehingga biasanya tidak tertangkap _scrape_; perpindahan `open` → `half-open` → `closed` terlihat di panel _Perubahan status circuit breaker_. Perpindahan dari `open` ke `half-open` hanya terjadi pada panggilan pertama setelah 10 detik. Tanpa beban transfer, _circuit breaker_ dari latihan sebelumnya tetap berstatus `open` walaupun `account` sudah normal. Hentikan _loop_ beban dengan Ctrl+C.
 
 // TODO(endy): the Tempo "logs for this span" link to Loki was not exercised; the explicit Loki query above was verified.
 
@@ -1342,7 +1360,7 @@ Semua pengujian lulus:
 make test
 ```]
 
-Pengujian baru di _checkpoint_:
+Pengujian baru yang diambil dari _checkpoint_:
 
 #table(
   columns: (1fr, 1fr),
@@ -1425,11 +1443,11 @@ docker compose exec db-transfer psql -U transfer -d transfer -c \
 Kondisi kode di akhir lab ini tersimpan di tag `lab-08`. Untuk membandingkan hasil kerja dengan _checkpoint_:
 
 #perintah[```bash
-git diff lab-08 -- studi-kasus
+git diff lab-08 -- .
 ```]
 
 Peserta yang ingin melanjutkan ke Lab 9 dari kondisi _checkpoint_:
 
 #perintah[```bash
-git switch -c latihan-lab-09 lab-08
+git switch -c lab-09-kerja lab-08
 ```]
