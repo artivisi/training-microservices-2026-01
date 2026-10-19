@@ -6,7 +6,7 @@
 
 Setelah menyelesaikan lab ini, peserta mampu:
 
-+ menjelaskan mengapa _delivery_ _at-least-once_ selalu menghasilkan duplikat, dan mengapa duplikat tersebut harus ditangani di sisi penerima;
++ menjelaskan mengapa _at-least-once delivery_ selalu menghasilkan duplikat, dan mengapa duplikat tersebut harus ditangani di sisi penerima;
 + membuat `notification` service menjadi _idempotent consumer_: _event_ yang dikirim ulang dilewati, sehingga notifikasi hanya tersimpan sekali;
 + menulis penanda "_event_ sudah diproses" dan hasil pemrosesannya dalam satu transaksi database;
 + menerima _header_ `Idempotency-Key` di `POST /transfers`, sehingga klien yang mengulang _request_ mendapatkan transfer yang sama, dan rekening asal tidak terdebit dua kali;
@@ -26,7 +26,7 @@ Ketiga situasi tersebut wajar dan tidak dapat dihilangkan sepenuhnya. Jalan kelu
 
 #align(center)[_at-least-once delivery_ + pemrosesan _idempotent_ = setiap efek terjadi tepat sekali]
 
-Masalah yang sama muncul di sisi _channel_. Aplikasi _mobile banking_ mengirim `POST /transfers`, lalu koneksinya putus sebelum jawaban diterima. Aplikasi tidak tahu apakah transfer sudah dijalankan. Bila aplikasi mengirim ulang _request_ yang sama, tanpa perlindungan apa pun rekening asal terdebit dua kali. _Header_ `Idempotency-Key` menyelesaikan masalah tersebut: aplikasi membuat satu _key_ (biasanya UUID) untuk satu niat transfer, lalu mengirim _key_ yang sama pada setiap pengulangan.
+Masalah yang sama muncul di sisi _channel_. Aplikasi _mobile banking_ mengirim `POST /transfers`, lalu koneksinya putus sebelum jawaban diterima. Aplikasi tidak tahu apakah transfer sudah dijalankan. Bila aplikasi mengirim ulang _request_ yang sama, tanpa perlindungan apa pun rekening asal terdebit dua kali. _Header_ `Idempotency-Key` menyelesaikan masalah tersebut: aplikasi membuat satu _key_ (biasanya UUID) untuk setiap transfer yang ingin dilakukan nasabah, lalu mengirim _key_ yang sama pada setiap pengulangan.
 
 #perintah[```
   aplikasi channel                 transfer                  account
@@ -59,7 +59,7 @@ Dengan lab ini, sistem memiliki tiga titik _idempotency_ dengan pola yang sama: 
   [API transfer], [Aplikasi _channel_ ke `transfer` (REST)], [Nilai _header_ `Idempotency-Key`], [Lab 6],
 )
 
-Mutasi saldo di Lab 5 adalah _idempotency_ antarservice. _Header_ `Idempotency-Key` menerapkan gagasan yang sama di batas antara _channel_ dan service.
+Di Lab 5, _idempotency_ sudah diterapkan antarservice pada mutasi saldo. _Header_ `Idempotency-Key` menerapkan gagasan yang sama antara _channel_ dan service.
 
 == Titik Awal
 
@@ -213,7 +213,7 @@ Beberapa hal yang perlu diperhatikan dari kode tersebut:
 
 - Baris `processed_event` ditulis lebih dahulu dan berfungsi sebagai pemeriksaan duplikat. `on conflict do nothing` tidak menghasilkan _error_; `RowsAffected() == 0` berarti `event_id` tersebut sudah ada.
 - Pemeriksaan dan penulisan terjadi dalam satu perintah SQL. Pola "`select` dulu, lalu `insert` bila belum ada" tidak aman, karena dua proses dapat sama-sama melihat tabel kosong lalu sama-sama menyimpan notifikasi.
-- Bila dua instance `notification` memproses _event_ yang sama secara bersamaan (misalnya saat _rebalance_), transaksi kedua menunggu di _primary key_ hingga transaksi pertama selesai, lalu mendapatkan konflik.
+- Bila dua instance `notification` memproses _event_ yang sama secara bersamaan (misalnya saat _rebalance_), transaksi kedua tertahan oleh _lock_ pada _primary key_ hingga transaksi pertama selesai, lalu mendapatkan konflik.
 - `defer tx.Rollback(ctx)` membatalkan transaksi pada setiap jalur keluar sebelum `Commit`. Setelah `Commit` berhasil, `Rollback` tidak melakukan apa pun.
 
 === _Consumer_ melewati duplikat
@@ -256,13 +256,15 @@ Komentar di jalur `notification sent` membahas batas dari solusi ini. Di lab ini
 
 Solusinya ada di penyedia layanan: banyak _provider_ SMS dan _push_ menerima _idempotency key_ di _request_-nya. Dengan `event_id` sebagai _key_ tersebut, pengiriman sebelum _commit_ menjadi aman.
 
-Perbarui juga komentar di atas fungsi `Run` agar sesuai dengan perilaku baru:
+Perbarui juga komentar di atas fungsi `Run` agar sesuai dengan perilaku baru. Ganti dua baris terakhir komentar tersebut (mulai `It is deliberately NOT idempotent yet`) dengan:
 
 ```go
 // sometimes. It is idempotent (Lab 6): the store remembers every processed
 // event_id, and a redelivered event is skipped instead of notifying twice.
 // at-least-once delivery + idempotent processing = each effect exactly once.
 ```
+
+Dua komentar lain juga berubah: komentar di jalur gagal `CommitMessages` di dalam `Run`, dan komentar _shutdown_ di `notification/main.go`. Keduanya sekarang menyebut bahwa _event_ yang datang lagi dilewati sebagai duplikat. Perubahan komentar tersebut dan bagian _Idempotency_ baru di `studi-kasus/README.md` tersedia di tag `lab-06` dan tidak memengaruhi perilaku program.
 
 === Memperbarui _test_ `notification`
 
@@ -433,9 +435,10 @@ Cara kerjanya:
 
 === `Execute` di `service.go`
 
-Fungsi `Execute` di `transfer/internal/transfer/service.go` sekarang menerima _key_ dan mengembalikan nilai tambahan `replayed`. Bagian _saga_ (_debit_, _credit_, kompensasi) tidak berubah, hanya dipindahkan ke fungsi baru `run`. Ganti tanda tangan dan bagian awal `Execute` hingga baris sebelum pemanggilan `s.accounts.Debit` menjadi:
+Fungsi `Execute` di `transfer/internal/transfer/service.go` sekarang menerima _key_ dan mengembalikan nilai tambahan `replayed`. Bagian _saga_ (_debit_, _credit_, kompensasi) tidak berubah, hanya dipindahkan ke fungsi baru `run`. Ganti _signature_ dan bagian awal `Execute`, hingga dan termasuk baris `if err := s.accounts.Debit(...)`, menjadi:
 
 ```go
+//
 // idempotencyKey (optional, from the Idempotency-Key header) makes a retried
 // request safe: when the key was seen before, the saga does not run again and
 // the original transfer is returned in whatever state it is now, with the
@@ -468,7 +471,7 @@ func (s *Service) run(ctx context.Context, t Transfer) (Transfer, error) {
 
 Sisa isi fungsi lama, mulai dari penanganan _error_ `Debit` hingga akhir, tetap seperti semula dan sekarang menjadi isi `run`. Komentar di atas fungsi yang menjelaskan langkah _saga_ tetap dipertahankan; paragraf `idempotencyKey` di atas ditambahkan di bawahnya.
 
-Perhatikan bahwa transfer yang dikembalikan untuk pengulangan berada dalam status terkininya. Bila _request_ pertama masih berjalan, misalnya sedang menunggu `account`, _request_ kedua menerima status `PENDING` atau `DEBITED`. _Saga_ tidak dijalankan untuk kedua kalinya; klien cukup memeriksa `GET /transfers/{id}` hingga statusnya final.
+Perhatikan bahwa jawaban untuk pengulangan berisi transfer asli dengan status saat ini. Bila _request_ pertama masih berjalan, misalnya sedang menunggu `account`, _request_ kedua menerima status `PENDING` atau `DEBITED`. _Saga_ tidak dijalankan untuk kedua kalinya; klien cukup memeriksa `GET /transfers/{id}` hingga statusnya final.
 
 === _Handler_ `POST /transfers`
 
@@ -783,7 +786,7 @@ Saldo rekening asal berkurang tepat 100000. _Unique index_ pada `idempotency_key
 
 *Jawaban `200` berisi status `PENDING`.* Kondisi ini benar. _Request_ pertama dengan _key_ tersebut masih berjalan, dan _request_ pengulangan tidak menunggunya. Periksa `GET /transfers/{id}` beberapa saat kemudian.
 
-*Aplikasi klien mendapat `422` padahal hanya mengulang _request_.* Klien membuat _body_ yang berbeda pada pengulangan, atau menggunakan ulang _key_ untuk transfer baru. Setiap niat transfer harus memiliki _key_ sendiri, dan pengulangan harus mengirim _body_ yang sama.
+*Aplikasi klien mendapat `422` padahal hanya mengulang _request_.* Klien membuat _body_ yang berbeda pada pengulangan, atau menggunakan ulang _key_ untuk transfer baru. Setiap transfer baru harus memiliki _key_ sendiri, dan pengulangan harus mengirim _body_ yang sama.
 
 == Eksplorasi Mandiri
 
