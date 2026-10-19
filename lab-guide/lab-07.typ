@@ -84,7 +84,7 @@ Hasil pemeriksaan dibedakan menjadi dua jenis penolakan:
 Lab ini dimulai dari kondisi akhir Lab 6. Peserta yang menyelesaikan Lab 6 dapat melanjutkan dari kode sendiri. Peserta yang tertinggal mengambil _checkpoint_ Lab 6 dan membuat _branch_ kerja:
 
 #perintah[```bash
-git checkout -b latihan-lab-07 lab-06
+git switch -c lab-07-kerja lab-06
 cd studi-kasus
 ```]
 
@@ -152,7 +152,7 @@ Keluarannya berupa satu baris panjang yang terdiri atas tiga bagian dipisah titi
 cut -d. -f2 <<<"$TOKEN" | base64 -d
 ```]
 
-Perintah `base64` dapat mengeluh soal _padding_ di akhir keluaran; JSON-nya tetap terbaca. _Claim_ yang diperiksa oleh service di lab ini:
+Perintah `base64` dapat menampilkan error soal _padding_ di akhir keluaran; JSON-nya tetap terbaca. _Claim_ yang diperiksa oleh service di lab ini:
 
 #table(
   columns: (auto, 1fr),
@@ -511,7 +511,7 @@ Ubah komentar paket di baris pertama agar menyebut `transfer`. Setiap service me
 
 ==== _Middleware_ REST
 
-_Middleware_ ini padanan _interceptor_ gRPC di `account`, dengan kosakata HTTP. RFC 6750 mengatur cara _resource server_ memberi tahu alasan penolakan melalui _header_ `WWW-Authenticate`:
+_Middleware_ ini padanan _interceptor_ gRPC di `account` untuk REST: penolakan dinyatakan dengan status HTTP dan _header_. RFC 6750 mengatur cara _resource server_ memberi tahu alasan penolakan melalui _header_ `WWW-Authenticate`:
 
 - tanpa _token_: `Bearer`;
 - _token_ tidak valid: `Bearer error="invalid_token"`;
@@ -767,7 +767,7 @@ Di `transfer/internal/accountclient/client.go`, tambahkan parameter `fetch` ke `
 func New(target string, s Settings, fetch FetchToken, log *slog.Logger, opts ...grpc.DialOption) (*Client, error) {
 ```
 
-Lalu, di bagian `opts = append([]grpc.DialOption{...`, ganti baris `grpc.WithUnaryInterceptor(resilience),` dengan:
+Lalu, ganti awal blok `opts = append([]grpc.DialOption{` sampai baris `grpc.WithUnaryInterceptor(resilience),` dengan potongan berikut. Baris sesudahnya (pengaturan _backoff_ koneksi dari Lab 4) tidak berubah:
 
 ```go
 	tokens := &tokenCredentials{fetch: fetch}
@@ -783,11 +783,9 @@ Lalu, di bagian `opts = append([]grpc.DialOption{...`, ganti baris `grpc.WithUna
 		grpc.WithChainUnaryInterceptor(tokens.refreshOnUnauthenticated, resilience),
 ```
 
-Baris `tokens := ...` diletakkan sebelum `opts = append(...)`. Opsi lain di dalam _slice_ tersebut (pengaturan _backoff_ koneksi dari Lab 4) tidak berubah.
-
 Urutannya penting. `refreshOnUnauthenticated` berada di luar `resilience`, sehingga panggilan yang diulang dengan _token_ baru kembali melewati _timeout_, _retry_, dan _circuit breaker_.
 
-==== Menghubungkan Semuanya di `transfer/main.go`
+==== Memasang _Verifier_ dan _Client_ OAuth2 di `transfer/main.go`
 
 Tambahkan dua _import_:
 
@@ -946,7 +944,7 @@ Www-Authenticate: Bearer
 {"error":"missing bearer token"}
 ```
 
-Go menulis nama _header_ dalam bentuk kanonis `Www-Authenticate`. Nama _header_ HTTP tidak membedakan huruf besar dan kecil.
+Go menulis nama _header_ dengan huruf besar di awal setiap kata (`Www-Authenticate`). Nama _header_ HTTP tidak membedakan huruf besar dan kecil.
 
 *_Token_ hanya-baca untuk operasi tulis: 403.*
 
@@ -970,7 +968,7 @@ curl -i -X POST localhost:8082/transfers -H "Authorization: Bearer $TOKEN" \
   -d '{"from_account":"1111111111","to_account":"2222222222","amount":"100000"}'
 ```]
 
-Respons berstatus `201 Created` dengan `"status":"COMPLETED"` dan _header_ `Location: /transfers/...`. Permintaan terautentikasi pertama setelah service menyala dapat memakan waktu sekitar satu detik, karena `account` dan `transfer` baru mengunduh _signing key_ Hydra pada saat itu (lihat Masalah Umum).
+Respons berstatus `201 Created` dengan `"status":"COMPLETED"` dan _header_ `Location: /transfers/...`.
 
 *_Token_ hanya-baca untuk operasi baca: 200.* Ganti `ID` dengan nilai `id` dari respons sebelumnya:
 
@@ -992,15 +990,15 @@ curl localhost:8082/debug/circuit-breaker
 Di terminal `transfer`, permintaan yang ditolak menghasilkan log `request rejected`:
 
 ```text
-level=WARN msg="request rejected" method=POST path=/transfers error="missing bearer token"
-level=WARN msg="request rejected" method=POST path=/transfers client_id=channel-app required_scope=transfer:write token_scopes=[transfer:read]
+time=... level=WARN msg="request rejected" method=POST path=/transfers error="missing bearer token"
+time=... level=WARN msg="request rejected" method=POST path=/transfers client_id=channel-app required_scope=transfer:write token_scopes=[transfer:read]
 ```
 
 Di terminal `account`, transfer yang berhasil mencatat _client_ pemanggil:
 
 ```text
-level=INFO msg="account mutated" number=1111111111 type=DEBIT amount=100000 reference=... client_id=transfer-service
-level=INFO msg="account mutated" number=2222222222 type=CREDIT amount=100000 reference=... client_id=transfer-service
+time=... level=INFO msg="account mutated" number=1111111111 type=DEBIT amount=100000 reference=... client_id=transfer-service
+time=... level=INFO msg="account mutated" number=2222222222 type=CREDIT amount=100000 reference=... client_id=transfer-service
 ```
 
 `client_id=transfer-service` membuktikan bahwa `transfer` mengirim _token_ dan `account` memverifikasinya.
@@ -1024,17 +1022,15 @@ Respons berisi `"status":"FAILED"` dan `"failure_reason":"debit failed: account 
 
 *_Token_ di variabel `TOKEN` tiba-tiba ditolak dengan `invalid token`.* Ada dua kemungkinan: _token_ sudah lebih dari satu jam (kedaluwarsa), atau Hydra sudah di-_restart_ sehingga _signing key_-nya berganti. Ambil _token_ baru dengan `TOKEN=$(make -s token)`. Log `request rejected` menyebut penyebab persisnya.
 
-*Permintaan pertama lambat, sekitar satu detik.* Hydra membuat _signing key_ saat permintaan _token_ pertama. Service yang menyala sebelum itu menyimpan JWKS kosong, lalu mengunduh ulang saat bertemu `kid` yang belum dikenal. Unduh ulang dibatasi sekali per 5 detik, dan permintaan yang menunggu batas tersebut paling lama menunggu 5 detik sebelum dijawab 401.
+*Permintaan pertama setelah Hydra di-_restart_ lambat, sekitar setengah detik.* Hydra yang baru menyala membuat _signing key_ baru saat permintaan _token_ pertama. Service yang sudah berjalan mengunduh ulang JWKS saat bertemu `kid` yang belum dikenal. Unduh ulang dibatasi sekali per 5 detik, dan permintaan yang menunggu batas tersebut paling lama menunggu 5 detik sebelum dijawab 401.
 
 *Log `fetching signing keys failed` saat _startup_.* Hydra belum berjalan ketika service menyala. Service tetap berjalan, tetapi semua pemeriksaan _token_ gagal hingga Hydra tersedia. Jalankan `make infra-up`, lalu ulangi permintaan.
 
 *Transfer `FAILED` dengan alasan `account service error` padahal `account` berjalan.* Lihat log `transfer not completed` di `transfer`. Bila isinya `get access token`, `transfer` gagal mengambil _token_ dari Hydra: periksa `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET`, `OAUTH_TOKEN_URL`, dan pastikan `hydra-init` sudah berjalan. Kegagalan ini tidak membuka _circuit breaker_ ke `account`; `make breaker` tetap menunjukkan `closed`.
 
-*Kompilasi gagal di _test_ dengan pesan `not enough arguments in call to New` atau `Routes`.* _Test_ lama belum diganti. Jalankan perintah `git checkout lab-07 -- ...` di langkah Memperbarui _Unit Test_.
+*Kompilasi gagal di _test_ dengan pesan `cannot use log (variable of type *slog.Logger) as FetchToken value in argument to New` atau `not enough arguments in call to ....Routes`.* _Test_ lama belum diganti. Jalankan perintah `git checkout lab-07 -- ...` di langkah Memperbarui _Unit Test_.
 
 *Service lama masih menggunakan port 8081 atau 8082.* Hentikan berdasarkan port, misalnya `kill $(lsof -t -i :8081)`. Biner hasil `go run` di macOS berada di folder _cache_ Go, sehingga pencarian berdasarkan nama proses sering tidak menemukannya.
-
-// TODO(endy): startup of transfer while Hydra is down is by design (lazy token and JWKS fetch) but was not exercised live; confirm the "fetching signing keys failed" behaviour once.
 
 == Eksplorasi Mandiri
 
@@ -1045,14 +1041,14 @@ Respons berisi `"status":"FAILED"` dan `"failure_reason":"debit failed: account 
 
 == Checkpoint
 
-Kondisi kode di akhir lab ini tersimpan di tag `lab-07`. Bandingkan hasil kerja dengan _checkpoint_:
+Kondisi kode di akhir lab ini tersimpan di tag `lab-07`. Bagian OAuth2 dan JWT di `studi-kasus/README.md` tersedia di tag tersebut: `git checkout lab-07 -- README.md`. Bandingkan hasil kerja dengan _checkpoint_:
 
 #perintah[```bash
 git diff lab-07 -- .
 ```]
 
-Peserta yang ingin langsung melanjutkan ke Lab 8 dari kode referensi:
+Peserta yang ingin langsung melanjutkan ke Lab 8 dari kode referensi membuat _branch_ kerja baru dari tag tersebut:
 
 #perintah[```bash
-git checkout lab-07
+git switch -c lab-08-kerja lab-07
 ```]
