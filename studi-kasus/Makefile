@@ -14,7 +14,7 @@ KAFKA_BIN := /opt/kafka/bin
 
 .PHONY: infra-up infra-down infra-reset test proto fault-slow fault-error fault-clear fault-status breaker \
 	events outbox replay duplicates token metrics apps-up apps-down images k3d-up k3d-import k8s-apply k3d-down \
-	hpa-apply hpa-watch hpa-load hpa-delete e2e-smoke e2e-hpa e2e-dump
+	pipeline-k3d k8s-apply-server hpa-apply hpa-watch hpa-load hpa-delete e2e-smoke e2e-rolling-update e2e-hpa e2e-dump
 
 # kafka-init creates the topic (idempotent: --if-not-exists); hydra-init
 # (re)creates the OAuth2 clients, which Hydra's in-memory storage loses on every
@@ -133,7 +133,9 @@ apps-down:
 # service (go.mod replace ../proto); notification does not import it.
 IMAGE_REPO := studi-kasus
 CLUSTER := bank
-NAMESPACE := bank
+# K3D_NAMESPACE, not NAMESPACE: pipeline.mk takes NAMESPACE from the caller,
+# and a top-level value would be passed on to it.
+K3D_NAMESPACE := bank
 IMAGES = $(foreach s,$(SERVICES),$(IMAGE_REPO)/$(s):$(VERSION))
 
 images:
@@ -182,10 +184,44 @@ k3d-load = k3d image import -c $(CLUSTER) $(1) && \
 # (readiness probes pass) or reports which one is not.
 k8s-apply:
 	kubectl apply -k k8s/overlays/k3d
-	@for s in $(SERVICES); do kubectl -n $(NAMESPACE) rollout status deployment/$$s --timeout=120s || exit 1; done
+	@for s in $(SERVICES); do kubectl -n $(K3D_NAMESPACE) rollout status deployment/$$s --timeout=120s || exit 1; done
 
 k3d-down:
 	k3d cluster delete $(CLUSTER)
+
+# Lab 10 helpers. The pipeline itself is in .forgejo/workflows (git server's
+# runner) and <service>/Jenkinsfile; its steps are the targets image, push and
+# deploy in pipeline.mk.
+
+# The pipeline of one service on the laptop, against k3d: test, image, then
+# k3d image import in place of push (no registry on the laptop), then deploy.
+# Usage: make pipeline-k3d SERVICE=transfer (after make k8s-apply of Lab 9).
+# The tag is the current commit, as in the pipeline; uncommitted changes would
+# end up in an image whose tag names a commit without them, so commit first.
+# A later make k8s-apply sets the images back to the tag in overlays/k3d.
+PIPELINE_REGISTRY := k3d.local
+pipeline-k3d:
+	@test -n "$(SERVICE)" || { echo "SERVICE is required, e.g. make pipeline-k3d SERVICE=transfer" >&2; exit 1; }
+	@test -z "$$(git status --porcelain -- .)" || { echo "uncommitted changes in studi-kasus/: commit first, the image tag is the commit" >&2; exit 1; }
+	@v=$$(git rev-parse --short=12 HEAD) && \
+	$(MAKE) -C $(SERVICE) test && \
+	$(MAKE) -C $(SERVICE) image REGISTRY=$(PIPELINE_REGISTRY) IMAGE_OWNER=$(IMAGE_REPO) VERSION=$$v && \
+	$(call k3d-load,$(PIPELINE_REGISTRY)/$(IMAGE_REPO)/$(SERVICE):$$v) && \
+	$(MAKE) -C $(SERVICE) deploy REGISTRY=$(PIPELINE_REGISTRY) IMAGE_OWNER=$(IMAGE_REPO) VERSION=$$v NAMESPACE=$(K3D_NAMESPACE)
+
+# The server overlay for one service, the same apply that the pipeline's
+# first deploy runs (make apply in pipeline.mk): to bring a change in
+# k8s/overlays/server (config.yaml, ingress.yaml) to the cluster. VERSION is
+# the image to keep or to roll out, usually the commit already deployed
+# (kubectl rollout history). Pods read ConfigMaps only at start: kubectl
+# rollout restart deployment/<service> after a config change.
+# Refuses while a placeholder is left: the instructor hands out the training
+# server's addresses (~/lab10.txt on the server).
+# Usage: make k8s-apply-server SERVICE=transfer VERSION=<sha> REGISTRY=...
+#        IMAGE_OWNER=... NAMESPACE=...  (KUBECONFIG of the training server)
+k8s-apply-server:
+	@test -n "$(SERVICE)" || { echo "SERVICE is required, e.g. make k8s-apply-server SERVICE=transfer VERSION=<sha>" >&2; exit 1; }
+	$(MAKE) -C $(SERVICE) apply
 
 # HPA on transfer, optional after Lab 9 (README, "HPA"): k8s/hpa scales
 # transfer from 1 to 4 replicas on CPU. Three terminals:
@@ -195,21 +231,24 @@ k3d-down:
 hpa-apply:
 	kubectl apply -k k8s/hpa
 	@echo "metrics-server (kubectl top pods); <unknown> in the HPA's TARGETS column until it has a sample:"
-	kubectl -n $(NAMESPACE) top pods
+	kubectl -n $(K3D_NAMESPACE) top pods
 
 hpa-watch:
-	kubectl -n $(NAMESPACE) get hpa transfer --watch
+	kubectl -n $(K3D_NAMESPACE) get hpa transfer --watch
 
 hpa-load:
-	K3D_NAMESPACE=$(NAMESPACE) DURATION=$(DURATION) CONCURRENCY=$(CONCURRENCY) ./e2e-k3d.sh load
+	K3D_NAMESPACE=$(K3D_NAMESPACE) DURATION=$(DURATION) CONCURRENCY=$(CONCURRENCY) ./e2e-k3d.sh load
 
 hpa-delete:
 	kubectl delete -k k8s/hpa
-	kubectl -n $(NAMESPACE) scale deployment/transfer --replicas=1
+	kubectl -n $(K3D_NAMESPACE) scale deployment/transfer --replicas=1
 
-# End-to-end check on k3d after infra-up, images, k3d-up, k3d-import and
-# k8s-apply (e2e-k3d.sh has the details). e2e-hpa applies k8s/hpa, loads
-# transfer until the HPA adds a replica, then removes the HPA. e2e-dump prints
-# pods, events and logs of a failed run.
-e2e-smoke e2e-hpa e2e-dump:
-	K3D_NAMESPACE=$(NAMESPACE) ./e2e-k3d.sh $(@:e2e-%=%)
+# End-to-end check on k3d, used by .github/workflows/e2e-k3d.yaml after
+# infra-up, images, k3d-up, k3d-import and k8s-apply (e2e-k3d.sh has the
+# details). e2e-rolling-update runs pipeline-k3d SERVICE=transfer under a
+# request loop through the Ingress and fails on any non-2xx answer; commit
+# first, as for pipeline-k3d. e2e-hpa applies k8s/hpa, loads transfer until
+# the HPA adds a replica, then removes the HPA. e2e-dump prints pods, events
+# and logs of a failed run.
+e2e-smoke e2e-rolling-update e2e-hpa e2e-dump:
+	K3D_NAMESPACE=$(K3D_NAMESPACE) ./e2e-k3d.sh $(@:e2e-%=%)

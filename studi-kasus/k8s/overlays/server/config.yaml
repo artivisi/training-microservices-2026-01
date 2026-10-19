@@ -1,0 +1,44 @@
+# The environment-specific keys, merged into the ConfigMaps of the base.
+# Every "replace-me" value is a placeholder for a value from the instructor
+# (~/lab10.txt on the training server). .invalid is a reserved top-level
+# domain: a placeholder that slips through fails to resolve instead of
+# reaching some real host.
+#   Kafka   one shared cluster; each participant has own topic and consumer
+#           group, prefixed with the participant name, so two participants
+#           never consume each other's events. Topics are created by the
+#           instructor (auto-create is off, as in compose.yaml).
+#   OAuth2  one shared server; the issuer must equal the "iss" claim of its
+#           tokens exactly, trailing slash included.
+#   OTLP    one shared collector; OTEL_SERVICE_NAME stays as in the base, so
+#           filter traces by namespace or by the participant's own transfer.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: account
+data:
+  OAUTH_ISSUER: https://auth.replace-me.invalid/
+  OAUTH_JWKS_URL: https://auth.replace-me.invalid/.well-known/jwks.json
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel.replace-me.invalid:4317
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: transfer
+data:
+  KAFKA_BROKERS: kafka.replace-me.invalid:9092
+  KAFKA_TOPIC: replace-me.transfer-events
+  OAUTH_ISSUER: https://auth.replace-me.invalid/
+  OAUTH_JWKS_URL: https://auth.replace-me.invalid/.well-known/jwks.json
+  OAUTH_CLIENT_ID: replace-me-transfer-service
+  OAUTH_TOKEN_URL: https://auth.replace-me.invalid/oauth2/token
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel.replace-me.invalid:4317
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: notification
+data:
+  KAFKA_BROKERS: kafka.replace-me.invalid:9092
+  KAFKA_TOPIC: replace-me.transfer-events
+  KAFKA_GROUP_ID: replace-me.notification
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel.replace-me.invalid:4317

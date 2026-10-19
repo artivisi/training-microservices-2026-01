@@ -1,0 +1,105 @@
+# Pipeline of the notification service (Lab 10): test, build the image, push it to the
+# git server's container registry, roll it out on the training server.
+# One workflow per service, so a change to notification builds and deploys notification only.
+#
+# Only run: steps that call make targets (no marketplace actions): every step
+# maps 1:1 to a stage of studi-kasus/notification/Jenkinsfile, and the same commands
+# run on a laptop.
+#
+# Verified end to end on the training server (git server 16.0.6, runner
+# 13.2.0, k3s v1.36.5+k3s1): first deploy into an empty namespace, rolling
+# update, two participants pushing at the same time.
+#
+# The runner is shared by all participants and trusts them all: a job runs on
+# the runner host as the runner user, so anyone who can push a workflow change
+# can run any command there.
+#
+# What the runner and the repository must provide:
+#   runner label "host"   jobs run directly on the server (no job container),
+#                         where git, make, go, docker and kubectl are installed
+#   variable  REGISTRY    registry host (the git server's host name)
+#   variable  NAMESPACE   the participant's namespace on the training server
+#   secret    REGISTRY_USER, REGISTRY_PASSWORD   an account and token allowed
+#                         to push packages
+#   secret    KUBE_CONFIG kubeconfig limited to NAMESPACE (RBAC), allowed to
+#                         create ConfigMaps, Services, Deployments and
+#                         Ingresses there (the first deploy creates them)
+# A missing variable or secret arrives as an empty string; the make targets
+# stop on it with "missing required variables: ...".
+name: notification
+
+on:
+  push:
+    branches: [main]
+    # No proto/: notification does not import the gRPC contract, it only reads
+    # the events on Kafka. go.work and pipeline.mk are shared by all services.
+    paths:
+      - studi-kasus/notification/**
+      - studi-kasus/go.work
+      - studi-kasus/pipeline.mk
+      - .forgejo/workflows/notification.yaml
+
+# One run of this workflow at a time: a newer push waits until the running one
+# has finished instead of cancelling it (cancel-in-progress is true by default
+# for push). Two deploys of one service at once would race on the same
+# Deployment. The Jenkinsfile does the same with disableConcurrentBuilds().
+concurrency:
+  group: pipeline-notification
+  cancel-in-progress: false
+
+jobs:
+  pipeline:
+    runs-on: host
+    env:
+      REGISTRY: ${{ vars.REGISTRY }}
+      # Packages in the registry belong to the repository owner.
+      IMAGE_OWNER: ${{ github.repository_owner }}
+      NAMESPACE: ${{ vars.NAMESPACE }}
+      # One image per commit: the tag says exactly which code runs.
+      VERSION: ${{ github.sha }}
+    steps:
+      # Checkout with plain git and the token the runner issues for this job
+      # (read access to this repository, valid while the job runs). The
+      # workspace of a host runner can survive between jobs: fetch + checkout
+      # -f + clean make it exactly this commit either way.
+      - name: Checkout
+        env:
+          SERVER_URL: ${{ github.server_url }}
+          REPOSITORY: ${{ github.repository }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          auth=$(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')
+          git init -q .
+          git -c http.extraHeader="Authorization: basic $auth" fetch -q --depth 1 "$SERVER_URL/$REPOSITORY.git" "$VERSION"
+          git checkout -q -f FETCH_HEAD
+          git clean -q -ffdx
+
+      - name: Test
+        run: make -C studi-kasus/notification test
+
+      - name: Build image
+        run: make -C studi-kasus/notification image
+
+      - name: Push
+        env:
+          REGISTRY_USER: ${{ secrets.REGISTRY_USER }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+        run: make -C studi-kasus/notification push
+
+      # The kubeconfig secret goes to a file that exists only during this
+      # step; kubectl never falls back to the runner user's own kubeconfig.
+      # The first run in an empty namespace creates the service's objects from
+      # k8s/overlays/server with this commit's image; later runs only change
+      # the image (pipeline.mk, target deploy).
+      - name: Deploy
+        env:
+          KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
+        run: |
+          set -eu
+          test -n "$KUBE_CONFIG" || { echo "missing required secret: KUBE_CONFIG" >&2; exit 1; }
+          KUBECONFIG=$(mktemp)
+          trap 'rm -f "$KUBECONFIG"' EXIT
+          printf '%s\n' "$KUBE_CONFIG" > "$KUBECONFIG"
+          export KUBECONFIG
+          make -C studi-kasus/notification deploy

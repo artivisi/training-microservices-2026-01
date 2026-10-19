@@ -1,0 +1,82 @@
+# Pipeline of the transfer service on GitHub Actions: test, build the image,
+# push it to ghcr.io. The same steps and make targets as
+# .forgejo/workflows/transfer.yaml (training git server) and
+# studi-kasus/transfer/Jenkinsfile, so the three runners map step by step.
+#
+# No Deploy step: a hosted runner has no cluster to deploy to. The rolling
+# update on k3d is shown by e2e-k3d.yaml.
+#
+# Only run: steps, no marketplace actions (uses:). The one step the other two
+# runners do not have is "Install tools": a hosted runner starts from a
+# generic image, where the training runner and a Jenkins agent already have
+# the tools installed.
+#
+# What GitHub provides, nothing to configure:
+#   GITHUB_TOKEN  read access to this repository (checkout) and, with
+#                 permissions packages: write, push to ghcr.io/<owner>
+#   repository_owner  the image owner; ghcr.io accepts lowercase names only,
+#                 docker build stops on an uppercase owner
+name: transfer
+
+on:
+  push:
+    branches: [main]
+    # proto/, go.work and pipeline.mk are shared: a gRPC contract change
+    # rebuilds both account and transfer.
+    paths:
+      - studi-kasus/transfer/**
+      - studi-kasus/proto/**
+      - studi-kasus/go.work
+      - studi-kasus/pipeline.mk
+      - .github/install-tools.sh
+      - .github/workflows/transfer.yaml
+  workflow_dispatch:
+
+# One run at a time per service; a newer push waits instead of cancelling
+# the running one (Jenkins: disableConcurrentBuilds()).
+concurrency:
+  group: pipeline-transfer
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-24.04
+    env:
+      REGISTRY: ghcr.io
+      IMAGE_OWNER: ${{ github.repository_owner }}
+      # One image per commit: the tag says exactly which code runs.
+      VERSION: ${{ github.sha }}
+    steps:
+      # The same plain-git checkout as on the training git server: fetch this
+      # commit with the job token, nothing else.
+      - name: Checkout
+        env:
+          SERVER_URL: ${{ github.server_url }}
+          REPOSITORY: ${{ github.repository }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          auth=$(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')
+          git init -q .
+          git -c http.extraHeader="Authorization: basic $auth" fetch -q --depth 1 "$SERVER_URL/$REPOSITORY.git" "$VERSION"
+          git checkout -q -f FETCH_HEAD
+          git clean -q -ffdx
+
+      - name: Install tools
+        run: .github/install-tools.sh "$RUNNER_TEMP/tools" go >> "$GITHUB_PATH"
+
+      - name: Test
+        run: make -C studi-kasus/transfer test
+
+      - name: Build image
+        run: make -C studi-kasus/transfer image
+
+      - name: Push
+        env:
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: make -C studi-kasus/transfer push

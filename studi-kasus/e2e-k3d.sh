@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
-# End-to-end check of the Lab 9 setup on k3d, after make infra-up, images,
-# k3d-up, k3d-import and k8s-apply. Called through the Makefile (make
-# e2e-smoke, e2e-hpa, e2e-dump, hpa-load), which passes K3D_NAMESPACE.
+# End-to-end check of the Lab 9/10 setup on k3d, run by
+# .github/workflows/e2e-k3d.yaml after make infra-up, images, k3d-up,
+# k3d-import and k8s-apply. Also runs on a laptop in the same state.
+# Called through the Makefile (make e2e-smoke, e2e-rolling-update, e2e-dump),
+# which passes K3D_NAMESPACE.
 #
 #   smoke           two new accounts, a transfer through the Ingress
 #                   (localhost:28080) answered 201 COMPLETED, and its
 #                   notification row in db-notification
+#   rolling-update  make pipeline-k3d SERVICE=transfer (test, image tagged
+#                   with the commit, k3d import, deploy) while a request loop
+#                   posts transfers through the Ingress; fails on any answer
+#                   that is not 2xx, or when no request was made
 #   load            DURATION seconds of transfers through the Ingress from
 #                   CONCURRENCY parallel loops, then a count per HTTP status
 #                   (make hpa-load, for the HPA exercise)
@@ -99,6 +105,40 @@ smoke() {
 	exit 1
 }
 
+rolling_update() {
+	start_account_forward
+	new_accounts 100000000
+	local token work loop_pid total bad
+	token=$(make -s --no-print-directory token)
+	work=$(mktemp -d)
+	# One transfer every 0.2 s through the Ingress until the stop file exists;
+	# 000 = no HTTP answer at all (connection refused or reset, timeout).
+	(
+		while [ ! -e "$work/stop" ]; do
+			curl -s -o /dev/null -w '%{http_code}\n' -m 10 -X POST "$INGRESS_URL/transfers" \
+				-H "Authorization: Bearer $token" \
+				-d "{\"from_account\":\"$FROM\",\"to_account\":\"$TO\",\"amount\":\"1000\"}" >> "$work/codes" || true
+			sleep 0.2
+		done
+	) &
+	loop_pid=$!
+	make pipeline-k3d SERVICE=transfer
+	# A few more requests against the new pod only.
+	sleep 5
+	touch "$work/stop"
+	wait "$loop_pid"
+	echo "responses during the rolling update (count, HTTP status):"
+	sort "$work/codes" | uniq -c
+	total=$(wc -l < "$work/codes")
+	bad=$(grep -vc '^2' "$work/codes" || true)
+	rm -rf "$work"
+	kubectl -n "$NS" rollout history deployment/transfer
+	kubectl -n "$NS" get deployment/transfer -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
+	[ "$total" -gt 0 ] || { echo "no request was made during the rolling update" >&2; exit 1; }
+	[ "$bad" -eq 0 ] || { echo "$bad of $total requests were not answered 2xx during the rolling update" >&2; exit 1; }
+	echo "$total requests, all 2xx"
+}
+
 # load_loop <duration> <concurrency> <codes file>: transfers of 1000 from FROM
 # to TO through the Ingress, one curl after another in each loop, until the
 # duration is over; every HTTP status goes to the codes file (000 = no answer).
@@ -180,8 +220,9 @@ dump() {
 
 case "${1:-}" in
 smoke) smoke ;;
+rolling-update) rolling_update ;;
 load) load ;;
 hpa) hpa ;;
 dump) dump ;;
-*) echo "usage: $0 smoke|load|hpa|dump" >&2; exit 1 ;;
+*) echo "usage: $0 smoke|rolling-update|load|hpa|dump" >&2; exit 1 ;;
 esac

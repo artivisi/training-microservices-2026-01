@@ -1,0 +1,98 @@
+// Declarative pipeline of the account service for Jenkins, the mapping of
+// .forgejo/workflows/account.yaml: the same stages calling the same make
+// targets. Job setup: a Multibranch Pipeline on this repository with Script
+// Path studi-kasus/account/Jenkinsfile, one job per service. Multibranch
+// only: "when { branch 'main' }" reads BRANCH_NAME, which only a
+// Multibranch job sets; in a plain Pipeline job every stage would be skipped.
+//
+// Verified on Jenkins LTS 2.580.1 (Multibranch Pipeline, plain Git branch
+// source, built-in node with git, make, go, docker and kubectl) deploying to
+// k3d: path filter per service, first deploy into an empty namespace, rolling
+// update, disableConcurrentBuilds(), a missing variable stopping make.
+//
+// What Jenkins must provide (no defaults here; make stops with "missing
+// required variables: ..." when one is absent):
+//   REGISTRY, IMAGE_OWNER, NAMESPACE   environment variables of the folder or
+//                                      global properties, per environment
+//   credentials "registry"             Username with password, push access
+//   credentials "kubeconfig"           Secret file, kubeconfig limited to
+//                                      NAMESPACE; the first deploy creates
+//                                      the service's objects there
+//   agent                              git, make, go, docker and kubectl
+pipeline {
+    agent any
+
+    options {
+        // Two builds of one service deploying at once would race on the
+        // same Deployment.
+        disableConcurrentBuilds()
+        timeout(time: 20, unit: 'MINUTES')
+    }
+
+    environment {
+        // One image per commit, as in the workflow (github.sha). GIT_COMMIT
+        // is set by the SCM checkout; without it this becomes the string
+        // "null", which the Test stage rejects.
+        VERSION = "${env.GIT_COMMIT}"
+    }
+
+    stages {
+        // The workflow's "on: push: branches/paths" filter. changeset
+        // compares with the previous build of the branch, whatever its
+        // result: the first build of a branch has no changeset, and a build
+        // after a failed one sees only the commits pushed since. Both would
+        // skip the stages; "Build Now" (UserIdCause) runs them for the
+        // current commit, the counterpart of re-running a workflow run.
+        stage('account') {
+            when {
+                allOf {
+                    branch 'main'
+                    anyOf {
+                        triggeredBy 'UserIdCause'
+                        changeset 'studi-kasus/account/**'
+                        changeset 'studi-kasus/proto/**'
+                        changeset 'studi-kasus/go.work'
+                        changeset 'studi-kasus/pipeline.mk'
+                    }
+                }
+            }
+            stages {
+                stage('Test') {
+                    steps {
+                        // Fail before anything is built: make's check for
+                        // empty variables would let an image tagged "null"
+                        // through.
+                        script {
+                            if (!env.GIT_COMMIT || env.GIT_COMMIT == 'null') {
+                                error('GIT_COMMIT is empty: the job must check out this repository from SCM (Multibranch Pipeline)')
+                            }
+                        }
+                        sh 'make -C studi-kasus/account test'
+                    }
+                }
+                stage('Build Image') {
+                    steps {
+                        sh 'make -C studi-kasus/account image'
+                    }
+                }
+                stage('Push') {
+                    steps {
+                        withCredentials([usernamePassword(credentialsId: 'registry',
+                                usernameVariable: 'REGISTRY_USER', passwordVariable: 'REGISTRY_PASSWORD')]) {
+                            sh 'make -C studi-kasus/account push'
+                        }
+                    }
+                }
+                stage('Deploy') {
+                    steps {
+                        // The secret file exists only inside this block;
+                        // KUBECONFIG points kubectl at it.
+                        withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')]) {
+                            sh 'make -C studi-kasus/account deploy'
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -22,3 +22,6 @@ build:
 
 clean:
 	rm -rf bin
+
+# image, push, deploy (Lab 10).
+include ../pipeline.mk
