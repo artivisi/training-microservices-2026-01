@@ -177,7 +177,7 @@ Ketiga service membutuhkan dua variabel baru. Nama variabel mengikuti standar Op
 #table(
   columns: (auto, auto, 1fr),
   [Variabel], [Nilai di Laptop], [Keterangan],
-  [`OTEL_EXPORTER_OTLP_ENDPOINT`], [`http://localhost:14317`], [Alamat OTLP gRPC _collector_, wajib berbentuk URL `http://host:port` atau `https://host:port` dengan port tertulis],
+  [`OTEL_EXPORTER_OTLP_ENDPOINT`], [`http://localhost:14317`], [Alamat OTLP gRPC _collector_, wajib berbentuk URL `http://host:port` atau `https://host:port`, lengkap dengan nomor port],
   [`OTEL_SERVICE_NAME`], [`account`, `transfer`, `notification`], [Nama service di Tempo dan Loki],
 )
 
@@ -340,7 +340,7 @@ func (t *Telemetry) Shutdown(ctx context.Context) error {
 }
 ```
 
-Empat hal perlu diperhatikan. _Propagator_ hanya berisi `propagation.TraceContext{}`, sehingga yang berpindah antar-service hanya `traceparent` (dan `tracestate` bila ada): di _header_ HTTP, _metadata_ gRPC, _header_ Kafka, dan kolom `trace_context` di tabel `outbox`. _Baggage_ (W3C _Baggage_, pasangan _key-value_ bebas yang ikut berpindah bersama _trace_) sengaja tidak dipasang. REST API `transfer` dipanggil aplikasi _channel_ dari luar, sehingga _baggage_ dari pemanggil luar akan diteruskan ke setiap service di belakangnya. Di _production_, _public edge_ (API _gateway_ atau service pertama di belakangnya) sering juga mengabaikan `traceparent` dari luar dan memulai _trace_ baru, agar pemanggil luar tidak dapat menentukan _trace ID_ atau memaksa _sampling_. Lab ini tetap menerima `traceparent` dari pemanggil agar peserta dapat mengikuti satu _trace_.
+Empat hal perlu diperhatikan. _Propagator_ hanya berisi `propagation.TraceContext{}`, sehingga yang berpindah antar-service hanya `traceparent` (dan `tracestate` bila ada): di _header_ HTTP, _metadata_ gRPC, _header_ Kafka, dan kolom `trace_context` di tabel `outbox`. _Baggage_ (W3C _Baggage_, pasangan _key-value_ bebas yang ikut berpindah bersama _trace_) sengaja tidak dipasang. REST API `transfer` dipanggil aplikasi _channel_ dari luar. Bila _propagator_ _Baggage_ dipasang, _baggage_ dari pemanggil luar ikut diteruskan ke setiap service di belakangnya. Di _production_, _public edge_ (API _gateway_ atau service pertama di belakangnya) sering juga mengabaikan `traceparent` dari luar dan memulai _trace_ baru, agar pemanggil luar tidak dapat menentukan _trace ID_ atau memaksa _sampling_. Lab ini tidak memiliki API _gateway_, sehingga penyaringan di _public edge_ tidak dipasang; `otelhttp` di `transfer` tetap melanjutkan `traceparent` bila pemanggil mengirimnya.
 
 `slog.NewMultiHandler` (tersedia sejak Go 1.26) meneruskan setiap _record_ ke dua _handler_ sekaligus: _stdout_ untuk `docker logs` atau `kubectl logs`, dan `otelslog` untuk Loki. _Sampler_ `AlwaysSample` menyimpan semua _trace_, cocok untuk lab dengan beberapa _request_ per detik; di _production_ biaya penyimpanan _trace_ bisa melebihi biaya service itu sendiri bila semua disimpan. Terakhir, `Shutdown` harus dipanggil paling akhir agar _span_ dan log dari proses _shutdown_ ikut terkirim.
 
@@ -695,7 +695,7 @@ Tambahkan _import_ `promhttp`, `otelhttp`, `golang.org/x/oauth2`, dan paket `tel
 
 === Telemetri pada Client gRPC dan _Circuit Breaker_
 
-Di `transfer/internal/accountclient/client.go`, client gRPC mendapat tiga tambahan. _Interceptor_ `UnaryClientCorrelation` ditaruh paling depan di rantai _interceptor_ agar _correlation ID_ ditambahkan satu kali, sebelum _token_ dan kebijakan _resiliency_. `otelgrpc.NewClientHandler` dipasang sebagai _stats handler_, sehingga setiap percobaan, termasuk setiap _retry_, menjadi satu _span_ tersendiri. Kedua opsi ini ditambahkan di fungsi `dial`, sehingga berlaku untuk koneksi utama (`Debit`, `Credit`) maupun koneksi _reversal_ dari Lab 5. Ganti bagian opsi di `dial`:
+Di `transfer/internal/accountclient/client.go`, client gRPC mendapat tiga tambahan. _Interceptor_ `UnaryClientCorrelation` ditaruh paling depan di rantai _interceptor_ agar _correlation ID_ ditambahkan satu kali, sebelum _token_ dan kebijakan _resiliency_. `otelgrpc.NewClientHandler` dipasang sebagai _stats handler_, sehingga setiap percobaan, termasuk setiap _retry_, menjadi satu _span_ tersendiri. Kedua opsi ini ditambahkan di fungsi `dial`, sehingga berlaku baik untuk koneksi utama (`Debit`, `Credit`) maupun untuk koneksi _reversal_ dari Lab 5. Ganti bagian opsi di `dial`:
 
 ```go
 		grpc.WithPerRPCCredentials(tokens),
@@ -1229,13 +1229,13 @@ Di `handle`, ambil _span_ dengan `span := trace.SpanFromContext(ctx)` di awal fu
   [_Payload_ tidak terbaca (`skipping unreadable event`)], [`processed.WithLabelValues("skipped").Inc()` dan `span.SetStatus(codes.Error, "unreadable event")`],
   [`event_id` atau `transfer_id` bukan UUID (`skipping event with invalid event_id or transfer_id`, Lab 5)], [`processed.WithLabelValues("skipped").Inc()` dan `span.SetStatus(codes.Error, "invalid event_id or transfer_id")`],
   [Setelah kedua ID lolos pemeriksaan], [`span.SetAttributes(attribute.String("transfer.id", e.TransferID))`],
-  [Jenis _event_ tanpa notifikasi], [`processed.WithLabelValues("skipped").Inc()`],
+  [Jenis _event_ tanpa notifikasi (`skipping event type without notification`)], [`processed.WithLabelValues("skipped").Inc()`; log menjadi `log.WarnContext(ctx, ...)`],
   [Duplikat (`duplicate event skipped`)], [`processed.WithLabelValues("duplicate").Inc()` dan `span.SetAttributes(attribute.Bool("event.duplicate", true))`],
   [Berhasil (`notification sent`)], [`processed.WithLabelValues("sent").Inc()`],
   [Ditolak database, `permanentDBError` (`skipping event the database rejects`, Lab 5)], [`processed.WithLabelValues("skipped").Inc()` dan `span.SetStatus(codes.Error, "event rejected by the database")`],
 )
 
-Keempat cabang `skipped` mencatat _event_ yang dilewati tanpa notifikasi. Nilai normalnya 0. Kenaikan nilai ini berarti ada _event_ rusak yang perlu diperiksa dari log `ERROR`. Di _production_, _event_ seperti ini biasanya dikirim ke _dead-letter topic_ untuk diperiksa petugas.
+Keempat cabang `skipped` mencatat _event_ yang dilewati tanpa notifikasi. Nilai normalnya 0. Kenaikan nilai ini berarti ada _event_ rusak atau berjenis tidak dikenal yang perlu diperiksa dari log `ERROR` atau `WARN` dengan pesan `skipping ...`. Di _production_, _event_ seperti ini biasanya dikirim ke _dead-letter topic_ untuk diperiksa petugas.
 
 Log di dalam _loop_ penyimpanan juga diubah: `skipping event the database rejects` menjadi `log.ErrorContext(ctx, ...)` dan `storing notification failed, retrying` menjadi `log.WarnContext(ctx, ...)`.
 
