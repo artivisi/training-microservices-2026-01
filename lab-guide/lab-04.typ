@@ -54,7 +54,7 @@ studi-kasus/
 │   ├── config.go                # + GRPC_ADDR
 │   ├── main.go                  # + server gRPC, health, reflection
 │   └── internal/
-│       ├── account/account.go   # + validasi format nominal
+│       ├── account/account.go   # + validasi format dan batas nominal
 │       ├── account/grpc.go      # baru: implementasi AccountService
 │       ├── account/http.go      # - endpoint debit/credit
 │       ├── fault/fault.go       # + UnaryServerInterceptor
@@ -64,7 +64,7 @@ studi-kasus/
     ├── main.go
     └── internal/
         ├── accountclient/client.go   # client gRPC + failsafegrpc
-        └── transfer/transfer.go      # + validasi format amount
+        └── transfer/transfer.go      # + batas 2 digit desimal dan 10^17 untuk amount
 ```
 
 == Titik Awal
@@ -185,7 +185,7 @@ Beberapa keputusan dalam kontrak tersebut perlu diperhatikan:
 - *Nominal sebagai _string_ desimal.* _Protobuf_ memiliki tipe `double`, tetapi bilangan biner berkoma mengambang (_floating point_) tidak dapat menyimpan sebagian besar pecahan desimal secara tepat. Nilai `0.1 + 0.2` pada `double` menghasilkan `0.30000000000000004`. Untuk uang, selisih pembulatan sekecil apa pun tidak dapat diterima. Kedua sisi mengirim nominal sebagai teks (`"150000.50"`) dan mengolahnya dengan `shopspring/decimal`, sama seperti kolom `numeric(19,2)` di database. Formatnya dibatasi: hanya angka dengan paling banyak 2 digit desimal, tanpa tanda minus dan tanpa notasi eksponen (`"1e3"`). Format lain ditolak dengan `INVALID_ARGUMENT`, tidak dibulatkan.
 - *Nomor _field_ adalah bagian dari kontrak.* Pada format biner, setiap _field_ dikenali dari nomornya (`= 1`, `= 2`), bukan dari namanya. Nomor yang sudah digunakan tidak boleh diganti atau digunakan ulang untuk _field_ lain. _Field_ baru selalu mendapat nomor baru.
 - *Satu _message request_ dan satu _message response_ untuk setiap RPC.* `DebitRequest` dan `CreditRequest` saat ini sama persis. Dengan _message_ terpisah, salah satunya dapat ditambah _field_ kelak tanpa mengubah RPC lainnya.
-- *Kode _error_ ditulis di komentar kontrak.* Pemanggil mengambil keputusan berdasarkan kode status (misalnya boleh _retry_ atau tidak), sehingga daftar kode tersebut termasuk kontrak, sama pentingnya dengan _field_. `DEADLINE_EXCEEDED` dan `CANCELLED` juga dicantumkan karena keduanya membawa arti penting bagi pemanggil: mutasi saldo mungkin sudah terjadi, mungkin juga belum.
+- *Kode _error_ ditulis di komentar kontrak.* Pemanggil mengambil keputusan berdasarkan kode status (misalnya boleh _retry_ atau tidak), sehingga daftar kode tersebut termasuk kontrak, sama pentingnya dengan _field_. `DEADLINE_EXCEEDED` dan `CANCELLED` juga dicantumkan karena pemanggil perlu tahu bahwa pada kedua kode tersebut mutasi saldo mungkin sudah terjadi, mungkin juga belum.
 
 Opsi `go_package` menentukan _import path_ kode Go hasil _generate_ (`.../proto/gen/account/v1`) dan nama _package_-nya (`accountv1`, setelah titik koma).
 
@@ -410,7 +410,7 @@ Hal-hal yang perlu diperhatikan pada kode tersebut:
 
 `NotFound`, `FailedPrecondition` dan `InvalidArgument` merupakan jawaban bisnis dari _service_ yang sehat. Di sisi `transfer`, kode-kode tersebut tidak di-_retry_ dan tidak dihitung sebagai kegagalan oleh _circuit breaker_. Kode `Internal` hanya membawa teks `internal error` agar detail internal (nama tabel, alamat database) tidak bocor ke pemanggil.
 
-Kasus `Canceled` dan `DeadlineExceeded` diperiksa paling awal di `toStatus`. Tanpa kasus tersebut, _error_ dari pgx yang membungkus `context.Canceled` jatuh ke cabang `default`: `account` mencatatnya sebagai ERROR dan menjawab `Internal`, padahal database sehat dan yang terjadi hanyalah pemanggil berhenti menunggu. `status.FromContextError` mempertahankan arti aslinya. Bagi pemanggil, kedua kode tersebut berarti mutasi mungkin sudah terjadi, mungkin juga belum.
+Kasus `Canceled` dan `DeadlineExceeded` diperiksa paling awal di `toStatus`. Tanpa kasus tersebut, _error_ dari pgx yang membungkus `context.Canceled` masuk ke cabang `default`: `account` mencatatnya sebagai ERROR dan menjawab `Internal`, padahal database sehat dan yang terjadi hanyalah pemanggil berhenti menunggu. `status.FromContextError` mengubah `context.Canceled` menjadi `Canceled` dan `context.DeadlineExceeded` menjadi `DeadlineExceeded`, sehingga arti _error_ tersebut tidak hilang. Bagi pemanggil, kedua kode tersebut berarti mutasi mungkin sudah terjadi, mungkin juga belum.
 
 === Validasi Format Nominal
 
@@ -693,8 +693,8 @@ Sisipkan blok berikut setelah deklarasi `srv := &http.Server{...}` dan sebelum _
 	// understand it without custom code. It is NOT tied to the database: the
 	// status is SERVING from startup until shutdown, so it only says "this process
 	// accepts gRPC calls". Pod readiness is the HTTP /readyz, which pings the
-	// database; do not add a gRPC readinessProbe on top, it would report ready
-	// while the database is down.
+	// database; do not replace it with a gRPC readinessProbe, which would report
+	// ready while the database is down.
 	healthSrv := health.NewServer()
 	healthpb.RegisterHealthServer(grpcSrv, healthSrv)
 	healthSrv.SetServingStatus(accountv1.AccountService_ServiceDesc.ServiceName, healthpb.HealthCheckResponse_SERVING)
@@ -712,7 +712,7 @@ Penjelasan blok tersebut:
 
 - *`grpc.ChainUnaryInterceptor`* menjalankan _interceptor_ sesuai urutan argumennya. `Logging` berada di luar, sehingga _log_ mencatat kode yang dihasilkan _fault injector_. Kegagalan buatan pun tercatat seperti kegagalan sungguhan.
 - *Fungsi `skip`* mengecualikan semua RPC di luar `account.v1.AccountService`, yaitu _health service_ dan _reflection_. Prinsipnya sama dengan Lab 3: _probe_ tetap cepat walaupun API sedang diganggu.
-- *_Health service_* (`grpc.health.v1`) adalah protokol standar. `grpc-health-probe` dan `grpcurl` dapat memeriksanya tanpa kode tambahan. Status _health_ ini tidak terhubung ke database: nilainya `SERVING` sejak _startup_ sampai _shutdown_, sehingga hanya menyatakan bahwa proses menerima panggilan gRPC. Kesiapan _pod_ menerima _traffic_ tetap ditentukan oleh `GET /readyz` di HTTP, yang memeriksa database. Karena itu manifest Kubernetes di Lab 9 hanya memasang _probe_ HTTP. _Readiness probe_ gRPC tambahan akan menyatakan _pod_ siap walaupun database sedang mati.
+- *_Health service_* (`grpc.health.v1`) adalah protokol standar. `grpc-health-probe` dan `grpcurl` dapat memeriksanya tanpa kode tambahan. Status _health_ ini tidak terhubung ke database: nilainya `SERVING` sejak _startup_ sampai _shutdown_, sehingga hanya menyatakan bahwa proses menerima panggilan gRPC. Kesiapan _pod_ menerima _traffic_ tetap ditentukan oleh `GET /readyz` di HTTP, yang memeriksa database. Karena itu _manifest_ Kubernetes di Lab 9 hanya memasang _probe_ HTTP. _Readiness probe_ gRPC sebagai pengganti `/readyz` akan menyatakan _pod_ siap walaupun database sedang mati.
 - *_Reflection_* memungkinkan _tools_ seperti `grpcurl` atau Postman menampilkan daftar _service_ dan RPC tanpa file `.proto`. Fitur ini memudahkan di lab, dan banyak tim mematikannya di _production_.
 
 Server HTTP dan server gRPC kini berjalan bersamaan, masing-masing di _goroutine_ sendiri. Ganti bagian akhir fungsi `run`, mulai dari `errCh`, dengan kode berikut:
@@ -835,7 +835,7 @@ _Test_ `TestGRPCAccountService` di _checkpoint_ memeriksa dua hal:
 
 _Test_ kedua di file yang sama, `TestGRPCCallerGaveUp`, membuat `Store` palsu mengembalikan `context.DeadlineExceeded` dan `context.Canceled` yang dibungkus `fmt.Errorf`, seperti _error_ dari pgx. Kode yang diharapkan adalah `DeadlineExceeded` dan `Canceled`, bukan `Internal`. Untuk keperluan ini, `fakeStore` di `http_test.go` mendapat _field_ `mutateErr` yang dikembalikan `Mutate` bila diisi. `TestAccountAPI` di file yang sama juga mendapat tiga kasus HTTP 400 untuk `initial_balance`: `"100.005"`, angka JSON `1e-3`, dan `"100000000000000000"`.
 
-Di `account/internal/fault/fault_test.go`, _test_ `TestUnaryServerInterceptor` memanggil fungsi _interceptor_ secara langsung dengan `grpc.UnaryServerInfo` buatan. _Test_ tersebut memastikan `error_rate` 1 menghasilkan `Unavailable` tanpa menjalankan _handler_, RPC _health_ tidak terkena gangguan, dan _deadline_ pemanggil yang lebih pendek dari jeda menghasilkan `DeadlineExceeded` tanpa menjalankan _handler_. Salin kode lengkap kedua _test_ dari _checkpoint_ `lab-04`:
+Di `account/internal/fault/fault_test.go`, _test_ `TestUnaryServerInterceptor` memanggil fungsi _interceptor_ secara langsung dengan `grpc.UnaryServerInfo` buatan. _Test_ tersebut memastikan `error_rate` 1 menghasilkan `Unavailable` tanpa menjalankan _handler_, RPC _health_ tidak terkena gangguan, dan _deadline_ pemanggil yang lebih pendek dari jeda menghasilkan `DeadlineExceeded` tanpa menjalankan _handler_. Salin kode lengkap ketiga file _test_ tersebut dari _checkpoint_ `lab-04`:
 
 #perintah[```bash
 git show lab-04:studi-kasus/account/internal/account/grpc_test.go \
@@ -1087,7 +1087,7 @@ func mapError(kind, number string, err error) error {
 }
 ```
 
-Kode REST di Lab 3 harus menyusun URL, mengodekan JSON, membaca _body_ dan menutupnya. Dengan gRPC, pemanggilan cukup satu baris `c.api.Debit(...)`. _Policy_ _resiliency_ tidak tampak di metode `Debit`, karena _interceptor_ sudah membungkus setiap RPC. Fungsi `mapError` menerjemahkan kode gRPC menjadi _error_ domain, sehingga paket `transfer` tidak perlu mengimpor gRPC dan _handler_ HTTP `transfer` tetap memetakan _error_ tersebut seperti di Lab 3. HTTP 503 hanya muncul bila _circuit breaker_ yang terbuka menolak _debit_: belum ada saldo yang berubah, sehingga _request_ aman diulang. Setiap kegagalan _credit_ sesudah _debit_ berhasil, termasuk rekening tujuan yang tidak ada dan _circuit breaker_ yang baru terbuka, dijawab HTTP 502: saldo sumber sudah berkurang dan perlu dikembalikan manual, sehingga _request_ tidak boleh diulang. HTTP 422 tersisa untuk rekening sumber yang tidak ada atau saldo yang tidak cukup.
+Kode REST di Lab 3 harus menyusun URL, mengodekan JSON, membaca _body_ dan menutupnya. Dengan gRPC, pemanggilan cukup satu baris `c.api.Debit(...)`. _Policy_ _resiliency_ tidak tampak di metode `Debit`, karena _interceptor_ sudah membungkus setiap RPC. Fungsi `mapError` menerjemahkan kode gRPC menjadi _error_ domain, sehingga paket `transfer` tidak perlu mengimpor gRPC dan _handler_ HTTP `transfer` tetap memetakan _error_ tersebut seperti di Lab 3. HTTP 503 hanya muncul bila _circuit breaker_ yang terbuka menolak _debit_: belum ada saldo yang berubah, sehingga _request_ aman diulang. Setiap kegagalan _credit_ sesudah _debit_ berhasil, termasuk rekening tujuan yang tidak ada dan _circuit breaker_ yang baru terbuka, dijawab HTTP 502: saldo sumber sudah berkurang dan perlu dikembalikan manual, sehingga _request_ tidak boleh diulang. HTTP 422 hanya digunakan untuk rekening sumber yang tidak ada atau saldo yang tidak cukup.
 
 === `main.go` di `transfer`
 
@@ -1421,7 +1421,7 @@ Jalankan `account` kembali dengan `make -C account run`. Setelah _circuit breake
 + *Urutan _interceptor_.* Tukar urutan `interceptor.Logging` dan `faults.UnaryServerInterceptor` di `grpc.ChainUnaryInterceptor`, lalu ulangi `make fault-error RATE=1` dan `make fault-slow`. Bandingkan baris `grpc request` di _log_ `account` sebelum dan sesudah penukaran, terutama nilai `code` dan `duration_ms`, dan jelaskan perbedaannya.
 + *Pemanggil berhenti menunggu.* Kunci baris rekening `1111111111` selama 4 detik dari `psql`, lalu kirim transfer dari rekening tersebut di terminal lain dalam rentang waktu itu:
   #perintah[```bash
-  docker exec studi-kasus-db-account-1 psql -U account -d account -c \
+  docker compose exec db-account psql -U account -d account -c \
     "begin; select number from account where number='1111111111' for update; select pg_sleep(4); commit;"
   ```]
   Transfer dijawab 502 setelah sekitar 2 detik dengan `failure_reason` `debit failed: debit 1111111111: timeout exceeded`. _Log_ `account` mencatat WARN `caller gave up before the request finished` dengan `code=Canceled`, bukan ERROR `grpc request failed`. Jelaskan mengapa kodenya `Canceled`, bukan `DeadlineExceeded`: siapa yang mengakhiri _context_ RPC tersebut? Lalu pertimbangkan: bila kunci baris dilepas tepat sebelum _context_ berakhir, apakah _debit_ dapat sudah terjadi walaupun transfer tercatat `FAILED`?
