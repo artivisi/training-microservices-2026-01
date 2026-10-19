@@ -1,0 +1,105 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification
+  labels:
+    app.kubernetes.io/name: notification
+spec:
+  # Up to 3 replicas share the work: one consumer group, 3 partitions. A
+  # fourth pod would get no partition and stay idle.
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: notification
+  # Rolling update: one extra pod at a time, never below the desired count.
+  # A new pod only receives traffic once its readiness probe passes, so an
+  # image that cannot start (wrong config, database unreachable) stops the
+  # rollout while the old pods keep serving.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: notification
+    spec:
+      # No runAsUser: the image already runs as 65532 (USER in the
+      # Dockerfile), and OpenShift's restricted SCC assigns its own UID from
+      # the namespace range and rejects a fixed one. runAsNonRoot makes the
+      # kubelet refuse an image whose user is root.
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      # Pod termination: the kubelet runs preStop (5 s sleep, see below), then
+      # sends SIGTERM, which starts the graceful shutdown in main.go (stop the
+      # consumer, up to 10 s for in-flight HTTP requests, then up to 5 s to
+      # flush telemetry). The grace period counts from the start of preStop and
+      # must cover all of it: 5 + 10 + 5 = 20 s, plus margin. After it the
+      # kubelet sends SIGKILL.
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: notification
+          # Name only; the overlay sets the registry and tag (images: in its
+          # kustomization.yaml).
+          image: studi-kasus/notification
+          # k3d: the image is imported into the cluster (make k3d-import), not
+          # pulled. IfNotPresent uses the imported one; "Always" would try a
+          # registry that does not have it.
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8083
+          # preStop runs before SIGTERM. Removing a terminating pod from the
+          # Service endpoints and from the ingress controller happens in
+          # parallel with its shutdown, not before it: for a few seconds new
+          # requests still arrive. Without the sleep the server would already
+          # be closing and refuse them during a rolling update. The native
+          # sleep action (Kubernetes 1.30+) needs no shell, which the scratch
+          # image does not have ("exec: sleep 5" would fail).
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 5
+          envFrom:
+            - configMapRef:
+                name: notification
+            - secretRef:
+                name: notification
+          # Readiness: the database answers; Kafka is not checked (see readyz
+          # in http.go). A failing pod is taken out of
+          # the Service endpoints but not restarted.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            # Above the 2 s database ping in /readyz: the ping result decides
+            # readiness, not the kubelet's default 1 s timeout.
+            timeoutSeconds: 3
+            failureThreshold: 2
+          # Liveness: the process still serves HTTP. No dependency check here:
+          # a database outage must not restart every pod at once.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          # Requests: what the scheduler reserves. Memory limit: the pod is
+          # OOM-killed above it. CPU limit: throttled above it.
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            # The service writes nothing to disk; logs go to stdout and OTLP.
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

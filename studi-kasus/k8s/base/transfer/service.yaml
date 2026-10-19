@@ -1,0 +1,15 @@
+# Stable name and virtual IP in front of the ready transfer pods: transfer:8082
+# inside the namespace.
+apiVersion: v1
+kind: Service
+metadata:
+  name: transfer
+  labels:
+    app.kubernetes.io/name: transfer
+spec:
+  selector:
+    app.kubernetes.io/name: transfer
+  ports:
+    - name: http
+      port: 8082
+      targetPort: http

@@ -1,0 +1,28 @@
+# Entry from outside the cluster to the channel-facing API. k3s ships Traefik
+# as ingress controller; k3d maps the laptop's port 8080 to it
+# (make k3d-up: -p 8080:80@loadbalancer), so http://localhost:8080/transfers
+# reaches this Service. Only /transfers is routed: probes, /metrics and
+# /debug stay inside the cluster (kubectl port-forward to reach them).
+# account and notification have no Ingress in this lab: accounts are created
+# and notifications read through kubectl port-forward, and account's gRPC API
+# is internal anyway.
+# OpenShift exposes a Service with a Route instead; it also accepts Ingress
+# objects and creates the Route itself.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: transfer
+  labels:
+    app.kubernetes.io/name: transfer
+spec:
+  ingressClassName: traefik
+  rules:
+    - http:
+        paths:
+          - path: /transfers
+            pathType: Prefix
+            backend:
+              service:
+                name: transfer
+                port:
+                  name: http

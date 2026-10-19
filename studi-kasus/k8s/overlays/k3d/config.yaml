@@ -1,0 +1,42 @@
+# The environment-specific keys, merged into the ConfigMaps of the base.
+#   Kafka     host.k3d.internal:19092, the K3D listener in compose.yaml. Not
+#             9092: that listener advertises localhost, which inside a pod is
+#             the pod itself.
+#   Hydra     tokens and keys fetched through host.k3d.internal:4444, but
+#             OAUTH_ISSUER stays http://localhost:4444/: it is compared with
+#             the "iss" claim, and Hydra writes its configured issuer there no
+#             matter which address the token was requested from.
+#   otel-lgtm OTLP through host.k3d.internal:4317. Traces and logs arrive as
+#             before; metrics do not: the Prometheus in otel-lgtm scrapes the
+#             laptop's ports 8081-8083, not the pods.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: account
+data:
+  OAUTH_ISSUER: http://localhost:4444/
+  OAUTH_JWKS_URL: http://host.k3d.internal:4444/.well-known/jwks.json
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://host.k3d.internal:4317
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: transfer
+data:
+  KAFKA_BROKERS: host.k3d.internal:19092
+  KAFKA_TOPIC: transfer-events
+  OAUTH_ISSUER: http://localhost:4444/
+  OAUTH_JWKS_URL: http://host.k3d.internal:4444/.well-known/jwks.json
+  OAUTH_CLIENT_ID: transfer-service
+  OAUTH_TOKEN_URL: http://host.k3d.internal:4444/oauth2/token
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://host.k3d.internal:4317
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: notification
+data:
+  KAFKA_BROKERS: host.k3d.internal:19092
+  KAFKA_TOPIC: transfer-events
+  KAFKA_GROUP_ID: notification
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://host.k3d.internal:4317

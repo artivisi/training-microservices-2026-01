@@ -1,0 +1,9 @@
+# Build context is studi-kasus/ (make images, compose profile apps). Only Go
+# sources and module files are needed; everything else would only slow down
+# the upload to the builder and invalidate its cache.
+**/bin
+k8s
+observability
+*.md
+compose.yaml
+Makefile

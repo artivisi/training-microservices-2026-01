@@ -34,7 +34,9 @@ import (
 //
 // plus a few seconds for the database writes in between. TestShutdownGrace
 // fails when the policies grow past it. The platform must give the process at
-// least this long before SIGKILL (Kubernetes: terminationGracePeriodSeconds).
+// least this long before SIGKILL (Kubernetes: terminationGracePeriodSeconds in
+// k8s/base/transfer/deployment.yaml, which also counts the preStop sleep;
+// Docker Compose: stop_grace_period).
 const shutdownGrace = 60 * time.Second
 
 func main() {

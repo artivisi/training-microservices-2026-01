@@ -428,6 +428,126 @@ Transfer yang ditolak _circuit breaker_ yang terbuka hanya memiliki _span_ `POST
 
 Database dari Lab 7 tidak perlu di-_reset_: kolom `correlation_id` dan `trace_context` di tabel `outbox` dibuat otomatis saat `transfer` dijalankan. `make infra-up` menambah _container_ `otel-lgtm`.
 
+## Container dan k3d (Lab 9)
+
+### _Image_
+
+Setiap service punya `Dockerfile` di direktorinya sendiri. _Build context_ adalah direktori `studi-kasus/`, bukan direktori service, karena `go.mod` `account` dan `transfer` mengarah ke `../proto` lewat _replace directive_. `notification` tidak memakai `proto` (_event_ dikirim sebagai JSON di Kafka), jadi `Dockerfile`-nya hanya menyalin `notification/`; _build context_-nya tetap sama agar ketiga _image_ dibangun dengan perintah yang sama.
+
+| Tahap | Isi |
+|---|---|
+| _Builder_ | `golang:1.27.2-alpine`, `GOWORK=off` (hanya modul service, ditambah `proto` untuk `account` dan `transfer`), `CGO_ENABLED=0 go build -trimpath -ldflags "-s -w"` |
+| Akhir | `FROM scratch`: _binary_ statis dan sertifikat CA, tanpa _shell_. Ukuran sekitar 8–9 MB terkompresi. Docker dengan _containerd image store_ (Docker Engine 29, Docker Desktop versi baru) menampilkan dua kolom di `docker images`: `CONTENT SIZE` sekitar 8–9 MB dan `DISK USAGE` sekitar 31–34 MB (terkompresi ditambah hasil ekstrak). _Image store_ klasik menampilkan satu kolom `SIZE` sekitar 21–23 MB |
+| _User_ | `65532:65532` (numerik). Tetap jalan dengan UID lain (OpenShift _restricted SCC_) dan _root filesystem_ _read-only_ |
+
+```
+make images VERSION=1.0.0     # studi-kasus/account:1.0.0, studi-kasus/transfer:1.0.0, studi-kasus/notification:1.0.0
+```
+
+`VERSION` wajib diisi; tanpa `VERSION`, `make` berhenti dengan pesan error. `make` tidak mencegah _build_ ulang dengan _tag_ yang sudah ada, tetapi _image_ hasil _build_ ulang itu tidak pernah sampai ke _pod_: Deployment memakai `imagePullPolicy: IfNotPresent`, dan referensi _image_ yang tidak berubah tidak memicu _rollout_. Setiap perubahan kode mendapat `VERSION` baru (`1.0.1`, `1.0.2`, ...), lalu `make k3d-import` dengan `VERSION` itu dan `kubectl set image` atau `newTag` di `overlays/k3d/kustomization.yaml` (lihat Latihan).
+
+### Seluruh sistem di Docker Compose
+
+_Profile_ `apps` di `compose.yaml` menjalankan ketiga service sebagai _container_ dengan alamat _compose service_ (`db-account:5432`, `kafka:29092`, `hydra:4444`, `otel-lgtm:4317`) dan _root filesystem_ _read-only_. Hentikan service yang dijalankan dengan `make -C <service> run` lebih dulu karena port 8081–8083 sama.
+
+```
+make infra-up
+make apps-up      # build image lalu jalankan account, transfer, notification
+make apps-down    # hentikan dan hapus container ketiga service
+```
+
+### k3d
+
+Hanya ketiga service yang berjalan di _cluster_. PostgreSQL, Kafka, Hydra, dan `otel-lgtm` tetap di Docker Compose (`make infra-up`). _Pod_ menjangkau laptop lewat nama `host.k3d.internal`, yang ditambahkan k3d ke DNS _cluster_.
+
+| Infrastruktur | Alamat dari _pod_ |
+|---|---|
+| PostgreSQL | `host.k3d.internal:15432`, `15433`, `15434` |
+| Kafka | `host.k3d.internal:19092` (_listener_ `K3D` di `compose.yaml`) |
+| Hydra | JWKS dan _token endpoint_ di `http://host.k3d.internal:4444`; `OAUTH_ISSUER` tetap `http://localhost:4444/` karena nilai `iss` di _token_ selalu alamat itu |
+| OTLP | `http://host.k3d.internal:4317` |
+| `account` gRPC | `account:9091` (Service di _namespace_ yang sama) |
+
+Kafka mendapat _listener_ ketiga karena _listener_ `localhost:9092` mengiklankan `localhost`, dan di dalam _pod_ `localhost` adalah _pod_ itu sendiri.
+
+```
+make infra-up
+make images VERSION=1.0.0
+make k3d-up                        # cluster "bank", rancher/k3s:v1.36.5-k3s1, port 8080 laptop ke Traefik, tunggu DNS host.k3d.internal
+make k3d-import VERSION=1.0.0      # salin image ke cluster, tanpa registry
+make k8s-apply                     # kubectl apply -k k8s/overlays/k3d, lalu tunggu rollout ketiga Deployment
+make k3d-down                      # hapus cluster
+```
+
+Hentikan service yang berjalan di laptop (`make -C <service> run`) atau di _profile_ `apps` sebelum `make k8s-apply`. Kalau tidak, dua `notification` berbagi _partition_ dalam satu _consumer group_ dan dua _relay outbox_ membaca database yang sama.
+
+k3d menulis `host.k3d.internal` ke ConfigMap CoreDNS, tetapi CoreDNS baru menjawab nama itu setelah ConfigMap sampai ke _pod_-nya, sampai sekitar satu menit kemudian. `make k3d-up` menunggu sampai nama itu terjawab, sehingga `make k8s-apply` sesudahnya tidak menghasilkan _restart_.
+
+Setelah Docker atau laptop di-_restart_, _container_ cluster berjalan lagi tanpa `host.k3d.internal` di DNS cluster. _Pod_ masuk `CrashLoopBackOff` dengan log `lookup host.k3d.internal ... no such host`. Jalankan `k3d cluster stop bank` lalu `k3d cluster start bank`: k3d menulis nama itu lagi, dan _pod_ berjalan normal setelah satu sampai dua menit tanpa perintah tambahan.
+
+### Manifest
+
+```
+k8s/
+  base/                 sama di semua environment
+    account/            configmap, secret (kosong), deployment, service
+    transfer/           configmap, secret (kosong), deployment, service, ingress
+    notification/       configmap, secret (kosong), deployment, service
+  overlays/k3d/         namespace bank, alamat infrastruktur, credential lab, tag image
+```
+
+| Objek | Isi |
+|---|---|
+| ConfigMap | _Key_ yang sama di semua _environment_ di `base` (`HTTP_ADDR`, `GRPC_ADDR`, `ACCOUNT_GRPC_ADDR`, `OTEL_SERVICE_NAME`); alamat infrastruktur ditambahkan `overlays/k3d/config.yaml` |
+| Secret | Kosong di `base`; `DATABASE_URL` dan `OAUTH_CLIENT_SECRET` diisi `overlays/k3d/secrets.yaml`. Credential lab ini ikut di-_commit_ hanya karena tidak melindungi apa pun di luar laptop |
+| Deployment | 1 _replica_, `envFrom` ConfigMap + Secret, _readiness_ `/readyz`, _liveness_ `/healthz`, _resource request_ dan _limit_, _rolling update_ `maxSurge: 1`, `maxUnavailable: 0`, `preStop` _sleep_ 5 detik, `terminationGracePeriodSeconds` 30 (`transfer` 75) |
+| _Security context_ | `runAsNonRoot`, `seccompProfile: RuntimeDefault`, `allowPrivilegeEscalation: false`, `readOnlyRootFilesystem: true`, `capabilities.drop: [ALL]`, tanpa `runAsUser` |
+| Service | ClusterIP: `account` 8081 dan 9091, `transfer` 8082, `notification` 8083 |
+| Ingress | Hanya `transfer`, _path_ `/transfers`, `ingressClassName: traefik` |
+
+Saat _pod_ dihentikan (_rolling update_, _scale down_), Kubernetes mengeluarkan _pod_ dari _endpoint_ Service dan Ingress bersamaan dengan menghentikannya, bukan sebelumnya. Selama beberapa detik _request_ baru masih datang. `preStop` dengan aksi `sleep` (Kubernetes 1.30+, tidak butuh _shell_, yang memang tidak ada di _image_ `scratch`) menunda SIGTERM 5 detik sampai _pod_ tidak lagi menerima _request_ baru; setelah itu _graceful shutdown_ di `main.go` menyelesaikan _request_ yang sedang berjalan. `terminationGracePeriodSeconds` dihitung sejak `preStop` dimulai dan harus mencakup `preStop` + batas _shutdown_ service + _flush_ telemetri 5 detik: `account` dan `notification` 5 + 10 + 5 detik, `transfer` 5 + 60 + 5 detik (`shutdownGrace`, agar _saga_ tidak terpotong). Lewat dari batas itu _kubelet_ mengirim SIGKILL. Di _profile_ `apps`, `stop_grace_period: 70s` memberi `transfer` waktu yang sama di Docker Compose.
+
+_Key_ yang tidak ada di ConfigMap maupun Secret menghentikan service saat _startup_ (`missing required environment variables: ...`); _pod_ masuk `CrashLoopBackOff`.
+
+```
+kubectl kustomize k8s/overlays/k3d    # hasil render tanpa apply
+```
+
+### Mencoba
+
+```
+kubectl -n bank get pods,svc,ingress
+kubectl -n bank port-forward svc/account 8081:8081    # terminal lain: REST account, make fault-*
+TOKEN=$(make -s token)
+curl -i -X POST localhost:8080/transfers -H "Authorization: Bearer $TOKEN" \
+  -d '{"from_account":"1111111111","to_account":"2222222222","amount":"100000"}'
+kubectl -n bank logs deploy/transfer
+```
+
+Rekening dari lab sebelumnya tetap ada karena `account` di k3d menggunakan `db-account` yang sama. `/debug/circuit-breaker`, `/metrics`, dan `GET /notifications` tidak lewat Ingress: gunakan `kubectl -n bank port-forward svc/transfer 8082:8082` atau `svc/notification 8083:8083`.
+
+### Latihan: mengubah manifest
+
+| Latihan | Perintah | Yang diamati |
+|---|---|---|
+| _Scale_ | `kubectl -n bank scale deployment/notification --replicas=3` | Tiga _pod_ berbagi tiga _partition_. Dengan `--replicas=4`, satu _pod_ tidak mendapat _partition_ dan tidak memproses _event_ |
+| Ubah konfigurasi | Hapus `KAFKA_GROUP_ID` dari ConfigMap `notification` di `overlays/k3d/config.yaml`, `kubectl apply -k k8s/overlays/k3d`, `kubectl -n bank rollout restart deployment/notification` | _Pod_ baru `CrashLoopBackOff`, `kubectl -n bank logs` menyebut variabel yang kosong; _pod_ lama tetap melayani karena `maxUnavailable: 0`. Kembalikan nilainya, _apply_ lagi, lalu `kubectl -n bank rollout restart deployment/notification`: _pod_ yang `CrashLoopBackOff` baru mencoba lagi setelah jeda _backoff_ (sampai 5 menit), sedangkan `rollout restart` langsung membuat _pod_ baru |
+| _Rolling update_ | `make images VERSION=1.0.1`, `make k3d-import VERSION=1.0.1`, `kubectl -n bank set image deployment/transfer transfer=studi-kasus/transfer:1.0.1`, `kubectl -n bank rollout status deployment/transfer` | _Pod_ baru dibuat dan menjadi _ready_ sebelum _pod_ lama dihentikan. _Build_ ulang dengan _tag_ `1.0.0` yang sama tidak memicu _rollout_. Alternatif: ubah `newTag` di `overlays/k3d/kustomization.yaml` lalu `kubectl apply -k` |
+| _Rollback_ | `kubectl -n bank rollout undo deployment/transfer` | Kembali ke `1.0.0` |
+
+Perubahan ConfigMap atau Secret tidak dibaca _pod_ yang sedang berjalan karena _environment variable_ hanya dibaca saat _startup_: jalankan `kubectl rollout restart`.
+
+### Batasan di lab
+
+| Hal | Keterangan |
+|---|---|
+| _Metric_ | Prometheus di `otel-lgtm` hanya mengambil port 8081–8083 di laptop. _Metric_ _pod_ di k3d tidak terambil; _trace_ dan log tetap masuk lewat OTLP |
+| gRPC dan Service | ClusterIP menyeimbangkan koneksi, bukan panggilan. Setelah `account` di-_scale_, panggilan dari satu _pod_ `transfer` tetap ke _pod_ `account` yang sama |
+| _Circuit breaker_ | Per _pod_ `transfer`; tiap _replica_ punya status sendiri |
+| Secret | Disimpan di repository khusus untuk lab. _Production_ mengambil Secret dari _vault_ atau _secret operator_ |
+
+Database dari Lab 8 tidak perlu di-_reset_. `make infra-up` membuka port 19092 untuk _listener_ Kafka `K3D`.
+
 ## Checkpoint
 
 Tag `lab-01` … `lab-10` berisi kondisi kode di akhir setiap lab. Peserta yang tertinggal melanjutkan dari tag lab sebelumnya:

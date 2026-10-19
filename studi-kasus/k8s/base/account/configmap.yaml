@@ -1,0 +1,13 @@
+# Non-secret configuration, passed to the container as environment variables
+# (envFrom in deployment.yaml). Only keys that are the same in every
+# environment live here; the overlay adds the rest. Environment variables are
+# read once at startup: after changing a ConfigMap, restart the pods
+# (kubectl rollout restart deployment/account).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: account
+data:
+  HTTP_ADDR: ":8081"
+  GRPC_ADDR: ":9091"
+  OTEL_SERVICE_NAME: account

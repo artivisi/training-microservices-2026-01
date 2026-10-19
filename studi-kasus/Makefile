@@ -13,7 +13,7 @@ KAFKA_TOPIC := transfer-events
 KAFKA_BIN := /opt/kafka/bin
 
 .PHONY: infra-up infra-down infra-reset test proto fault-slow fault-error fault-clear fault-status breaker \
-	events outbox replay duplicates token metrics
+	events outbox replay duplicates token metrics apps-up apps-down images k3d-up k3d-import k8s-apply k3d-down
 
 # kafka-init creates the topic (idempotent: --if-not-exists); hydra-init
 # (re)creates the OAuth2 clients, which Hydra's in-memory storage loses on every
@@ -23,14 +23,14 @@ infra-up:
 	docker compose run --rm kafka-init
 	docker compose run --rm hydra-init
 
-# --profile init: down skips services of inactive profiles, and a leftover
-# kafka-init container would keep the network from being removed.
+# --profile init/apps: down skips services of inactive profiles, and a leftover
+# kafka-init or service container would keep the network from being removed.
 infra-down:
-	docker compose --profile init down
+	docker compose --profile init --profile apps down
 
 # Removes the database and Kafka volumes too: all lab data is lost.
 infra-reset:
-	docker compose --profile init down -v
+	docker compose --profile init --profile apps down -v
 
 test:
 	$(MAKE) -C proto test
@@ -109,3 +109,79 @@ metrics:
 		echo "# $$u/metrics"; \
 		curl -sS $$u/metrics | grep -E '^(transfers_total|circuit_breaker_|outbox_pending|notifications_processed_total)' || true; \
 	done
+
+# Lab 9 helpers.
+
+# The three services as containers next to the infrastructure (compose profile
+# apps), rebuilt from the Dockerfiles. Run make infra-up first, and stop the
+# services started with make -C <service> run: the ports are the same.
+apps-up:
+	docker compose --profile apps up -d --build account transfer notification
+
+apps-down:
+	docker compose --profile apps rm -sf account transfer notification
+
+# Images for k3d. VERSION is the tag, e.g. make images VERSION=1.0.0, and is
+# required: the image name says which build it is. Nothing stops a rebuild under
+# an existing tag, and it rolls nothing: the image reference is unchanged, so
+# running pods keep the old image while pods created later (after another
+# k3d-import) get the new one. A change = a new VERSION (1.0.1), make k3d-import
+# with it, then
+# kubectl set image or newTag in k8s/overlays/k3d/kustomization.yaml.
+# Build context is this directory: account and transfer copy proto/ next to the
+# service (go.mod replace ../proto); notification does not import it.
+IMAGE_REPO := studi-kasus
+CLUSTER := bank
+NAMESPACE := bank
+IMAGES = $(foreach s,$(SERVICES),$(IMAGE_REPO)/$(s):$(VERSION))
+
+images:
+	@test -n "$(VERSION)" || { echo "VERSION is required, e.g. make images VERSION=1.0.0" >&2; exit 1; }
+	@for s in $(SERVICES); do docker build -f $$s/Dockerfile -t $(IMAGE_REPO)/$$s:$(VERSION) . || exit 1; done
+
+# One server node; port 8080 on the laptop goes to the cluster's ingress
+# controller (Traefik, port 80). The k3s image is pinned; k3d itself pulls its
+# helper images (k3d-proxy, k3d-tools) in the version of the k3d binary.
+# k3d writes host.k3d.internal into the CoreDNS ConfigMap, but CoreDNS answers
+# for it only after the ConfigMap reaches its pod, up to a minute later; pods
+# started before that crash with "lookup host.k3d.internal ... no such host".
+# So k3d-up waits until the cluster DNS (k3s default 10.43.0.10) resolves the
+# name, asked from the server node container (its image has nslookup).
+k3d-up:
+	k3d cluster create $(CLUSTER) --image rancher/k3s:v1.36.5-k3s1 -p 8080:80@loadbalancer
+	@echo "waiting until the cluster DNS resolves host.k3d.internal"
+	@for i in $$(seq 90); do \
+		docker exec k3d-$(CLUSTER)-server-0 nslookup host.k3d.internal 10.43.0.10 >/dev/null 2>&1 && exit 0; \
+		sleep 2; \
+	done; \
+	echo "host.k3d.internal does not resolve in the cluster DNS after 180 s" >&2; exit 1
+
+# Copies the images from the local Docker into the cluster's containerd, so no
+# registry is needed (Lab 10 pushes to one).
+k3d-import:
+	@test -n "$(VERSION)" || { echo "VERSION is required, e.g. make k3d-import VERSION=1.0.0" >&2; exit 1; }
+	$(call k3d-load,$(IMAGES))
+
+# $(call k3d-load,IMAGE ...) imports images into the cluster and checks that
+# the node's containerd really has each one (crictl resolves the name the way
+# the kubelet does). k3d image import can report success while an image never
+# arrives; the pod then tries to pull it from the network (ImagePullBackOff).
+# A missing image is imported once more, directly into the node.
+K3D_NODE = k3d-$(CLUSTER)-server-0
+k3d-load = k3d image import -c $(CLUSTER) $(1) && \
+	for img in $(1); do \
+		docker exec $(K3D_NODE) crictl inspecti -q $$img >/dev/null 2>&1 && continue; \
+		echo "$$img not found in the cluster after import, importing again" >&2; \
+		k3d image import --mode direct -c $(CLUSTER) $$img && \
+		docker exec $(K3D_NODE) crictl inspecti -q $$img >/dev/null 2>&1 || \
+		{ echo "$$img is not in cluster $(CLUSTER) after two imports" >&2; exit 1; }; \
+	done
+
+# Applies the k3d overlay, then waits until every Deployment is rolled out
+# (readiness probes pass) or reports which one is not.
+k8s-apply:
+	kubectl apply -k k8s/overlays/k3d
+	@for s in $(SERVICES); do kubectl -n $(NAMESPACE) rollout status deployment/$$s --timeout=120s || exit 1; done
+
+k3d-down:
+	k3d cluster delete $(CLUSTER)

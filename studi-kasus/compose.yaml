@@ -3,6 +3,10 @@
 # PostgreSQL on 5432). One PostgreSQL container per service:
 # database-per-service. Kafka from Lab 5, Hydra (OAuth2 server) from Lab 7,
 # otel-lgtm (observability) from Lab 8.
+#
+# Lab 9: profile "apps" runs the three services as containers too (make
+# apps-up); in k3d only the services run in the cluster and reach this
+# infrastructure through host.k3d.internal and the published ports.
 services:
   db-account:
     image: postgres:18.6-alpine
@@ -50,9 +54,12 @@ services:
       retries: 30
 
   # Single-node Kafka in KRaft mode: the same process is broker and controller,
-  # no ZooKeeper. Two client listeners:
+  # no ZooKeeper. Three client listeners:
   #   HOST     localhost:9092 for the services running on the laptop
-  #   INTERNAL kafka:29092 for containers on the compose network (kafka-init)
+  #   INTERNAL kafka:29092 for containers on the compose network (kafka-init,
+  #            profile apps)
+  #   K3D      host.k3d.internal:19092 for pods in the k3d cluster (Lab 9);
+  #            inside the cluster "localhost" is the pod itself
   # A client connects to the bootstrap address, then reconnects to the address
   # the broker advertises for its listener; that is why each audience needs its
   # own listener.
@@ -61,9 +68,9 @@ services:
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_LISTENERS: HOST://:9092,INTERNAL://:29092,CONTROLLER://:9093
-      KAFKA_ADVERTISED_LISTENERS: HOST://localhost:9092,INTERNAL://kafka:29092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: HOST:PLAINTEXT,INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_LISTENERS: HOST://:9092,INTERNAL://:29092,K3D://:19092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: HOST://localhost:9092,INTERNAL://kafka:29092,K3D://host.k3d.internal:19092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: HOST:PLAINTEXT,INTERNAL:PLAINTEXT,K3D:PLAINTEXT,CONTROLLER:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
@@ -78,6 +85,7 @@ services:
       KAFKA_LOG_DIRS: /var/lib/kafka/data
     ports:
       - "9092:9092"
+      - "19092:19092"
     volumes:
       - kafka:/var/lib/kafka/data
     healthcheck:
@@ -184,6 +192,101 @@ services:
       interval: 5s
       timeout: 5s
       retries: 60
+
+  # Lab 9: the three services as containers (make apps-up), built from the
+  # Dockerfile of each service with studi-kasus/ as build context. Same
+  # variables as in the service Makefiles, but the addresses are compose
+  # service names: inside a container, localhost is the container itself.
+  # Exception: OAUTH_ISSUER stays http://localhost:4444/, because that is the
+  # "iss" Hydra writes into every token (URLS_SELF_ISSUER), whichever address
+  # the token was requested from.
+  # read_only: the same read-only root filesystem as in Kubernetes
+  # (readOnlyRootFilesystem), so a service that tries to write a file fails
+  # here first.
+  # Stop the services started with make -C <service> run first: the published
+  # ports are the same.
+  account:
+    profiles: ["apps"]
+    build:
+      context: .
+      dockerfile: account/Dockerfile
+    read_only: true
+    environment:
+      HTTP_ADDR: ":8081"
+      GRPC_ADDR: ":9091"
+      DATABASE_URL: postgres://account:account123@db-account:5432/account
+      OAUTH_ISSUER: http://localhost:4444/
+      OAUTH_JWKS_URL: http://hydra:4444/.well-known/jwks.json
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-lgtm:4317
+      OTEL_SERVICE_NAME: account
+    # 8081 only: the gRPC API is internal, transfer reaches it as account:9091.
+    # Published, so make fault-* and the Prometheus scrape over
+    # host.docker.internal keep working.
+    ports:
+      - "8081:8081"
+    depends_on:
+      db-account:
+        condition: service_healthy
+      hydra:
+        condition: service_healthy
+
+  transfer:
+    profiles: ["apps"]
+    build:
+      context: .
+      dockerfile: transfer/Dockerfile
+    read_only: true
+    environment:
+      HTTP_ADDR: ":8082"
+      DATABASE_URL: postgres://transfer:transfer123@db-transfer:5432/transfer
+      ACCOUNT_GRPC_ADDR: account:9091
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_TOPIC: transfer-events
+      OAUTH_ISSUER: http://localhost:4444/
+      OAUTH_JWKS_URL: http://hydra:4444/.well-known/jwks.json
+      OAUTH_CLIENT_ID: transfer-service
+      # Lab value, visible in the repository. Production: a secret store.
+      OAUTH_CLIENT_SECRET: transfer-service-secret
+      OAUTH_TOKEN_URL: http://hydra:4444/oauth2/token
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-lgtm:4317
+      OTEL_SERVICE_NAME: transfer
+    # Docker sends SIGKILL 10 s after SIGTERM by default; transfer waits up to
+    # 60 s for sagas in flight (shutdownGrace in main.go) plus 5 s for the
+    # telemetry flush.
+    stop_grace_period: 70s
+    ports:
+      - "8082:8082"
+    depends_on:
+      db-transfer:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      hydra:
+        condition: service_healthy
+      account:
+        condition: service_started
+
+  notification:
+    profiles: ["apps"]
+    build:
+      context: .
+      dockerfile: notification/Dockerfile
+    read_only: true
+    environment:
+      HTTP_ADDR: ":8083"
+      DATABASE_URL: postgres://notification:notification123@db-notification:5432/notification
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_TOPIC: transfer-events
+      KAFKA_GROUP_ID: notification
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-lgtm:4317
+      OTEL_SERVICE_NAME: notification
+    ports:
+      - "8083:8083"
+    depends_on:
+      db-notification:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
 
 volumes:
   db-account:

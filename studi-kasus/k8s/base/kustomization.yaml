@@ -1,0 +1,17 @@
+# Base: what is the same in every environment (k3d on the laptop, the shared
+# training server in Lab 10, production). Not deployable on its own: the
+# addresses of PostgreSQL, Kafka, the OAuth2 server and the collector, the
+# credentials, the image tag and the namespace come from an overlay
+# (overlays/k3d). A key the overlay forgets stops the service at startup with
+# "missing required environment variables: ..." instead of running with a
+# guessed value.
+#   kubectl kustomize overlays/k3d    renders the result without applying it
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: studi-kasus
+resources:
+  - account
+  - transfer
+  - notification

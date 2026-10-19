@@ -1,0 +1,16 @@
+# Non-secret configuration, passed to the container as environment variables
+# (envFrom in deployment.yaml). Only keys that are the same in every
+# environment live here; the overlay adds the rest. Environment variables are
+# read once at startup: after changing a ConfigMap, restart the pods
+# (kubectl rollout restart deployment/transfer).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: transfer
+data:
+  HTTP_ADDR: ":8082"
+  # The Service "account" in the same namespace (service.yaml of account):
+  # cluster DNS resolves the short name. Every environment deploys both
+  # services into one namespace, so this never changes.
+  ACCOUNT_GRPC_ADDR: account:9091
+  OTEL_SERVICE_NAME: transfer
