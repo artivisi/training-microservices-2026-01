@@ -933,7 +933,7 @@ conn, err := grpc.NewClient(cfg.AccountGRPCAddr,
     columns: (1fr, 1.3fr),
     [Panel], [PromQL],
     [Laju transfer per status], [`sum by (status) (rate(transfers_total[5m]))`],
-    [_Latency_ p95 per _route_], [`histogram_quantile(0.95, sum by (le, http_route) (rate(http_server_request_duration_seconds_bucket[5m])))`],
+    [_Latency_ p95 per _route_], [`histogram_quantile(0.95, sum by (le, route) (rate(http_server_request_duration_seconds_bucket[5m])))`],
   )
   #v(10pt)
   #bullets(size: 13.5pt,
