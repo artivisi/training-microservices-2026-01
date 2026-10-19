@@ -38,7 +38,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	}
 	ns, err := h.store.ListByTransfer(r.Context(), transferID)
 	if err != nil {
-		h.log.Error("request failed", "method", r.Method, "path", r.URL.Path, "error", err)
+		h.log.ErrorContext(r.Context(), "request failed", "method", r.Method, "path", r.URL.Path, "error", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
@@ -58,7 +58,7 @@ func (h *Handler) readyz(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
 	if err := h.store.Ping(ctx); err != nil {
-		h.log.Warn("readiness check failed", "error", err)
+		h.log.WarnContext(r.Context(), "readiness check failed", "error", err)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "DOWN", "database": "DOWN"})
 		return
 	}

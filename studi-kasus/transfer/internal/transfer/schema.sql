@@ -42,3 +42,10 @@ create index if not exists outbox_unpublished on outbox (created_at) where publi
 -- unique index.
 alter table transfer add column if not exists idempotency_key varchar(100);
 create unique index if not exists transfer_idempotency_key on transfer (idempotency_key);
+
+-- Observability (Lab 8): the correlation ID and the trace context
+-- (traceparent, tracestate) of the request that wrote the event. The relay
+-- runs later, outside that request; it reads both from here and passes them on
+-- in the Kafka headers, so the notification service continues the same trace.
+alter table outbox add column if not exists correlation_id varchar(100);
+alter table outbox add column if not exists trace_context jsonb;

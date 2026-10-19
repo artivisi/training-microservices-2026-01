@@ -9,6 +9,8 @@ run:
 	DATABASE_URL=postgres://account:account123@localhost:15432/account \
 	OAUTH_ISSUER=http://localhost:4444/ \
 	OAUTH_JWKS_URL=http://localhost:4444/.well-known/jwks.json \
+	OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317 \
+	OTEL_SERVICE_NAME=account \
 	go run .
 
 test:

@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
@@ -22,11 +24,14 @@ import (
 	"github.com/artivisi/training-microservices-2026-01/studi-kasus/account/internal/auth"
 	"github.com/artivisi/training-microservices-2026-01/studi-kasus/account/internal/fault"
 	"github.com/artivisi/training-microservices-2026-01/studi-kasus/account/internal/interceptor"
+	"github.com/artivisi/training-microservices-2026-01/studi-kasus/account/internal/telemetry"
 	accountv1 "github.com/artivisi/training-microservices-2026-01/studi-kasus/proto/gen/account/v1"
 )
 
 func main() {
-	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	// Until the configuration is read there is no collector address: startup
+	// errors go to stdout only, as JSON like every later log line.
+	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	if err := run(log); err != nil {
 		log.Error("account service stopped", "error", err)
 		os.Exit(1)
@@ -43,6 +48,23 @@ func run(log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// Lab 8: from here on, log lines also go to the collector (OTLP) and carry
+	// correlation_id / trace_id when logged with a request context.
+	tel, err := telemetry.Setup(ctx, cfg.OTelServiceName, cfg.OTelEndpoint)
+	if err != nil {
+		return err
+	}
+	// Deferred first, so it runs last: spans and logs of the shutdown itself
+	// are flushed too.
+	defer func(boot *slog.Logger) {
+		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := tel.Shutdown(flushCtx); err != nil {
+			boot.Warn("flushing telemetry failed", "error", err)
+		}
+	}(log)
+	log = tel.Logger
+
 	store, err := account.NewPostgresStore(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
@@ -57,10 +79,13 @@ func run(log *slog.Logger) error {
 	mux.Handle("/accounts/", faults.Wrap(api))
 	mux.Handle("/", api)
 	faults.Register(mux)
+	// Lab 8: Prometheus pulls the metrics from here. Open like the probes;
+	// production restricts it to the monitoring network.
+	mux.Handle("GET /metrics", promhttp.Handler())
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           mux,
+		Handler:           telemetry.HTTPHandler(mux),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -86,11 +111,21 @@ func run(log *slog.Logger) error {
 	// fault injector produced, so rejections and injected failures show up in
 	// the log like real ones. Auth comes before faults: a caller without a valid
 	// token is turned away before any work, simulated or real, is done.
-	grpcSrv := grpc.NewServer(grpc.ChainUnaryInterceptor(
-		interceptor.Logging(log),
-		auth.UnaryServerInterceptor(verifier, account.GRPCScopes, notAccountService, log),
-		faults.UnaryServerInterceptor(notAccountService),
-	))
+	// Correlation comes first, so all of them log with the caller's ID; metrics
+	// next, so the duration covers everything after it.
+	grpcSrv := grpc.NewServer(
+		// Lab 8: continues the caller's trace (traceparent in the metadata) with
+		// one server span per call. A stats handler, not an interceptor: it sees
+		// the call before the interceptors run, and the span covers them all,
+		// fault delays included.
+		grpc.StatsHandler(otelgrpc.NewServerHandler()),
+		grpc.ChainUnaryInterceptor(
+			telemetry.UnaryServerCorrelation(),
+			interceptor.Metrics(),
+			interceptor.Logging(log),
+			auth.UnaryServerInterceptor(verifier, account.GRPCScopes, notAccountService, log),
+			faults.UnaryServerInterceptor(notAccountService),
+		))
 	accountv1.RegisterAccountServiceServer(grpcSrv, account.NewGRPCServer(store, log))
 	// Standard health protocol (grpc.health.v1): grpcurl and grpc-health-probe
 	// understand it without custom code. It is NOT tied to the database: the

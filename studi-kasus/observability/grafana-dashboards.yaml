@@ -1,0 +1,12 @@
+# Grafana dashboard provider (Lab 8), mounted into the otel-lgtm container next
+# to the image's own providers. Grafana loads every JSON file in the folder at
+# startup. After editing a file: docker compose restart otel-lgtm (a change
+# made in the Grafana UI is not written back to the file).
+apiVersion: 1
+
+providers:
+  - name: studi-kasus
+    folder: Studi Kasus
+    type: file
+    options:
+      path: /otel-lgtm/dashboards/studi-kasus

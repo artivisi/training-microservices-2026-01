@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/shopspring/decimal"
 	"golang.org/x/oauth2"
 	"google.golang.org/grpc"
@@ -23,6 +24,7 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 
 	accountv1 "github.com/artivisi/training-microservices-2026-01/studi-kasus/proto/gen/account/v1"
+	"github.com/artivisi/training-microservices-2026-01/studi-kasus/transfer/internal/telemetry"
 	"github.com/artivisi/training-microservices-2026-01/studi-kasus/transfer/internal/transfer"
 )
 
@@ -483,5 +485,38 @@ func TestRejectedTokenIsReplacedOnlyOnce(t *testing.T) {
 	}
 	if got := fetches.Load(); got != 2 {
 		t.Fatalf("token fetches = %d, want 2", got)
+	}
+}
+
+func TestSendsCorrelationID(t *testing.T) {
+	var got []string
+	c, _ := newTestClient(t, func(ctx context.Context, _ int64) error {
+		md, _ := metadata.FromIncomingContext(ctx)
+		got = md.Get("x-correlation-id")
+		return nil
+	})
+	ctx := telemetry.WithCorrelationID(context.Background(), "req-42")
+	if err := c.Debit(ctx, "1111111111", decimal.NewFromInt(1), "ref"); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "req-42" {
+		t.Fatalf("x-correlation-id = %v, want [req-42]", got)
+	}
+}
+
+func TestBreakerMetrics(t *testing.T) {
+	opened := testutil.ToFloat64(breakerTransitions.WithLabelValues("account", "closed", "open"))
+	c, _ := newTestClient(t, always(codes.Internal))
+	if got := testutil.ToFloat64(breakerState.WithLabelValues("account")); got != 0 {
+		t.Fatalf("circuit_breaker_state = %v, want 0 (closed) for a new client", got)
+	}
+	for range 5 {
+		_ = debit(c)
+	}
+	if got := testutil.ToFloat64(breakerState.WithLabelValues("account")); got != 2 {
+		t.Fatalf("circuit_breaker_state = %v, want 2 (open)", got)
+	}
+	if got := testutil.ToFloat64(breakerTransitions.WithLabelValues("account", "closed", "open")); got != opened+1 {
+		t.Fatalf("closed->open transitions = %v, want %v", got, opened+1)
 	}
 }

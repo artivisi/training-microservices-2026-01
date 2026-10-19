@@ -1,7 +1,8 @@
 # Lab infrastructure. Services run on the host (go run) and connect to these
 # containers through the published ports (15432+, away from a locally installed
 # PostgreSQL on 5432). One PostgreSQL container per service:
-# database-per-service. Kafka from Lab 5, Hydra (OAuth2 server) from Lab 7.
+# database-per-service. Kafka from Lab 5, Hydra (OAuth2 server) from Lab 7,
+# otel-lgtm (observability) from Lab 8.
 services:
   db-account:
     image: postgres:18.6-alpine
@@ -153,6 +154,36 @@ services:
         hydra create oauth2-client --id channel-app --secret channel-app-secret \
           --grant-type client_credentials --response-type token \
           --scope transfer:read,transfer:write --access-token-strategy jwt --quiet
+
+  # Observability backend in one container (Lab 8), for development and labs
+  # only: OpenTelemetry Collector, Prometheus (metrics), Tempo (traces), Loki
+  # (logs) and Grafana. Production runs each of them separately, with storage.
+  #   3000  Grafana, no login (anonymous admin)
+  #   4317  OTLP gRPC: the services send traces and logs here
+  #   4318  OTLP HTTP, for clients without gRPC
+  # Metrics go the other way: Prometheus inside the container scrapes /metrics
+  # of the services on the laptop (observability/prometheus.yaml). No volume:
+  # the data is gone when the container is recreated.
+  otel-lgtm:
+    image: grafana/otel-lgtm:0.37.0
+    ports:
+      - "3000:3000"
+      - "4317:4317"
+      - "4318:4318"
+    # host.docker.internal = the laptop. Docker Desktop has it built in; on a
+    # Linux Docker Engine this line creates it.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./observability/prometheus.yaml:/otel-lgtm/prometheus.yaml:ro
+      - ./observability/grafana-dashboards.yaml:/otel-lgtm/grafana/conf/provisioning/dashboards/studi-kasus.yaml:ro
+      - ./observability/dashboards:/otel-lgtm/dashboards/studi-kasus:ro
+    # The image checks every 30 s; up --wait would sit idle that long.
+    healthcheck:
+      test: ["CMD", "/otel-lgtm/docker/healthcheck.sh"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
 
 volumes:
   db-account:

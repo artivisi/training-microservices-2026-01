@@ -5,6 +5,7 @@ SERVICES := account transfer notification
 # stay fast.
 ACCOUNT_URL := http://localhost:8081
 TRANSFER_URL := http://localhost:8082
+NOTIFICATION_URL := http://localhost:8083
 
 HYDRA_URL := http://localhost:4444
 
@@ -12,7 +13,7 @@ KAFKA_TOPIC := transfer-events
 KAFKA_BIN := /opt/kafka/bin
 
 .PHONY: infra-up infra-down infra-reset test proto fault-slow fault-error fault-clear fault-status breaker \
-	events outbox replay duplicates token
+	events outbox replay duplicates token metrics
 
 # kafka-init creates the topic (idempotent: --if-not-exists); hydra-init
 # (re)creates the OAuth2 clients, which Hydra's in-memory storage loses on every
@@ -99,3 +100,12 @@ token:
 		$(HYDRA_URL)/oauth2/token) || exit 1; \
 	case "$$resp" in *'"access_token"'*) ;; *) echo "$$resp" >&2; exit 1;; esac; \
 	echo "$$resp" | sed -E 's/.*"access_token":"([^"]+)".*/\1/'
+
+# Lab 8: the domain metrics of the three services, straight from their
+# /metrics endpoints (what Prometheus scrapes every 5 s). Grafana:
+# http://localhost:3000, dashboard "Studi Kasus: Transfer".
+metrics:
+	@for u in $(ACCOUNT_URL) $(TRANSFER_URL) $(NOTIFICATION_URL); do \
+		echo "# $$u/metrics"; \
+		curl -sS $$u/metrics | grep -E '^(transfers_total|circuit_breaker_|outbox_pending|notifications_processed_total)' || true; \
+	done

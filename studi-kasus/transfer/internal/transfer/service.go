@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // ReversalSuffix marks the compensating credit. The reversal needs its own
@@ -56,13 +59,16 @@ func (s *Service) Execute(ctx context.Context, req CreateRequest, idempotencyKey
 	if err != nil {
 		return Transfer{}, false, fmt.Errorf("record transfer: %w", err)
 	}
+	// Tags the request's span: Tempo finds the trace of a transfer by its ID,
+	// e.g. TraceQL {span.transfer.id="<id>"}.
+	trace.SpanFromContext(ctx).SetAttributes(attribute.String("transfer.id", t.ID))
 	if !created {
 		if !t.SameRequest(req) {
-			s.log.Warn("idempotency key reused with a different request",
+			s.log.WarnContext(ctx, "idempotency key reused with a different request",
 				"idempotency_key", idempotencyKey, "transfer_id", t.ID)
 			return Transfer{}, false, ErrIdempotencyKeyReused
 		}
-		s.log.Info("idempotent replay, returning the original transfer",
+		s.log.InfoContext(ctx, "idempotent replay, returning the original transfer",
 			"idempotency_key", idempotencyKey, "transfer_id", t.ID, "status", t.Status)
 		return t, true, replayOutcome(t)
 	}
@@ -112,7 +118,7 @@ func (s *Service) run(ctx context.Context, t Transfer) (Transfer, error) {
 	if err != nil {
 		// The money left the source but our own database did not record it. The
 		// transfer stays PENDING; the reconciliation above would find it.
-		s.log.Error("debit applied but not recorded", "transfer_id", t.ID, "error", err)
+		s.log.ErrorContext(ctx, "debit applied but not recorded", "transfer_id", t.ID, "error", err)
 		return t, fmt.Errorf("mark transfer debited: %w", err)
 	}
 
@@ -137,13 +143,13 @@ func (s *Service) run(ctx context.Context, t Transfer) (Transfer, error) {
 // are certain not to have been applied; the reconciliation job resolves the rest.
 func (s *Service) compensate(ctx context.Context, t Transfer, cause error) (Transfer, error) {
 	reason := "credit failed: " + publicReason(cause)
-	s.log.Warn("credit failed after debit, reversing the debit", "transfer_id", t.ID, "error", cause)
+	s.log.WarnContext(ctx, "credit failed after debit, reversing the debit", "transfer_id", t.ID, "error", cause)
 
 	if err := s.accounts.Reverse(ctx, t.FromAccount, t.Amount, t.ID+ReversalSuffix); err != nil {
 		// The source account is short by the amount. The reversal is idempotent, so
 		// repeating it later is safe; production runs that from a background job.
 		// Here a person repeats it. No event: the customer outcome is not final yet.
-		s.log.Error("compensation failed, source account needs manual reversal",
+		s.log.ErrorContext(ctx, "compensation failed, source account needs manual reversal",
 			"transfer_id", t.ID, "from_account", t.FromAccount, "amount", t.Amount, "error", err)
 		reason = reason + "; reversal failed: " + publicReason(err)
 		return s.finish(ctx, t, Debited, CompensationFailed, reason, "", fmt.Errorf("%w: %w", ErrReversalFailed, errors.Join(cause, err)))
@@ -156,16 +162,18 @@ func (s *Service) compensate(ctx context.Context, t Transfer, cause error) (Tran
 func (s *Service) finish(ctx context.Context, t Transfer, from, to Status, reason string, event EventType, cause error) (Transfer, error) {
 	done, err := s.store.Transition(ctx, t.ID, from, to, reason, event)
 	if err != nil {
-		s.log.Error("saga end state not recorded", "transfer_id", t.ID, "status", to, "error", err)
+		s.log.ErrorContext(ctx, "saga end state not recorded", "transfer_id", t.ID, "status", to, "error", err)
 		return t, errors.Join(cause, fmt.Errorf("mark transfer %s: %w", to, err))
 	}
+	transfersTotal.WithLabelValues(string(to)).Inc()
+	trace.SpanFromContext(ctx).SetAttributes(attribute.String("transfer.status", string(to)))
 	switch to {
 	case Completed:
-		s.log.Info("transfer completed", "transfer_id", t.ID, "amount", t.Amount)
+		s.log.InfoContext(ctx, "transfer completed", "transfer_id", t.ID, "amount", t.Amount)
 	case CompensationFailed:
 		// logged in compensate
 	default:
-		s.log.Warn("transfer not completed", "transfer_id", t.ID, "status", to, "reason", reason, "error", cause)
+		s.log.WarnContext(ctx, "transfer not completed", "transfer_id", t.ID, "status", to, "reason", reason, "error", cause)
 	}
 	return done, cause
 }

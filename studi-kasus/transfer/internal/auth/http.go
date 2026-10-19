@@ -36,7 +36,7 @@ func (m *Middleware) Require(scope string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token, ok := bearer(r.Header.Get("Authorization"))
 		if !ok {
-			m.log.Warn("request rejected", "method", r.Method, "path", r.URL.Path, "error", ErrNoToken)
+			m.log.WarnContext(r.Context(), "request rejected", "method", r.Method, "path", r.URL.Path, "error", ErrNoToken)
 			w.Header().Set("WWW-Authenticate", `Bearer`)
 			writeError(w, http.StatusUnauthorized, ErrNoToken.Error())
 			return
@@ -44,13 +44,13 @@ func (m *Middleware) Require(scope string, next http.Handler) http.Handler {
 		claims, err := m.v.Verify(token)
 		if err != nil {
 			// Detail (expired, wrong issuer, bad signature) only in our log.
-			m.log.Warn("request rejected", "method", r.Method, "path", r.URL.Path, "error", err)
+			m.log.WarnContext(r.Context(), "request rejected", "method", r.Method, "path", r.URL.Path, "error", err)
 			w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token"`)
 			writeError(w, http.StatusUnauthorized, ErrInvalidToken.Error())
 			return
 		}
 		if !claims.HasScope(scope) {
-			m.log.Warn("request rejected", "method", r.Method, "path", r.URL.Path, "client_id", claims.ClientID,
+			m.log.WarnContext(r.Context(), "request rejected", "method", r.Method, "path", r.URL.Path, "client_id", claims.ClientID,
 				"required_scope", scope, "token_scopes", claims.Scopes)
 			w.Header().Set("WWW-Authenticate", `Bearer error="insufficient_scope", scope="`+scope+`"`)
 			writeError(w, http.StatusForbidden, "scope "+scope+" required")
