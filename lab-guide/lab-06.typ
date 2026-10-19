@@ -314,7 +314,7 @@ func (f *fakeStore) Insert(_ context.Context, n Notification) (Notification, boo
 }
 ```
 
-_Test_ `TestConsumerIsNotIdempotentYet` dari Lab 5 mendokumentasikan celah yang sekarang sudah ditutup. Ganti _test_ tersebut dengan _test_ yang membuktikan perilaku baru: empat _event_ masuk, dua di antaranya duplikat, hasilnya dua notifikasi dan keempat _offset_ tetap di-_commit_. `eventID1` dan `eventID2` adalah konstanta UUID yang sudah ada di file _test_ sejak Lab 5, karena `handle` melewati _event_ dengan `event_id` yang bukan UUID.
+_Test_ `TestConsumerIsNotIdempotentYet` dari Lab 5 mendokumentasikan celah yang sekarang sudah ditutup. Ganti _test_ tersebut dengan _test_ yang membuktikan perilaku baru: empat _event_ masuk, dua di antaranya duplikat, hasilnya dua notifikasi dan keempat _offset_ tetap di-_commit_. _Test_ ini menggunakan konstanta `eventID1` dan `eventID2` yang sudah ada sejak Lab 5. ID seperti `e-1` tidak dapat digunakan karena `handle` melewati _event_ dengan `event_id` yang bukan UUID.
 
 ```go
 // The same event delivered twice (relay duplicate or replay) becomes one
@@ -524,7 +524,7 @@ func (s *Service) run(ctx context.Context, t Transfer) (Transfer, error) {
 
 Sisa isi fungsi lama, mulai dari penanganan _error_ `Debit` hingga akhir, tetap seperti semula dan sekarang menjadi isi `run`. Komentar di atas fungsi yang menjelaskan langkah _saga_ tetap dipertahankan; paragraf `idempotencyKey` di atas ditambahkan di bawahnya.
 
-Perhatikan bahwa jawaban untuk pengulangan berisi transfer asli dengan status saat ini, ditambah _error_ yang sama dengan hasil _request_ pertama. _Error_ tersebut disusun ulang oleh `replayOutcome` dari data yang tersimpan, sehingga _handler_ dapat menjawab pengulangan dengan kode HTTP yang sama. Klien yang kehilangan jawaban pertama lalu mengulang _request_ mengambil keputusan yang sama seperti bila jawaban pertama sampai.
+Perhatikan bahwa jawaban untuk pengulangan berisi transfer asli dengan status saat ini, ditambah _error_ yang sama dengan hasil _request_ pertama. _Error_ tersebut disusun ulang oleh `replayOutcome` dari data yang tersimpan, sehingga _handler_ dapat menjawab pengulangan dengan kode HTTP yang sama, kecuali bila status akhir _request_ pertama gagal disimpan. Klien yang kehilangan jawaban pertama lalu mengulang _request_ mengambil keputusan yang sama seperti bila jawaban pertama sampai.
 
 Untuk status `FAILED` dan `COMPENSATED`, satu-satunya catatan penyebab kegagalan adalah teks di kolom `failure_reason`. `replayOutcome` memeriksa apakah teks tersebut diakhiri pesan salah satu _sentinel error_, misalnya `: insufficient funds`. Cara ini bergantung pada format teks dan cukup untuk lab. Rancangan di _production_ menyimpan kode kegagalan di kolom tersendiri.
 
@@ -617,7 +617,7 @@ Kode HTTP untuk pengulangan dengan _key_ yang sama:
   [`COMPLETED`], [201 Created, sama dengan _request_ pertama],
   [`FAILED` atau `COMPENSATED`], [422, 503, atau 502, sesuai penyebab kegagalan di `failure_reason`],
   [`COMPENSATION_FAILED`], [500 Internal Server Error],
-  [`PENDING` atau `DEBITED`], [202 Accepted: _request_ pertama masih berjalan (atau terhenti oleh _crash_)],
+  [`PENDING` atau `DEBITED`], [202 Accepted: _request_ pertama masih berjalan (atau terhenti oleh _crash_ atau oleh kegagalan menyimpan status)],
 )
 
 Setiap jawaban pengulangan membawa _header_ `Idempotent-Replayed: true`, yang memberi tahu klien bahwa kali ini tidak ada yang dijalankan. _Header_ `Location` hanya diisi pada jawaban 201 dan 202. Kondisi lain di luar tabel:
@@ -709,7 +709,7 @@ func TestExecuteIdempotencyKey(t *testing.T) {
 }
 ```
 
-Tambahkan juga _test_ untuk `replayOutcome`. _Test_ ini memeriksa bahwa setiap kombinasi status dan `failure_reason` menghasilkan kelompok _error_ yang sama dengan _request_ pertama, dan bahwa kegagalan jaringan tidak dikenali sebagai _sentinel_ mana pun (sehingga tetap dijawab 502):
+Tambahkan juga _test_ untuk `replayOutcome`. _Test_ ini memeriksa bahwa setiap kombinasi status dan `failure_reason` menghasilkan _sentinel error_ yang sama dengan _request_ pertama, dan bahwa kegagalan jaringan tidak cocok dengan `ErrAccountNotFound`, `ErrInsufficientFunds`, maupun `ErrAccountUnavailable`, sehingga tetap dijawab 502:
 
 ```go
 // TestReplayOutcome: a replay gets back the error class of the original
@@ -992,7 +992,7 @@ Saldo rekening asal berkurang tepat 100000. _Unique index_ pada `idempotency_key
 
 == Masalah Umum
 
-*`make replay` gagal dengan `Assignments can only be reset if the group 'notification' is inactive, but the current state is Stable`.* `notification` masih berjalan, atau baru saja dihentikan dan Kafka belum mencatat bahwa anggota tersebut keluar dari group. Kafka baru mengeluarkan anggota group setelah _session_-nya habis. Pastikan `notification` sudah berhenti di terminalnya, tunggu sekitar 10–30 detik, lalu ulangi `make replay`.
+*`make replay` gagal dengan `Assignments can only be reset if the group 'notification' is inactive, but the current state is Stable`.* `notification` masih berjalan, atau baru saja dihentikan dan Kafka belum mencatat bahwa anggota tersebut keluar dari _group_. Dengan `Ctrl+C`, `reader.Close()` langsung mengeluarkan `notification` dari _consumer group_. Bila proses mati tanpa sempat menutup _reader_ (misalnya `kill -9` atau terminal ditutup), Kafka baru mengeluarkan anggota tersebut setelah _session timeout_ habis, sekitar 30 detik. Pastikan `notification` sudah berhenti di terminalnya, tunggu hingga _session timeout_ lewat bila perlu, lalu ulangi `make replay`.
 
 *Kompilasi gagal dengan `does not implement Store (wrong type for method Insert)` atau `wrong type for method Create`.* Kontrak `Store` sudah diubah, tetapi `fakeStore` di _test_ belum. Perbarui `fakeStore` di `consumer_test.go` (untuk `notification`) atau `service_test.go` (untuk `transfer`) sesuai bagian _test_ di atas.
 
@@ -1002,7 +1002,7 @@ Saldo rekening asal berkurang tepat 100000. _Unique index_ pada `idempotency_key
 
 *`make duplicates` masih menampilkan baris setelah semua langkah selesai.* Baris tersebut berasal dari _replay_ di Lab 5 atau di langkah pertama lab ini, sebelum `processed_event` ada. Selama jumlahnya tidak bertambah setelah _replay_ berikutnya, _consumer_ sudah _idempotent_. Untuk memulai dari database bersih, jalankan `make infra-reset` lalu `make infra-up`; perintah tersebut menghapus semua data lab, termasuk rekening, sehingga rekening contoh perlu dibuat ulang.
 
-*Pengulangan dijawab `202 Accepted` dengan status `PENDING` atau `DEBITED`.* Kondisi ini benar. _Request_ pertama dengan _key_ tersebut masih berjalan, dan _request_ pengulangan tidak menunggunya. Periksa `GET /transfers/{id}` (alamatnya ada di _header_ `Location`) beberapa saat kemudian. Bila statusnya tidak pernah berubah, proses `transfer` kemungkinan mati di tengah _saga_; transfer tersebut tidak dilanjutkan oleh siapa pun di lab ini, sehingga pengulangan terus dijawab `202`.
+*Pengulangan dijawab `202 Accepted` dengan status `PENDING` atau `DEBITED`.* Kondisi ini benar. _Request_ pertama dengan _key_ tersebut masih berjalan, dan _request_ pengulangan tidak menunggunya. Periksa `GET /transfers/{id}` (alamatnya ada di _header_ `Location`) beberapa saat kemudian. Bila statusnya tidak pernah berubah, proses `transfer` mati di tengah _saga_, atau status berikutnya gagal disimpan (log `debit applied but not recorded` atau `saga end state not recorded`). Transfer tersebut tidak dilanjutkan oleh siapa pun di lab ini, sehingga pengulangan terus dijawab `202`, walaupun _request_ pertama mungkin menerima kode lain.
 
 *Aplikasi klien mendapat `422` padahal hanya mengulang _request_.* Klien membuat _body_ yang berbeda pada pengulangan, atau menggunakan ulang _key_ untuk transfer baru. Setiap transfer baru harus memiliki _key_ sendiri, dan pengulangan harus mengirim _body_ yang sama.
 
