@@ -37,7 +37,11 @@ func run(log *slog.Logger) error {
 	}
 	defer store.Close()
 
-	accounts := accountclient.New(cfg.AccountServiceURL, accountclient.ProductionSettings, log)
+	accounts, err := accountclient.New(cfg.AccountGRPCAddr, accountclient.ProductionSettings, log)
+	if err != nil {
+		return err
+	}
+	defer accounts.Close()
 	svc := transfer.NewService(store, accounts, log)
 	mux := transfer.NewHandler(svc, log).Routes()
 	mux.HandleFunc("GET /debug/circuit-breaker", accounts.ServeCircuitBreaker)
@@ -49,7 +53,7 @@ func run(log *slog.Logger) error {
 
 	errCh := make(chan error, 1)
 	go func() {
-		log.Info("transfer service listening", "addr", cfg.HTTPAddr, "account_service", cfg.AccountServiceURL)
+		log.Info("transfer service listening", "addr", cfg.HTTPAddr, "account_grpc", cfg.AccountGRPCAddr)
 		errCh <- srv.ListenAndServe()
 	}()
 

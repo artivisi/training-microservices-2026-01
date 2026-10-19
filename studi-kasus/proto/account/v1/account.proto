@@ -1,0 +1,71 @@
+// Internal contract between services. Channel-facing clients (mobile, web,
+// partners) keep using the REST API; gRPC is for service-to-service calls.
+syntax = "proto3";
+
+package account.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/artivisi/training-microservices-2026-01/studi-kasus/proto/gen/account/v1;accountv1";
+
+// AccountService exposes balance reads and mutations to other services.
+//
+// Errors are gRPC status codes:
+//   NOT_FOUND           the account does not exist
+//   FAILED_PRECONDITION the balance is too low for a debit
+//   INVALID_ARGUMENT    a field is malformed; the message names it
+//   UNAVAILABLE         the request was refused before it was processed
+//   DEADLINE_EXCEEDED   the caller's deadline passed while the request was
+//                       running; the mutation may or may not have been applied
+//   CANCELLED           the same, after the caller cancelled
+service AccountService {
+  rpc GetAccount(GetAccountRequest) returns (GetAccountResponse);
+  rpc Debit(DebitRequest) returns (DebitResponse);
+  rpc Credit(CreditRequest) returns (CreditResponse);
+}
+
+// Every RPC has its own request and response message, even when two of them
+// look alike today: each can then gain fields without touching the others.
+
+message GetAccountRequest {
+  string number = 1;
+}
+
+message GetAccountResponse {
+  Account account = 1;
+}
+
+// Amounts are decimal strings ("150000.50"), not double: binary floating point
+// cannot represent most decimal fractions exactly (0.1 + 0.2 != 0.3), and money
+// must not drift by rounding. Both sides parse them with shopspring/decimal.
+// Format: digits with at most 2 decimal places ("150000", "150000.5",
+// "150000.50"), no sign, no exponent; anything else is INVALID_ARGUMENT, never
+// rounded.
+message DebitRequest {
+  string number = 1;
+  string amount = 2;
+  // reference ties the mutation to the business transaction, e.g. a transfer ID.
+  string reference = 3;
+}
+
+message DebitResponse {
+  Account account = 1;
+}
+
+message CreditRequest {
+  string number = 1;
+  string amount = 2;
+  string reference = 3;
+}
+
+message CreditResponse {
+  Account account = 1;
+}
+
+message Account {
+  string number = 1;
+  string owner_name = 2;
+  // balance is a decimal string, like the amounts above.
+  string balance = 3;
+  google.protobuf.Timestamp created_at = 4;
+}

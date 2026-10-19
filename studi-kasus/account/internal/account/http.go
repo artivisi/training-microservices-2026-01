@@ -19,13 +19,15 @@ func NewHandler(store Store, log *slog.Logger) *Handler {
 }
 
 // Routes uses the Go 1.22+ ServeMux patterns: method + path, with {wildcards}.
+//
+// This is the channel-facing API. Debit and credit are not here: since Lab 4
+// other services mutate balances over gRPC only (see grpc.go), and no channel
+// client should change a balance without going through a transfer.
 func (h *Handler) Routes() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /accounts", h.create)
 	mux.HandleFunc("GET /accounts", h.list)
 	mux.HandleFunc("GET /accounts/{number}", h.get)
-	mux.HandleFunc("POST /accounts/{number}/debit", h.mutate(Debit))
-	mux.HandleFunc("POST /accounts/{number}/credit", h.mutate(Credit))
 	mux.HandleFunc("GET /healthz", h.healthz)
 	mux.HandleFunc("GET /readyz", h.readyz)
 	return mux
@@ -61,31 +63,6 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 		h.internalError(w, r, err)
 	default:
 		writeJSON(w, http.StatusOK, a)
-	}
-}
-
-func (h *Handler) mutate(t MutationType) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var req MutationRequest
-		if !decode(w, r, &req) {
-			return
-		}
-		if err := req.Validate(); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "fields": err})
-			return
-		}
-		a, err := h.store.Mutate(r.Context(), r.PathValue("number"), t, req)
-		switch {
-		case errors.Is(err, ErrNotFound):
-			writeError(w, http.StatusNotFound, err.Error())
-		case errors.Is(err, ErrInsufficientFunds):
-			writeError(w, http.StatusUnprocessableEntity, err.Error())
-		case err != nil:
-			h.internalError(w, r, err)
-		default:
-			h.log.Info("account mutated", "number", a.Number, "type", t, "amount", req.Amount, "reference", req.Reference)
-			writeJSON(w, http.StatusOK, a)
-		}
 	}
 }
 

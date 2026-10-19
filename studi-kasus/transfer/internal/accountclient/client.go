@@ -1,26 +1,30 @@
-// Package accountclient calls the account service REST API through failsafe-go
-// policies: per-attempt timeout, retry with backoff, and a circuit breaker.
+// Package accountclient calls the account service gRPC API through failsafe-go
+// policies: per-attempt timeout, retry with backoff, and a circuit breaker,
+// installed as a gRPC unary client interceptor.
 package accountclient
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"time"
 
 	"github.com/failsafe-go/failsafe-go"
 	"github.com/failsafe-go/failsafe-go/circuitbreaker"
-	"github.com/failsafe-go/failsafe-go/failsafehttp"
+	"github.com/failsafe-go/failsafe-go/failsafegrpc"
 	"github.com/failsafe-go/failsafe-go/retrypolicy"
 	"github.com/failsafe-go/failsafe-go/timeout"
 	"github.com/shopspring/decimal"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/backoff"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 
+	accountv1 "github.com/artivisi/training-microservices-2026-01/studi-kasus/proto/gen/account/v1"
 	"github.com/artivisi/training-microservices-2026-01/studi-kasus/transfer/internal/transfer"
 )
 
@@ -28,7 +32,7 @@ import (
 // variables: changing them is a design decision that goes through review and
 // tests like any other code change. Tests pass shorter durations.
 type Settings struct {
-	// AttemptTimeout bounds one HTTP attempt, not the whole call with its retries.
+	// AttemptTimeout bounds one gRPC attempt, not the whole call with its retries.
 	AttemptTimeout time.Duration
 	MaxRetries     int
 	BackoffMin     time.Duration
@@ -55,15 +59,21 @@ var ProductionSettings = Settings{
 }
 
 type Client struct {
-	baseURL string
-	http    *http.Client
-	breaker circuitbreaker.CircuitBreaker[*http.Response]
+	conn    *grpc.ClientConn
+	api     accountv1.AccountServiceClient
+	breaker circuitbreaker.CircuitBreaker[any]
 }
 
-func New(baseURL string, s Settings, log *slog.Logger) *Client {
+// New connects lazily: no network traffic until the first call, so the transfer
+// service starts even while the account service is down. opts are extra dial
+// options; tests pass an in-memory dialer.
+func New(target string, s Settings, log *slog.Logger, opts ...grpc.DialOption) (*Client, error) {
+	// R = any: the interceptor sees every RPC of the connection, whatever its
+	// response type. The policies only look at the error.
+	//
 	// One breaker for the whole account service: debit and credit share the same
 	// failure domain, so a dead account service stops both.
-	breaker := circuitbreaker.NewBuilder[*http.Response]().
+	breaker := circuitbreaker.NewBuilder[any]().
 		HandleIf(countsAsFailure).
 		WithFailureThresholdRatio(s.BreakerFailures, s.BreakerWindow).
 		WithDelay(s.BreakerDelay).
@@ -74,7 +84,7 @@ func New(baseURL string, s Settings, log *slog.Logger) *Client {
 		}).
 		Build()
 
-	retry := retrypolicy.NewBuilder[*http.Response]().
+	retry := retrypolicy.NewBuilder[any]().
 		HandleIf(notProcessed).
 		// Explicit even though notProcessed already ignores ErrOpen: retrying against
 		// an open breaker only burns backoff time and fails anyway.
@@ -84,52 +94,73 @@ func New(baseURL string, s Settings, log *slog.Logger) *Client {
 		// Jitter spreads the retries of many concurrent transfers so they do not all
 		// hit a recovering account service in the same millisecond.
 		WithJitterFactor(0.25).
-		// Hand the last 503 back as a response instead of wrapping it in an
-		// ExceededError, so the status mapping in mutate sees it.
+		// Hand the last status error back instead of wrapping it in an ExceededError,
+		// so mapError sees the real gRPC code.
 		ReturnLastFailure().
-		OnRetry(func(e failsafe.ExecutionEvent[*http.Response]) {
-			// The response that triggered this retry is discarded; close it so its
-			// connection goes back to the pool.
-			cause := fmt.Sprint(e.LastError())
-			if resp := e.LastResult(); resp != nil {
-				cause = resp.Status
-				_, _ = io.Copy(io.Discard, resp.Body)
-				resp.Body.Close()
-			}
-			log.Warn("retrying account call", "next_attempt", e.Attempts(), "cause", cause)
+		OnRetry(func(e failsafe.ExecutionEvent[any]) {
+			log.Warn("retrying account call", "next_attempt", e.Attempts(), "cause", e.LastError())
 		}).
 		Build()
 
 	// Order matters: retry wraps the breaker, which wraps the timeout. Every attempt
 	// gets its own time budget, and every attempt, timeouts included, is counted by
-	// the breaker.
-	rt := failsafehttp.NewRoundTripper(nil, retry, breaker, timeout.New[*http.Response](s.AttemptTimeout))
-	return &Client{baseURL: baseURL, http: &http.Client{Transport: rt}, breaker: breaker}
+	// the breaker. Same shape as the REST client of Lab 3, now as an interceptor.
+	resilience := failsafegrpc.NewUnaryClientInterceptor[any](retry, breaker, timeout.New[any](s.AttemptTimeout))
+
+	opts = append([]grpc.DialOption{
+		// Plaintext: fine on a laptop, not in production. Service-to-service calls
+		// there go over TLS (or mTLS through a service mesh); Lab 7 adds tokens.
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithUnaryInterceptor(resilience),
+		// After a failed connect, gRPC waits before reconnecting, growing up to
+		// 120 s by default. Capped at 5 s so a restarted account service is used
+		// again within seconds, which is what the breaker's half-open trials need.
+		grpc.WithConnectParams(grpc.ConnectParams{
+			Backoff:           backoff.Config{BaseDelay: time.Second, Multiplier: 1.6, Jitter: 0.2, MaxDelay: 5 * time.Second},
+			MinConnectTimeout: 5 * time.Second,
+		}),
+	}, opts...)
+	conn, err := grpc.NewClient(target, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("account gRPC client for %s: %w", target, err)
+	}
+	return &Client{conn: conn, api: accountv1.NewAccountServiceClient(conn), breaker: breaker}, nil
 }
 
-// notProcessed reports whether the request provably never reached the account
-// logic, the only case where a retry is safe today.
+func (c *Client) Close() error { return c.conn.Close() }
+
+// notProcessed reports whether the call may be retried: only Unavailable, which
+// means the server refused the call before running it (the fault injector does
+// exactly that) or no connection could be made.
 //
-// A timeout is NOT retried: the account service may have applied the debit and
-// only the answer was late. Debit is not idempotent yet, so a retry would debit
-// twice. Lab 5 makes mutations idempotent by reference; only then are timeouts
-// retried.
-func notProcessed(resp *http.Response, err error) bool {
-	if err != nil {
-		// Dial failure (connection refused, unknown host): nothing was sent.
-		var opErr *net.OpError
-		return errors.As(err, &opErr) && opErr.Op == "dial"
-	}
-	// 503 means the service refused the request before processing it (the fault
-	// injector answers 503 without touching the account).
-	return resp.StatusCode == http.StatusServiceUnavailable
+// DeadlineExceeded and our own attempt timeout are NOT retried: the account
+// service may have applied the debit and only the answer was late. Debit is not
+// idempotent yet, so a retry would debit twice. Lab 5 makes mutations idempotent
+// by reference; only then are timeouts retried.
+//
+// Residual risk: gRPC also reports Unavailable when an established connection
+// drops after the request was sent, so this is "almost provably" not processed.
+// Lab 5's idempotent references close that gap as well.
+func notProcessed(_ any, err error) bool {
+	return status.Code(err) == codes.Unavailable
 }
 
 // countsAsFailure decides what the breaker counts against the account service:
-// transport errors, timeouts and 5xx. A 4xx is a healthy service saying no
-// (unknown account, insufficient funds) and must not open the breaker.
-func countsAsFailure(resp *http.Response, err error) bool {
-	return err != nil || resp.StatusCode >= 500
+// infrastructure codes and our own attempt timeout. Business codes (NotFound,
+// FailedPrecondition, InvalidArgument) are a healthy service saying no and must
+// not open the breaker.
+func countsAsFailure(_ any, err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, timeout.ErrExceeded) {
+		return true
+	}
+	switch status.Code(err) {
+	case codes.Unavailable, codes.DeadlineExceeded, codes.Internal, codes.Unknown:
+		return true
+	}
+	return false
 }
 
 // BreakerState is "closed", "open" or "half-open".
@@ -142,44 +173,29 @@ func (c *Client) ServeCircuitBreaker(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (c *Client) Debit(ctx context.Context, number string, amount decimal.Decimal, reference string) error {
-	return c.mutate(ctx, number, "debit", amount, reference)
+	_, err := c.api.Debit(ctx, &accountv1.DebitRequest{Number: number, Amount: amount.String(), Reference: reference})
+	return mapError("debit", number, err)
 }
 
 func (c *Client) Credit(ctx context.Context, number string, amount decimal.Decimal, reference string) error {
-	return c.mutate(ctx, number, "credit", amount, reference)
+	_, err := c.api.Credit(ctx, &accountv1.CreditRequest{Number: number, Amount: amount.String(), Reference: reference})
+	return mapError("credit", number, err)
 }
 
-func (c *Client) mutate(ctx context.Context, number, kind string, amount decimal.Decimal, reference string) error {
-	body, err := json.Marshal(map[string]any{"amount": amount, "reference": reference})
-	if err != nil {
-		return err
+// mapError turns the account service's gRPC codes into the transfer domain's
+// errors, so the transfer package never imports gRPC.
+func mapError(kind, number string, err error) error {
+	if err == nil {
+		return nil
 	}
-	url := fmt.Sprintf("%s/accounts/%s/%s", c.baseURL, number, kind)
-	// bytes.Reader: failsafehttp replays the body on every retry attempt.
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.http.Do(req)
 	if errors.Is(err, circuitbreaker.ErrOpen) {
 		return fmt.Errorf("%s %s: %w", kind, number, transfer.ErrAccountUnavailable)
 	}
-	if err != nil {
-		return fmt.Errorf("%s %s: %w", kind, number, err)
-	}
-	defer resp.Body.Close()
-	msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-
-	switch resp.StatusCode {
-	case http.StatusOK:
-		return nil
-	case http.StatusNotFound:
+	switch status.Code(err) {
+	case codes.NotFound:
 		return fmt.Errorf("%s %s: %w", kind, number, transfer.ErrAccountNotFound)
-	case http.StatusUnprocessableEntity:
+	case codes.FailedPrecondition:
 		return fmt.Errorf("%s %s: %w", kind, number, transfer.ErrInsufficientFunds)
-	default:
-		return fmt.Errorf("%s %s: account service answered %s: %s", kind, number, resp.Status, bytes.TrimSpace(msg))
 	}
+	return fmt.Errorf("%s %s: %w", kind, number, err)
 }

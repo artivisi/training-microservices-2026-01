@@ -5,6 +5,7 @@ SERVICE := account
 
 run:
 	HTTP_ADDR=:28081 \
+	GRPC_ADDR=:29091 \
 	DATABASE_URL=postgres://account:account123@localhost:15432/account \
 	go run .
 

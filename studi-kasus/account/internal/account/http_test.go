@@ -13,8 +13,9 @@ import (
 
 // fakeStore keeps accounts in memory so the HTTP layer is tested without PostgreSQL.
 type fakeStore struct {
-	accounts map[string]Account
-	pingErr  error
+	accounts  map[string]Account
+	pingErr   error
+	mutateErr error // returned by Mutate when set, e.g. a context error
 }
 
 func newFakeStore() *fakeStore { return &fakeStore{accounts: map[string]Account{}} }
@@ -45,6 +46,9 @@ func (f *fakeStore) List(context.Context) ([]Account, error) {
 }
 
 func (f *fakeStore) Mutate(_ context.Context, number string, t MutationType, req MutationRequest) (Account, error) {
+	if f.mutateErr != nil {
+		return Account{}, f.mutateErr
+	}
 	a, ok := f.accounts[number]
 	if !ok {
 		return Account{}, ErrNotFound
@@ -81,15 +85,14 @@ func TestAccountAPI(t *testing.T) {
 		{"create", "POST", "/accounts", `{"number":"1234567890","owner_name":"Budi","initial_balance":"500000"}`, 201, `"balance":"500000"`},
 		{"duplicate", "POST", "/accounts", `{"number":"1234567890","owner_name":"Budi","initial_balance":"0"}`, 409, "already exists"},
 		{"invalid fields", "POST", "/accounts", `{"number":"12","owner_name":" ","initial_balance":"-1"}`, 400, `"number":"must be exactly 10 digits"`},
+		{"three decimal places", "POST", "/accounts", `{"number":"1234567891","owner_name":"Budi","initial_balance":"100.005"}`, 400, `"initial_balance":"must have at most 2 decimal places"`},
+		{"tiny exponent", "POST", "/accounts", `{"number":"1234567891","owner_name":"Budi","initial_balance":1e-3}`, 400, `"initial_balance":"must have at most 2 decimal places"`},
+		{"above numeric(19,2)", "POST", "/accounts", `{"number":"1234567891","owner_name":"Budi","initial_balance":"100000000000000000"}`, 400, `"initial_balance":"must be less than 10^17"`},
 		{"unknown field", "POST", "/accounts", `{"nomor":"1234567890"}`, 400, "unknown field"},
 		{"get", "GET", "/accounts/1234567890", "", 200, `"owner_name":"Budi"`},
 		{"not found", "GET", "/accounts/0000000000", "", 404, "not found"},
 		{"wrong method", "DELETE", "/accounts/1234567890", "", 405, ""},
-		{"debit", "POST", "/accounts/1234567890/debit", `{"amount":"200000","reference":"T-1"}`, 200, `"balance":"300000"`},
-		{"credit", "POST", "/accounts/1234567890/credit", `{"amount":"50000","reference":"T-2"}`, 200, `"balance":"350000"`},
-		{"insufficient funds", "POST", "/accounts/1234567890/debit", `{"amount":"350000.01","reference":"T-3"}`, 422, "insufficient funds"},
-		{"debit unknown account", "POST", "/accounts/0000000000/debit", `{"amount":"1","reference":"T-4"}`, 404, "not found"},
-		{"invalid mutation", "POST", "/accounts/1234567890/credit", `{"amount":"0","reference":""}`, 400, `"amount":"must be greater than zero"`},
+		{"no debit over REST", "POST", "/accounts/1234567890/debit", `{"amount":"1","reference":"T-1"}`, 404, ""},
 		{"liveness", "GET", "/healthz", "", 200, "UP"},
 		{"readiness", "GET", "/readyz", "", 200, `"database":"UP"`},
 	}

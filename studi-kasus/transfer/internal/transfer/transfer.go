@@ -55,6 +55,11 @@ func (v ValidationError) Error() string { return "validation failed" }
 
 var numberPattern = regexp.MustCompile(`^[0-9]{10}$`)
 
+// The amount column is numeric(19,2), like the account service's. PostgreSQL
+// would round a third decimal place without complaint (100.005 becomes 100.01)
+// and the rounded value would then be debited, so it is rejected here instead.
+var maxAmount = decimal.New(1, 17)
+
 func (r CreateRequest) Validate() error {
 	v := ValidationError{}
 	if !numberPattern.MatchString(r.FromAccount) {
@@ -66,8 +71,13 @@ func (r CreateRequest) Validate() error {
 	if r.FromAccount == r.ToAccount {
 		v["to_account"] = "must differ from from_account"
 	}
-	if !r.Amount.IsPositive() {
+	switch {
+	case !r.Amount.IsPositive():
 		v["amount"] = "must be greater than zero"
+	case r.Amount.Exponent() < -2:
+		v["amount"] = "must have at most 2 decimal places"
+	case r.Amount.GreaterThanOrEqual(maxAmount):
+		v["amount"] = "must be less than 10^17"
 	}
 	if len(v) > 0 {
 		return v

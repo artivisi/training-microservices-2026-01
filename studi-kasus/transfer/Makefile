@@ -6,7 +6,7 @@ SERVICE := transfer
 run:
 	HTTP_ADDR=:28082 \
 	DATABASE_URL=postgres://transfer:transfer123@localhost:15433/transfer \
-	ACCOUNT_SERVICE_URL=http://localhost:28081 \
+	ACCOUNT_GRPC_ADDR=localhost:29091 \
 	go run .
 
 test:
