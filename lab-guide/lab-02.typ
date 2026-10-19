@@ -1339,8 +1339,6 @@ Transfer menghasilkan `502 Bad Gateway` dengan `"status":"FAILED"` dan `failure_
 
 *`relation "mutation" does not exist` di _log_ account service.* Account service yang sedang berjalan masih versi lama. Hentikan dengan `Ctrl+C` dan jalankan ulang `make -C account run` supaya schema baru diterapkan.
 
-*Semua transfer gagal dengan `502` dan `failure_reason` berisi `405 Method Not Allowed`, padahal account service berjalan.* Nilai `ACCOUNT_SERVICE_URL` diakhiri garis miring, misalnya `http://localhost:28081/`. Path permintaan menjadi `//accounts/...`, ServeMux mengalihkannya dengan `301`, dan _HTTP client_ mengikuti pengalihan tersebut sebagai `GET`, yang ditolak account service dengan `405`. Periksa nilai tersebut pada _log_ `transfer service listening`. Nilainya harus `http://localhost:28081`.
-
 *Semua transfer gagal dengan `422` dan `failure_reason` `debit failed: debit ...: account not found`, termasuk untuk rekening yang ada.* Nilai `ACCOUNT_SERVICE_URL` diakhiri `/accounts`, sehingga path permintaan menjadi `/accounts/accounts/{number}/debit` dan account service menjawab `404`. Paket `accountclient` menerjemahkan setiap `404` menjadi `ErrAccountNotFound`, sehingga kesalahan konfigurasi ini terlihat seperti penolakan bisnis. Hapus `/accounts` dari nilai tersebut.
 
 *`bind: address already in use` pada port 28081 atau 28082.* Masih ada proses lama yang berjalan, misalnya dari terminal lain. Hentikan proses tersebut, atau cari dengan `lsof -i :28082`.
@@ -1350,15 +1348,18 @@ Transfer menghasilkan `502 Bad Gateway` dengan `"status":"FAILED"` dan `failure_
 + *Account service yang lambat.* Lab ini menyebut _HTTP client_ tanpa _timeout_ sebagai kelemahan. Buktikan dengan menghentikan sementara proses account service. Cari PID _binary_ hasil `go run` dengan `pgrep -f 'exe/account'`, hentikan sementara dengan `kill -STOP <pid>`, lalu kirim transfer. Amati bahwa `curl` menunggu tanpa batas. Lanjutkan kembali proses tersebut dengan `kill -CONT <pid>` dan perhatikan bahwa transfer yang tertunda langsung selesai. Bayangkan dampaknya jika ratusan transfer menunggu bersamaan.
 + *Debit bersamaan.* Buat rekening dengan saldo 100000, lalu kirim sepuluh transfer masing-masing 20000 secara paralel, misalnya dengan `for i in $(seq 10); do curl ... & done; wait`. Hitung jumlah transfer `COMPLETED` dan periksa bahwa saldo tidak pernah negatif. Jelaskan peran klausa `where balance + @delta >= 0` dalam hasil tersebut.
 + *Rekonsiliasi.* Tulis _query_ SQL di database `account` yang menampilkan referensi transfer dengan `DEBIT` tetapi tanpa `CREDIT`. _Query_ ini adalah bentuk paling sederhana dari laporan rekonsiliasi untuk koreksi manual pada _known gap_.
++ *Jumlah dengan tiga angka desimal.* Kirim transfer dengan `"amount":"100.005"`. Transfer tetap `COMPLETED`, tetapi jumlah yang tercatat adalah `"100.01"`. Kolom `numeric(19, 2)` di database transfer membulatkan nilai tersebut tanpa pesan apa pun, lalu debit dan kredit ke account service menggunakan nilai hasil pembulatan. Rumuskan aturan validasi `amount` yang menolak _request_ ini dengan `400`, bukan diam-diam membulatkannya. Lab 4 menambahkan aturan tersebut pada kedua service.
 + *Context yang dibatalkan.* Ganti sementara `context.WithoutCancel(r.Context())` dengan `r.Context()`, gabungkan dengan percobaan nomor 1, lalu hentikan `curl` dengan `Ctrl+C` sebelum proses account service dilanjutkan dengan `kill -CONT`. Amati status akhir transfer tersebut, lalu kembalikan kodenya.
 
 == Checkpoint
 
-Kondisi akhir lab ini tersedia sebagai tag `lab-02`. Bandingkan hasil kerja dengan _checkpoint_ untuk menemukan bagian yang terlewat:
+Kondisi akhir lab ini tersedia sebagai tag `lab-02`. Bandingkan hasil kerja dengan _checkpoint_ untuk menemukan bagian yang terlewat. Jalankan perintah berikut dari folder `studi-kasus/`:
 
 #perintah[```bash
-git diff lab-02 -- studi-kasus
+git diff lab-02 -- .
 ```]
+
+Tag `lab-02` juga sudah berisi _fault injector_ yang dibutuhkan Lab 3, yaitu paket `account/internal/fault` dan perubahan `account/main.go` yang memasangnya. Perbedaan pada kedua bagian tersebut, serta pada `go.work.sum`, dapat diabaikan karena tidak ditulis pada langkah lab ini. Karena paket tersebut ada di _checkpoint_, `make test` pada tag `lab-02` juga menampilkan baris `ok` untuk `account/internal/fault`.
 
 Peserta yang ingin langsung melanjutkan ke Lab 3 dari kondisi _checkpoint_ dapat menjalankan:
 
