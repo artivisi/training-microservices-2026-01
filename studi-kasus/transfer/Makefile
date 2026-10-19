@@ -7,6 +7,8 @@ run:
 	HTTP_ADDR=:28082 \
 	DATABASE_URL=postgres://transfer:transfer123@localhost:15433/transfer \
 	ACCOUNT_GRPC_ADDR=localhost:29091 \
+	KAFKA_BROKERS=localhost:19092 \
+	KAFKA_TOPIC=transfer-events \
 	go run .
 
 test:

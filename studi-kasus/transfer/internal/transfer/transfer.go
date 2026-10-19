@@ -1,4 +1,6 @@
-// Package transfer moves money between two accounts by calling the account service.
+// Package transfer moves money between two accounts by calling the account
+// service. A transfer is a saga: a sequence of local steps, each with a
+// compensating step that undoes it when a later step fails.
 package transfer
 
 import (
@@ -10,13 +12,48 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+// Status is the saga state:
+//
+//	PENDING -> DEBITED -> COMPLETED   happy path
+//	PENDING -> FAILED                 debit failed, nothing to undo
+//	DEBITED -> COMPENSATED            credit failed, debit reversed
+//	DEBITED -> COMPENSATION_FAILED    credit failed, reversal failed too
 type Status string
 
 const (
 	Pending   Status = "PENDING"
+	Debited   Status = "DEBITED"
 	Completed Status = "COMPLETED"
 	Failed    Status = "FAILED"
+	// Compensated: the credit failed and the debit was reversed. No money moved.
+	Compensated Status = "COMPENSATED"
+	// CompensationFailed: the source account is debited and the reversal did not
+	// go through. Needs a person (or a reconciliation job) to fix.
+	CompensationFailed Status = "COMPENSATION_FAILED"
 )
+
+// EventType names the integration events other services consume. Only the end
+// states that someone outside cares about have an event.
+type EventType string
+
+const (
+	EventCompleted   EventType = "TransferCompleted"
+	EventFailed      EventType = "TransferFailed"
+	EventCompensated EventType = "TransferCompensated"
+)
+
+// Event is the payload published to Kafka. EventID is unique per event, so a
+// consumer can recognise a redelivered one (Lab 6).
+type Event struct {
+	EventID     string          `json:"event_id"`
+	TransferID  string          `json:"transfer_id"`
+	FromAccount string          `json:"from_account"`
+	ToAccount   string          `json:"to_account"`
+	Amount      decimal.Decimal `json:"amount"`
+	Status      Status          `json:"status"`
+	Reason      string          `json:"reason,omitempty"`
+	OccurredAt  time.Time       `json:"occurred_at"`
+}
 
 type Transfer struct {
 	ID            string          `json:"id"`
@@ -37,16 +74,19 @@ type CreateRequest struct {
 
 var (
 	ErrNotFound = errors.New("transfer not found")
+	// ErrStaleState: the transfer was not in the expected state, e.g. another
+	// process moved it on already.
+	ErrStaleState = errors.New("transfer is not in the expected state")
 	// Business rejections from the account service: the request itself cannot succeed.
 	ErrAccountNotFound   = errors.New("account not found")
 	ErrInsufficientFunds = errors.New("insufficient funds")
 	// The circuit breaker to the account service is open: the call was rejected
 	// without being sent.
 	ErrAccountUnavailable = errors.New("account service unavailable")
-	// The debit was applied but the credit was not: the source account needs a
-	// manual reversal. Whatever made the credit fail, the transfer is no longer
-	// safe to retry.
-	ErrCreditFailed = errors.New("credit failed after debit")
+	// The credit failed and so did the reversal of the debit
+	// (COMPENSATION_FAILED): the source account is short by the amount and needs
+	// a manual correction. The transfer is not safe to retry.
+	ErrReversalFailed = errors.New("debit reversal failed")
 )
 
 type ValidationError map[string]string
@@ -88,7 +128,11 @@ func (r CreateRequest) Validate() error {
 type Store interface {
 	// Create records a new transfer in status PENDING.
 	Create(ctx context.Context, req CreateRequest) (Transfer, error)
-	Finish(ctx context.Context, id string, status Status, reason string) (Transfer, error)
+	// Transition moves the transfer from one status to the next and, when event
+	// is not empty, writes that event to the outbox in the same database
+	// transaction: either both are stored or neither. It returns ErrStaleState
+	// when the transfer is not in status from.
+	Transition(ctx context.Context, id string, from, to Status, reason string, event EventType) (Transfer, error)
 	Get(ctx context.Context, id string) (Transfer, error)
 	Ping(ctx context.Context) error
 }
@@ -98,4 +142,8 @@ type Store interface {
 type AccountClient interface {
 	Debit(ctx context.Context, number string, amount decimal.Decimal, reference string) error
 	Credit(ctx context.Context, number string, amount decimal.Decimal, reference string) error
+	// Reverse is a credit that undoes a debit (the saga's compensating step). It
+	// runs under its own resiliency policy, not behind the breaker that Debit
+	// and Credit share.
+	Reverse(ctx context.Context, number string, amount decimal.Decimal, reference string) error
 }

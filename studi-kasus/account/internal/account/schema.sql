@@ -14,3 +14,12 @@ create table if not exists mutation (
     reference      varchar(64)    not null,
     created_at     timestamptz    not null default now()
 );
+
+-- Idempotency (Lab 5): one mutation per account, type and reference. A retried
+-- debit with the same reference (the transfer ID) hits this index instead of
+-- moving the money twice. Created separately so it also lands on a database
+-- created in Labs 1-4, unless that database already holds duplicate references:
+-- then this statement fails and the service does not start. Lab 5 starts with
+-- make infra-reset for that reason.
+create unique index if not exists mutation_idempotency
+    on mutation (account_number, type, reference);

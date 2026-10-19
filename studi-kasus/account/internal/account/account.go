@@ -26,7 +26,8 @@ type CreateRequest struct {
 }
 
 // MutationRequest is a debit or credit, received over gRPC. Reference ties the
-// mutation to the business transaction that caused it, e.g. a transfer ID.
+// mutation to the business transaction that caused it, e.g. a transfer ID, and
+// is the idempotency key: the same (account, type, reference) is applied once.
 type MutationRequest struct {
 	Amount    decimal.Decimal
 	Reference string
@@ -125,7 +126,9 @@ type Store interface {
 	Get(ctx context.Context, number string) (Account, error)
 	List(ctx context.Context) ([]Account, error)
 	// Mutate debits or credits the account and records the mutation, atomically.
-	// It returns the account with its new balance.
-	Mutate(ctx context.Context, number string, t MutationType, req MutationRequest) (Account, error)
+	// It returns the account with its new balance. When a mutation with the same
+	// account, type and reference exists already, nothing changes: it returns
+	// the current account and applied = false.
+	Mutate(ctx context.Context, number string, t MutationType, req MutationRequest) (a Account, applied bool, err error)
 	Ping(ctx context.Context) error
 }
