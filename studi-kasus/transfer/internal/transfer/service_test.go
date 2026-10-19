@@ -254,3 +254,29 @@ func TestValidateAmount(t *testing.T) {
 		})
 	}
 }
+
+// The API and the events show what happened, never internal addresses (Lab 7).
+func TestFailureReasonIsGeneric(t *testing.T) {
+	req := CreateRequest{FromAccount: "1111111111", ToAccount: "2222222222", Amount: decimal.RequireFromString("100000")}
+	internal := errors.New("rpc error: code = Unavailable desc = dial tcp 10.0.3.7:9091: connect: connection refused")
+	tests := []struct {
+		name       string
+		errs       map[string]error
+		wantReason string
+	}{
+		{"infrastructure error", map[string]error{"debit 1111111111": internal}, "debit failed: account service error"},
+		{"business rejection", map[string]error{"debit 1111111111": fmt.Errorf("debit 1111111111: %w", ErrInsufficientFunds)},
+			"debit failed: insufficient funds"},
+		{"compensation failed", map[string]error{"credit 2222222222": ErrAccountNotFound, "reverse 1111111111": internal},
+			"credit failed: account not found; reversal failed: account service error"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := NewService(newFakeStore(), &fakeAccounts{errs: tc.errs}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			got, _, _ := svc.Execute(context.Background(), req, "")
+			if got.FailureReason != tc.wantReason {
+				t.Fatalf("failure_reason = %q, want %q", got.FailureReason, tc.wantReason)
+			}
+		})
+	}
+}

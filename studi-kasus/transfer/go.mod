@@ -3,17 +3,22 @@ module github.com/artivisi/training-microservices-2026-01/studi-kasus/transfer
 go 1.26.0
 
 require (
+	github.com/MicahParks/keyfunc/v3 v3.8.2
 	github.com/artivisi/training-microservices-2026-01/studi-kasus/proto v0.0.0
 	github.com/failsafe-go/failsafe-go v0.9.8
+	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx-shopspring-decimal v0.0.0-20220624020537-1d36b5a1853e
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/segmentio/kafka-go v0.4.51
 	github.com/shopspring/decimal v1.6.0
+	golang.org/x/oauth2 v0.37.0
+	golang.org/x/time v0.15.0
 	google.golang.org/grpc v1.80.0
 )
 
 require (
+	github.com/MicahParks/jwkset v0.11.3 // indirect
 	github.com/bits-and-blooms/bitset v1.24.4 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect

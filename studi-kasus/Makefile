@@ -6,16 +6,21 @@ SERVICES := account transfer notification
 ACCOUNT_URL := http://localhost:8081
 TRANSFER_URL := http://localhost:8082
 
+HYDRA_URL := http://localhost:4444
+
 KAFKA_TOPIC := transfer-events
 KAFKA_BIN := /opt/kafka/bin
 
 .PHONY: infra-up infra-down infra-reset test proto fault-slow fault-error fault-clear fault-status breaker \
-	events outbox replay duplicates
+	events outbox replay duplicates token
 
-# kafka-init creates the topic (idempotent: --if-not-exists).
+# kafka-init creates the topic (idempotent: --if-not-exists); hydra-init
+# (re)creates the OAuth2 clients, which Hydra's in-memory storage loses on every
+# restart.
 infra-up:
 	docker compose up -d --wait
 	docker compose run --rm kafka-init
+	docker compose run --rm hydra-init
 
 # --profile init: down skips services of inactive profiles, and a leftover
 # kafka-init container would keep the network from being removed.
@@ -82,3 +87,15 @@ replay:
 duplicates:
 	docker compose exec db-notification psql -U notification -d notification -c \
 		"select event_id, event_type, count(*) as notifications from notification group by event_id, event_type having count(*) > 1"
+
+# Lab 7: prints an access token of the channel-app client (scopes transfer:read
+# transfer:write), valid for 1 hour. Usage:
+#   TOKEN=$(make -s token)
+#   curl -H "Authorization: Bearer $TOKEN" localhost:8082/transfers/<id>
+# SCOPE narrows it, e.g. make -s token SCOPE=transfer:read.
+SCOPE := transfer:read transfer:write
+token:
+	@resp=$$(curl -sS -u channel-app:channel-app-secret -d grant_type=client_credentials -d "scope=$(SCOPE)" \
+		$(HYDRA_URL)/oauth2/token) || exit 1; \
+	case "$$resp" in *'"access_token"'*) ;; *) echo "$$resp" >&2; exit 1;; esac; \
+	echo "$$resp" | sed -E 's/.*"access_token":"([^"]+)".*/\1/'

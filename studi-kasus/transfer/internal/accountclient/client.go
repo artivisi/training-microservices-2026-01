@@ -1,7 +1,8 @@
 // Package accountclient calls the account service gRPC API through failsafe-go
 // policies: per-attempt timeout, retry with backoff, and a circuit breaker,
 // installed as a gRPC unary client interceptor. The saga's reversal credit goes
-// through a second connection with its own policy (see Reverse).
+// through a second connection with its own policy (see Reverse). Every call, on
+// both connections, carries an OAuth2 access token (Lab 7).
 package accountclient
 
 import (
@@ -102,9 +103,11 @@ type Client struct {
 }
 
 // New connects lazily: no network traffic until the first call, so the transfer
-// service starts even while the account service is down. opts are extra dial
+// service starts even while the account service is down. fetch gets the access
+// token sent with every call; it runs on the first call, not here, so startup
+// does not depend on the authorization server either. opts are extra dial
 // options; tests pass an in-memory dialer.
-func New(target string, s Settings, log *slog.Logger, opts ...grpc.DialOption) (*Client, error) {
+func New(target string, s Settings, fetch FetchToken, log *slog.Logger, opts ...grpc.DialOption) (*Client, error) {
 	// A zero duration here would mean "retry forever": the reversal policy has
 	// no retry count limit.
 	if s.ReversalMaxDuration <= 0 {
@@ -177,13 +180,17 @@ func New(target string, s Settings, log *slog.Logger, opts ...grpc.DialOption) (
 		Build()
 	reversalResilience := failsafegrpc.NewUnaryClientInterceptor[any](reversalRetry, timeout.New[any](s.AttemptTimeout))
 
+	// One token cache for both connections: they talk to the same service with
+	// the same client identity.
+	tokens := &tokenCredentials{fetch: fetch}
+
 	// An interceptor belongs to a connection, so the reversal gets a connection of
 	// its own. The cost is one more TCP connection to the account service.
-	conn, err := dial(target, resilience, opts)
+	conn, err := dial(target, tokens, resilience, opts)
 	if err != nil {
 		return nil, err
 	}
-	reversalConn, err := dial(target, reversalResilience, opts)
+	reversalConn, err := dial(target, tokens, reversalResilience, opts)
 	if err != nil {
 		conn.Close()
 		return nil, err
@@ -194,12 +201,17 @@ func New(target string, s Settings, log *slog.Logger, opts ...grpc.DialOption) (
 	}, nil
 }
 
-func dial(target string, interceptor grpc.UnaryClientInterceptor, extra []grpc.DialOption) (*grpc.ClientConn, error) {
+func dial(target string, tokens *tokenCredentials, resilience grpc.UnaryClientInterceptor, extra []grpc.DialOption) (*grpc.ClientConn, error) {
 	opts := append([]grpc.DialOption{
 		// Plaintext: fine on a laptop, not in production. Service-to-service calls
-		// there go over TLS (or mTLS through a service mesh); Lab 7 adds tokens.
+		// there go over TLS (or mTLS through a service mesh).
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithUnaryInterceptor(interceptor),
+		// The token is added per attempt, after the interceptors, so a retried
+		// attempt carries a valid token too.
+		grpc.WithPerRPCCredentials(tokens),
+		// First interceptor = outermost: a call repeated with a new token goes
+		// through the resiliency policies again.
+		grpc.WithChainUnaryInterceptor(tokens.refreshOnUnauthenticated, resilience),
 		// After a failed connect, gRPC waits before reconnecting, growing up to
 		// 120 s by default. Capped at 5 s so a restarted account service is used
 		// again within seconds, which is what the breaker's half-open trials and

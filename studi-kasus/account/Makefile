@@ -7,6 +7,8 @@ run:
 	HTTP_ADDR=:8081 \
 	GRPC_ADDR=:9091 \
 	DATABASE_URL=postgres://account:account123@localhost:15432/account \
+	OAUTH_ISSUER=http://localhost:4444/ \
+	OAUTH_JWKS_URL=http://localhost:4444/.well-known/jwks.json \
 	go run .
 
 test:

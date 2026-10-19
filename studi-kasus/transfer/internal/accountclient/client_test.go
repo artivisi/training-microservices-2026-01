@@ -15,8 +15,10 @@ import (
 	"time"
 
 	"github.com/shopspring/decimal"
+	"golang.org/x/oauth2"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
@@ -38,6 +40,10 @@ var testSettings = Settings{
 	ReversalMaxDuration: 300 * time.Millisecond,
 	ReversalBackoffMin:  time.Millisecond,
 	ReversalBackoffMax:  10 * time.Millisecond,
+}
+
+func testTokens(context.Context) (*oauth2.Token, error) {
+	return &oauth2.Token{AccessToken: "test-token", TokenType: "bearer"}, nil
 }
 
 // fakeAccountService answers every Debit/Credit with answer(n), n = 1 for the
@@ -68,8 +74,8 @@ func (f *fakeAccountService) Credit(ctx context.Context, req *accountv1.CreditRe
 }
 
 // serve runs the fake on an in-memory listener (bufconn) and returns a client
-// wired to it with s and log. No TCP port is opened.
-func serve(t *testing.T, answer func(ctx context.Context, n int64) error, s Settings, log *slog.Logger) (*Client, *fakeAccountService, *bufconn.Listener) {
+// wired to it with s, fetch and log. No TCP port is opened.
+func serve(t *testing.T, answer func(ctx context.Context, n int64) error, s Settings, fetch FetchToken, log *slog.Logger) (*Client, *fakeAccountService, *bufconn.Listener) {
 	t.Helper()
 	fake := &fakeAccountService{answer: answer, credits: make(chan string, 1000)}
 	lis := bufconn.Listen(1 << 20)
@@ -78,7 +84,7 @@ func serve(t *testing.T, answer func(ctx context.Context, n int64) error, s Sett
 	go func() { _ = srv.Serve(lis) }()
 	t.Cleanup(srv.Stop)
 
-	c, err := New("passthrough:///bufnet", s, log,
+	c, err := New("passthrough:///bufnet", s, fetch, log,
 		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) }))
 	if err != nil {
 		t.Fatal(err)
@@ -88,7 +94,7 @@ func serve(t *testing.T, answer func(ctx context.Context, n int64) error, s Sett
 }
 
 func newTestClient(t *testing.T, answer func(ctx context.Context, n int64) error) (*Client, *fakeAccountService) {
-	c, fake, _ := serve(t, answer, testSettings, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	c, fake, _ := serve(t, answer, testSettings, testTokens, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	return c, fake
 }
 
@@ -198,7 +204,7 @@ func TestRetryOnDeadlineExceeded(t *testing.T) {
 
 func TestRetryOnConnectionRefused(t *testing.T) {
 	var logs bytes.Buffer
-	c, fake, lis := serve(t, always(codes.OK), testSettings, slog.New(slog.NewTextHandler(&logs, nil)))
+	c, fake, lis := serve(t, always(codes.OK), testSettings, testTokens, slog.New(slog.NewTextHandler(&logs, nil)))
 	lis.Close() // nothing accepts connections any more
 
 	if err := debit(c); status.Code(err) != codes.Unavailable {
@@ -266,7 +272,7 @@ func TestBreakerHalfOpenCloses(t *testing.T) {
 			return status.Error(codes.Internal, "boom")
 		}
 		return nil
-	}, s, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	}, s, testTokens, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	for range 5 {
 		_ = debit(c)
@@ -374,7 +380,108 @@ func TestReversalBusinessRejectionIsFinal(t *testing.T) {
 func TestNewRejectsMissingReversalWindow(t *testing.T) {
 	s := testSettings
 	s.ReversalMaxDuration = 0
-	if _, err := New("passthrough:///bufnet", s, slog.New(slog.NewTextHandler(io.Discard, nil))); err == nil {
+	if _, err := New("passthrough:///bufnet", s, testTokens, slog.New(slog.NewTextHandler(io.Discard, nil))); err == nil {
 		t.Fatal("New accepted ReversalMaxDuration = 0, which would retry forever")
+	}
+}
+
+func TestSendsBearerToken(t *testing.T) {
+	var got []string
+	c, _ := newTestClient(t, func(ctx context.Context, _ int64) error {
+		md, _ := metadata.FromIncomingContext(ctx)
+		got = md.Get("authorization")
+		return nil
+	})
+	if err := debit(c); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "Bearer test-token" {
+		t.Fatalf("authorization = %q, want [Bearer test-token]", got)
+	}
+}
+
+// No token means the call never leaves the transfer service. The account
+// service is not at fault, so the breaker must stay closed and nothing is
+// retried: not by the retry policy, and not by the token refresh either (one
+// fetch per call).
+func TestTokenFailureIsNotAnAccountFailure(t *testing.T) {
+	var fetches atomic.Int64
+	failing := func(context.Context) (*oauth2.Token, error) {
+		fetches.Add(1)
+		return nil, errors.New("connection refused")
+	}
+	var logs bytes.Buffer
+	c, fake, _ := serve(t, always(codes.OK), testSettings, failing, slog.New(slog.NewTextHandler(&logs, nil)))
+
+	for range 10 {
+		if err := debit(c); status.Code(err) != codes.Unauthenticated {
+			t.Fatalf("err = %v, want Unauthenticated", err)
+		}
+	}
+	if got := fake.calls.Load(); got != 0 {
+		t.Fatalf("calls = %d, want 0", got)
+	}
+	if got := fetches.Load(); got != 10 {
+		t.Fatalf("token fetches = %d, want 10: one per call, no second try", got)
+	}
+	if got := c.BreakerState(); got != "closed" {
+		t.Fatalf("breaker = %s, want closed", got)
+	}
+	if strings.Contains(logs.String(), "retrying account call") {
+		t.Fatalf("token failure was retried:\n%s", logs.String())
+	}
+}
+
+// The authorization server got new signing keys: the account service rejects
+// the cached token although it has not expired. The client fetches a new token
+// and repeats the call once.
+func TestRejectedTokenIsReplaced(t *testing.T) {
+	var fetches atomic.Int64
+	fetch := func(context.Context) (*oauth2.Token, error) {
+		access := "old"
+		if fetches.Add(1) > 1 {
+			access = "new"
+		}
+		return &oauth2.Token{AccessToken: access, TokenType: "bearer", Expiry: time.Now().Add(time.Hour)}, nil
+	}
+	c, fake, _ := serve(t, func(ctx context.Context, _ int64) error {
+		md, _ := metadata.FromIncomingContext(ctx)
+		if got := md.Get("authorization"); len(got) != 1 || got[0] != "Bearer new" {
+			return status.Error(codes.Unauthenticated, "invalid token")
+		}
+		return nil
+	}, testSettings, fetch, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	for range 3 {
+		if err := debit(c); err != nil {
+			t.Fatalf("err = %v, want success with the new token", err)
+		}
+	}
+	if got := fetches.Load(); got != 2 {
+		t.Fatalf("token fetches = %d, want 2: the rejected one and its replacement, then reuse", got)
+	}
+	if got := fake.calls.Load(); got != 4 {
+		t.Fatalf("calls = %d, want 4 (rejected, repeated, then two more)", got)
+	}
+}
+
+// A token the account service rejects is replaced once per call, not in a
+// loop: if the new token is rejected too, the call fails with Unauthenticated.
+func TestRejectedTokenIsReplacedOnlyOnce(t *testing.T) {
+	var fetches atomic.Int64
+	fetch := func(context.Context) (*oauth2.Token, error) {
+		fetches.Add(1)
+		return &oauth2.Token{AccessToken: "rejected", TokenType: "bearer", Expiry: time.Now().Add(time.Hour)}, nil
+	}
+	c, fake, _ := serve(t, always(codes.Unauthenticated), testSettings, fetch, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	if err := debit(c); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("err = %v, want Unauthenticated", err)
+	}
+	if got := fake.calls.Load(); got != 2 {
+		t.Fatalf("calls = %d, want 2: the original and one repeat", got)
+	}
+	if got := fetches.Load(); got != 2 {
+		t.Fatalf("token fetches = %d, want 2", got)
 	}
 }

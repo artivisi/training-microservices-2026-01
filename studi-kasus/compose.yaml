@@ -1,7 +1,7 @@
 # Lab infrastructure. Services run on the host (go run) and connect to these
 # containers through the published ports (15432+, away from a locally installed
 # PostgreSQL on 5432). One PostgreSQL container per service:
-# database-per-service. Kafka from Lab 5.
+# database-per-service. Kafka from Lab 5, Hydra (OAuth2 server) from Lab 7.
 services:
   db-account:
     image: postgres:18.6-alpine
@@ -100,6 +100,59 @@ services:
     entrypoint: ["/opt/kafka/bin/kafka-topics.sh"]
     command: ["--bootstrap-server", "kafka:29092", "--create", "--if-not-exists",
               "--topic", "transfer-events", "--partitions", "3", "--replication-factor", "1"]
+
+  # OAuth2 authorization server (Lab 7), provided ready to use: the lab is about
+  # the resource servers (account, transfer), not about configuring Hydra.
+  #   public 4444  token endpoint /oauth2/token, keys /.well-known/jwks.json
+  #   admin  4445  client management (hydra-init); never exposed in production
+  # --dev allows plain HTTP. DSN=memory keeps everything in RAM: clients and
+  # signing keys are gone after a restart; make infra-up recreates the clients,
+  # and the services fetch the new keys when they see an unknown key ID.
+  hydra:
+    image: oryd/hydra:v26.2.0
+    command: ["serve", "all", "--dev"]
+    environment:
+      DSN: memory
+      # The "iss" claim of every token. The services check it (OAUTH_ISSUER).
+      URLS_SELF_ISSUER: http://localhost:4444/
+      # JWT instead of opaque tokens: a service verifies the signature with the
+      # public keys from JWKS, without calling Hydra for every request.
+      STRATEGIES_ACCESS_TOKEN: jwt
+      # Lab value only; production keeps it in a secret store.
+      SECRETS_SYSTEM: lab-only-system-secret-change-me
+    ports:
+      - "4444:4444"
+      - "4445:4445"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:4444/health/ready"]
+      interval: 2s
+      retries: 30
+
+  # One-shot: registers the two OAuth2 clients with fixed IDs and secrets, so
+  # the Makefiles can carry them. Delete first: a second infra-up on a running
+  # Hydra would otherwise fail with "client already exists".
+  #   transfer-service  the transfer service calling account over gRPC
+  #   channel-app       the channel (mobile/web backend) calling transfer REST
+  # Scopes are what a client MAY request; the token carries what it did request.
+  hydra-init:
+    image: oryd/hydra:v26.2.0
+    profiles: ["init"]
+    depends_on:
+      hydra:
+        condition: service_healthy
+    environment:
+      ORY_SDK_URL: http://hydra:4445
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        set -e
+        hydra delete oauth2-client transfer-service channel-app >/dev/null 2>&1 || true
+        hydra create oauth2-client --id transfer-service --secret transfer-service-secret \
+          --grant-type client_credentials --response-type token \
+          --scope account:read,account:write --access-token-strategy jwt --quiet
+        hydra create oauth2-client --id channel-app --secret channel-app-secret \
+          --grant-type client_credentials --response-type token \
+          --scope transfer:read,transfer:write --access-token-strategy jwt --quiet
 
 volumes:
   db-account:
