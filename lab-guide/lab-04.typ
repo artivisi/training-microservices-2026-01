@@ -54,6 +54,7 @@ studi-kasus/
 │   ├── config.go                # + GRPC_ADDR
 │   ├── main.go                  # + server gRPC, health, reflection
 │   └── internal/
+│       ├── account/account.go   # + validasi format nominal
 │       ├── account/grpc.go      # baru: implementasi AccountService
 │       ├── account/http.go      # - endpoint debit/credit
 │       ├── fault/fault.go       # + UnaryServerInterceptor
@@ -61,7 +62,9 @@ studi-kasus/
 └── transfer/
     ├── config.go                # ACCOUNT_GRPC_ADDR menggantikan ACCOUNT_SERVICE_URL
     ├── main.go
-    └── internal/accountclient/client.go   # client gRPC + failsafegrpc
+    └── internal/
+        ├── accountclient/client.go   # client gRPC + failsafegrpc
+        └── transfer/transfer.go      # + validasi format amount
 ```
 
 == Titik Awal
@@ -121,6 +124,9 @@ option go_package = "github.com/artivisi/training-microservices-2026-01/studi-ka
 //   FAILED_PRECONDITION the balance is too low for a debit
 //   INVALID_ARGUMENT    a field is malformed; the message names it
 //   UNAVAILABLE         the request was refused before it was processed
+//   DEADLINE_EXCEEDED   the caller's deadline passed while the request was
+//                       running; the mutation may or may not have been applied
+//   CANCELLED           the same, after the caller cancelled
 service AccountService {
   rpc GetAccount(GetAccountRequest) returns (GetAccountResponse);
   rpc Debit(DebitRequest) returns (DebitResponse);
@@ -141,6 +147,9 @@ message GetAccountResponse {
 // Amounts are decimal strings ("150000.50"), not double: binary floating point
 // cannot represent most decimal fractions exactly (0.1 + 0.2 != 0.3), and money
 // must not drift by rounding. Both sides parse them with shopspring/decimal.
+// Format: digits with at most 2 decimal places ("150000", "150000.5",
+// "150000.50"), no sign, no exponent; anything else is INVALID_ARGUMENT, never
+// rounded.
 message DebitRequest {
   string number = 1;
   string amount = 2;
@@ -173,10 +182,10 @@ message Account {
 
 Beberapa keputusan dalam kontrak tersebut perlu diperhatikan:
 
-- *Nominal sebagai _string_ desimal.* _Protobuf_ memiliki tipe `double`, tetapi bilangan biner berkoma mengambang (_floating point_) tidak dapat menyimpan sebagian besar pecahan desimal secara tepat. Nilai `0.1 + 0.2` pada `double` menghasilkan `0.30000000000000004`. Untuk uang, selisih pembulatan sekecil apa pun tidak dapat diterima. Kedua sisi mengirim nominal sebagai teks (`"150000.50"`) dan mengolahnya dengan `shopspring/decimal`, sama seperti kolom `numeric(19,2)` di database.
+- *Nominal sebagai _string_ desimal.* _Protobuf_ memiliki tipe `double`, tetapi bilangan biner berkoma mengambang (_floating point_) tidak dapat menyimpan sebagian besar pecahan desimal secara tepat. Nilai `0.1 + 0.2` pada `double` menghasilkan `0.30000000000000004`. Untuk uang, selisih pembulatan sekecil apa pun tidak dapat diterima. Kedua sisi mengirim nominal sebagai teks (`"150000.50"`) dan mengolahnya dengan `shopspring/decimal`, sama seperti kolom `numeric(19,2)` di database. Formatnya dibatasi: hanya angka dengan paling banyak 2 digit desimal, tanpa tanda minus dan tanpa notasi eksponen (`"1e3"`). Format lain ditolak dengan `INVALID_ARGUMENT`, tidak dibulatkan.
 - *Nomor _field_ adalah bagian dari kontrak.* Pada format biner, setiap _field_ dikenali dari nomornya (`= 1`, `= 2`), bukan dari namanya. Nomor yang sudah digunakan tidak boleh diganti atau digunakan ulang untuk _field_ lain. _Field_ baru selalu mendapat nomor baru.
 - *Satu _message request_ dan satu _message response_ untuk setiap RPC.* `DebitRequest` dan `CreditRequest` saat ini sama persis. Dengan _message_ terpisah, salah satunya dapat ditambah _field_ kelak tanpa mengubah RPC lainnya.
-- *Kode _error_ ditulis di komentar kontrak.* Pemanggil mengambil keputusan berdasarkan kode status (misalnya boleh _retry_ atau tidak), sehingga daftar kode tersebut termasuk kontrak, sama pentingnya dengan _field_.
+- *Kode _error_ ditulis di komentar kontrak.* Pemanggil mengambil keputusan berdasarkan kode status (misalnya boleh _retry_ atau tidak), sehingga daftar kode tersebut termasuk kontrak, sama pentingnya dengan _field_. `DEADLINE_EXCEEDED` dan `CANCELLED` juga dicantumkan karena keduanya membawa arti penting bagi pemanggil: mutasi saldo mungkin sudah terjadi, mungkin juga belum.
 
 Opsi `go_package` menentukan _import path_ kode Go hasil _generate_ (`.../proto/gen/account/v1`) dan nama _package_-nya (`accountv1`, setelah titik koma).
 
@@ -278,7 +287,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/shopspring/decimal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -323,9 +331,9 @@ func (s *GRPCServer) Credit(ctx context.Context, req *accountv1.CreditRequest) (
 }
 
 func (s *GRPCServer) mutate(ctx context.Context, t MutationType, number, amount, reference string) (Account, error) {
-	parsed, err := decimal.NewFromString(amount)
+	parsed, err := parseAmount(amount)
 	if err != nil {
-		return Account{}, status.Errorf(codes.InvalidArgument, "amount: %q is not a decimal number", amount)
+		return Account{}, s.toStatus(err)
 	}
 	req := MutationRequest{Amount: parsed, Reference: reference}
 	if err := req.Validate(); err != nil {
@@ -343,10 +351,17 @@ func (s *GRPCServer) mutate(ctx context.Context, t MutationType, number, amount,
 // mapping is part of the contract (see account.proto):
 //   - NotFound and FailedPrecondition are business answers from a healthy
 //     service; clients must not retry them or count them against the breaker.
+//   - Canceled / DeadlineExceeded: the caller gave up (its deadline passed or it
+//     hung up) while the store was still working. Not our failure, so it is
+//     not logged as one; the caller already has its own error.
 //   - Anything unexpected becomes Internal, with the detail only in our log.
 func (s *GRPCServer) toStatus(err error) error {
 	var v ValidationError
 	switch {
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		st := status.FromContextError(err)
+		s.log.Warn("caller gave up before the request finished", "code", st.Code().String(), "error", err)
+		return st.Err()
 	case errors.As(err, &v):
 		return status.Error(codes.InvalidArgument, v.describe())
 	case errors.Is(err, ErrNotFound):
@@ -386,15 +401,103 @@ Hal-hal yang perlu diperhatikan pada kode tersebut:
 #table(
   columns: (auto, 1fr, 1fr),
   [Kode gRPC], [Penyebab], [Padanan REST di Lab 2],
-  [`InvalidArgument`], [Nominal bukan angka desimal, nominal nol atau negatif, `reference` kosong], [HTTP 400],
+  [`InvalidArgument`], [Format nominal salah (lebih dari 2 digit desimal, tanda minus, notasi eksponen), nominal nol, nominal 10^17 ke atas, `reference` kosong], [HTTP 400],
   [`NotFound`], [Nomor rekening tidak terdaftar], [HTTP 404],
   [`FailedPrecondition`], [Saldo tidak cukup untuk _debit_], [HTTP 422],
+  [`Canceled`, `DeadlineExceeded`], [Pemanggil berhenti menunggu (_deadline_ habis atau RPC dibatalkan) ketika database masih bekerja. Dicatat sebagai WARN, bukan ERROR], [Tidak ada],
   [`Internal`], [_Error_ lain, misalnya database bermasalah. Rinciannya hanya dicatat di _log_ `account`], [HTTP 500],
 )
 
 `NotFound`, `FailedPrecondition` dan `InvalidArgument` merupakan jawaban bisnis dari _service_ yang sehat. Di sisi `transfer`, kode-kode tersebut tidak di-_retry_ dan tidak dihitung sebagai kegagalan oleh _circuit breaker_. Kode `Internal` hanya membawa teks `internal error` agar detail internal (nama tabel, alamat database) tidak bocor ke pemanggil.
 
-Fungsi `MutationRequest.Validate` dan `Store.Mutate` dari Lab 2 digunakan kembali tanpa perubahan. _Struct_ `MutationRequest` di `account.go` kini hanya diisi dari gRPC, sehingga _tag_ JSON-nya dihapus:
+Kasus `Canceled` dan `DeadlineExceeded` diperiksa paling awal di `toStatus`. Tanpa kasus tersebut, _error_ dari pgx yang membungkus `context.Canceled` jatuh ke cabang `default`: `account` mencatatnya sebagai ERROR dan menjawab `Internal`, padahal database sehat dan yang terjadi hanyalah pemanggil berhenti menunggu. `status.FromContextError` mempertahankan arti aslinya. Bagi pemanggil, kedua kode tersebut berarti mutasi mungkin sudah terjadi, mungkin juga belum.
+
+=== Validasi Format Nominal
+
+Kolom saldo dan nominal di database bertipe `numeric(19,2)`: paling banyak 17 digit sebelum titik desimal dan 2 digit sesudahnya. PostgreSQL membulatkan digit desimal ketiga tanpa pesan apa pun, sehingga nominal `100.005` tersimpan sebagai `100.01`. Nilai yang dikirim pemanggil dan nilai yang tersimpan menjadi berbeda. Karena itu nominal yang tidak muat di `numeric(19,2)` ditolak sebelum mencapai database.
+
+Tambahkan kode berikut di `account/internal/account/account.go`, di bawah `numberPattern`:
+
+```go
+// Balances and amounts are numeric(19,2) in the database: at most 17 digits
+// before the decimal point and 2 after. PostgreSQL rounds extra decimal places
+// without complaint (100.005 becomes 100.01), so they are rejected here instead.
+var maxAmount = decimal.New(1, 17)
+
+// amountProblem returns what is wrong with d as a numeric(19,2) value, or "".
+// Sign is checked by the caller: a balance may be zero, an amount may not.
+func amountProblem(d decimal.Decimal) string {
+	switch {
+	case d.Exponent() < -2:
+		return "must have at most 2 decimal places"
+	case d.Abs().GreaterThanOrEqual(maxAmount):
+		return "must be less than 10^17"
+	}
+	return ""
+}
+
+// amountPattern is the wire format of an amount on the gRPC contract: plain
+// digits with an optional fraction of 1 or 2 digits. No sign, no exponent ("1e3")
+// and no grouping, so what the caller wrote is exactly what gets stored.
+var amountPattern = regexp.MustCompile(`^[0-9]+(\.[0-9]{1,2})?$`)
+
+// parseAmount parses a gRPC amount string. Range and sign are left to
+// MutationRequest.Validate.
+func parseAmount(s string) (decimal.Decimal, error) {
+	if !amountPattern.MatchString(s) {
+		return decimal.Decimal{}, ValidationError{"amount": "must be digits with at most 2 decimal places, e.g. 150000.50"}
+	}
+	return decimal.NewFromString(s)
+}
+```
+
+Fungsi `parseAmount` dipanggil `mutate` di `grpc.go` sebelum nominal diolah. Pola _regex_ tersebut menolak tanda minus, notasi eksponen dan spasi sekaligus, sehingga teks yang dikirim pemanggil persis sama dengan nilai yang disimpan. _Error_-nya berupa `ValidationError`, sehingga `toStatus` mengubahnya menjadi `InvalidArgument` dengan pesan `amount: must be digits with at most 2 decimal places, e.g. 150000.50`.
+
+`amountProblem` juga dipasang di kedua fungsi `Validate`. Untuk `POST /accounts`, saldo awal dengan lebih dari 2 digit desimal atau bernilai 10^17 ke atas dijawab HTTP 400. _Request_ JSON tidak melewati `parseAmount`, sehingga angka seperti `1e-3` tetap dapat dibaca, lalu ditolak oleh pemeriksaan jumlah digit desimal ini:
+
+```go
+	// di dalam CreateRequest.Validate
+	if r.InitialBalance.IsNegative() {
+		v["initial_balance"] = "must not be negative"
+	} else if p := amountProblem(r.InitialBalance); p != "" {
+		v["initial_balance"] = p
+	}
+
+	// di dalam MutationRequest.Validate
+	if !r.Amount.IsPositive() {
+		v["amount"] = "must be greater than zero"
+	} else if p := amountProblem(r.Amount); p != "" {
+		v["amount"] = p
+	}
+```
+
+Aturan yang sama perlu dipasang di `transfer`. Tabel `transfer` juga memiliki kolom `amount` bertipe `numeric(19,2)`. Transfer `100.005` disimpan sebagai `100.01`, lalu nilai hasil pembulatan tersebut yang dikirim sebagai _debit_. Pemeriksaan di `account` tidak pernah melihat nilai aslinya. Di `transfer/internal/transfer/transfer.go`, tambahkan `maxAmount` di bawah `numberPattern`, lalu ganti pemeriksaan `amount` di `CreateRequest.Validate`:
+
+```go
+// The amount column is numeric(19,2), like the account service's. PostgreSQL
+// would round a third decimal place without complaint (100.005 becomes 100.01)
+// and the rounded value would then be debited, so it is rejected here instead.
+var maxAmount = decimal.New(1, 17)
+
+	// di dalam CreateRequest.Validate
+	switch {
+	case !r.Amount.IsPositive():
+		v["amount"] = "must be greater than zero"
+	case r.Amount.Exponent() < -2:
+		v["amount"] = "must have at most 2 decimal places"
+	case r.Amount.GreaterThanOrEqual(maxAmount):
+		v["amount"] = "must be less than 10^17"
+	}
+```
+
+_Test_ `TestValidateAmount` di `transfer/internal/transfer/service_test.go` memeriksa aturan tersebut: `100.5` dan `100.50` diterima, `100.005` dan `1e-3` ditolak karena lebih dari 2 digit desimal, dan `100000000000000000` ditolak karena mencapai 10^17. Salin dari _checkpoint_ bila tidak ingin menulisnya sendiri:
+
+#perintah[```bash
+git show lab-04:studi-kasus/transfer/internal/transfer/service_test.go \
+  > transfer/internal/transfer/service_test.go
+```]
+
+Fungsi `Store.Mutate` dari Lab 2 digunakan kembali tanpa perubahan. _Struct_ `MutationRequest` di `account.go` kini hanya diisi dari gRPC, sehingga _tag_ JSON-nya dihapus:
 
 ```go
 // MutationRequest is a debit or credit, received over gRPC. Reference ties the
@@ -586,8 +689,12 @@ Sisipkan blok berikut setelah deklarasi `srv := &http.Server{...}` dan sebelum _
 		}),
 	))
 	accountv1.RegisterAccountServiceServer(grpcSrv, account.NewGRPCServer(store, log))
-	// Standard health protocol (grpc.health.v1): Kubernetes gRPC probes and
-	// grpc-health-probe understand it without custom code.
+	// Standard health protocol (grpc.health.v1): grpcurl and grpc-health-probe
+	// understand it without custom code. It is NOT tied to the database: the
+	// status is SERVING from startup until shutdown, so it only says "this process
+	// accepts gRPC calls". Pod readiness is the HTTP /readyz, which pings the
+	// database; do not add a gRPC readinessProbe on top, it would report ready
+	// while the database is down.
 	healthSrv := health.NewServer()
 	healthpb.RegisterHealthServer(grpcSrv, healthSrv)
 	healthSrv.SetServingStatus(accountv1.AccountService_ServiceDesc.ServiceName, healthpb.HealthCheckResponse_SERVING)
@@ -605,7 +712,7 @@ Penjelasan blok tersebut:
 
 - *`grpc.ChainUnaryInterceptor`* menjalankan _interceptor_ sesuai urutan argumennya. `Logging` berada di luar, sehingga _log_ mencatat kode yang dihasilkan _fault injector_. Kegagalan buatan pun tercatat seperti kegagalan sungguhan.
 - *Fungsi `skip`* mengecualikan semua RPC di luar `account.v1.AccountService`, yaitu _health service_ dan _reflection_. Prinsipnya sama dengan Lab 3: _probe_ tetap cepat walaupun API sedang diganggu.
-- *_Health service_* (`grpc.health.v1`) adalah protokol standar. _Probe_ gRPC di Kubernetes dan `grpc-health-probe` dapat memeriksanya tanpa kode tambahan.
+- *_Health service_* (`grpc.health.v1`) adalah protokol standar. `grpc-health-probe` dan `grpcurl` dapat memeriksanya tanpa kode tambahan. Status _health_ ini tidak terhubung ke database: nilainya `SERVING` sejak _startup_ sampai _shutdown_, sehingga hanya menyatakan bahwa proses menerima panggilan gRPC. Kesiapan _pod_ menerima _traffic_ tetap ditentukan oleh `GET /readyz` di HTTP, yang memeriksa database. Karena itu manifest Kubernetes di Lab 9 hanya memasang _probe_ HTTP. _Readiness probe_ gRPC tambahan akan menyatakan _pod_ siap walaupun database sedang mati.
 - *_Reflection_* memungkinkan _tools_ seperti `grpcurl` atau Postman menampilkan daftar _service_ dan RPC tanpa file `.proto`. Fitur ini memudahkan di lab, dan banyak tim mematikannya di _production_.
 
 Server HTTP dan server gRPC kini berjalan bersamaan, masing-masing di _goroutine_ sendiri. Ganti bagian akhir fungsi `run`, mulai dari `errCh`, dengan kode berikut:
@@ -724,13 +831,17 @@ Skema `passthrough:///` membuat gRPC meneruskan alamat `bufnet` apa adanya ke _d
 _Test_ `TestGRPCAccountService` di _checkpoint_ memeriksa dua hal:
 
 - Jalur sukses: `GetAccount` mengembalikan saldo `"500000.00"`, `Debit` sebesar `"200000.50"` menghasilkan saldo `"299999.50"`, dan `Credit` sebesar `"0.50"` menghasilkan `"300000.00"`. Saldo selalu dikirim dengan dua angka desimal karena `toProto` memanggil `StringFixed(2)`.
-- Penolakan: rekening tidak ada menghasilkan `NotFound`, saldo kurang menghasilkan `FailedPrecondition`, nominal `"1e"` atau nominal nol tanpa `reference` menghasilkan `InvalidArgument`. Saldo tidak berubah setelah semua penolakan tersebut.
+- Penolakan: rekening tidak ada menghasilkan `NotFound`, saldo kurang menghasilkan `FailedPrecondition`. Nominal `"1e"`, `"100.005"`, `"1e3"`, `"-5"`, `"100000000000000000"` (10^17) dan nominal nol tanpa `reference` menghasilkan `InvalidArgument`. Saldo tidak berubah setelah semua penolakan tersebut.
+
+_Test_ kedua di file yang sama, `TestGRPCCallerGaveUp`, membuat `Store` palsu mengembalikan `context.DeadlineExceeded` dan `context.Canceled` yang dibungkus `fmt.Errorf`, seperti _error_ dari pgx. Kode yang diharapkan adalah `DeadlineExceeded` dan `Canceled`, bukan `Internal`. Untuk keperluan ini, `fakeStore` di `http_test.go` mendapat _field_ `mutateErr` yang dikembalikan `Mutate` bila diisi. `TestAccountAPI` di file yang sama juga mendapat tiga kasus HTTP 400 untuk `initial_balance`: `"100.005"`, angka JSON `1e-3`, dan `"100000000000000000"`.
 
 Di `account/internal/fault/fault_test.go`, _test_ `TestUnaryServerInterceptor` memanggil fungsi _interceptor_ secara langsung dengan `grpc.UnaryServerInfo` buatan. _Test_ tersebut memastikan `error_rate` 1 menghasilkan `Unavailable` tanpa menjalankan _handler_, RPC _health_ tidak terkena gangguan, dan _deadline_ pemanggil yang lebih pendek dari jeda menghasilkan `DeadlineExceeded` tanpa menjalankan _handler_. Salin kode lengkap kedua _test_ dari _checkpoint_ `lab-04`:
 
 #perintah[```bash
 git show lab-04:studi-kasus/account/internal/account/grpc_test.go \
   > account/internal/account/grpc_test.go
+git show lab-04:studi-kasus/account/internal/account/http_test.go \
+  > account/internal/account/http_test.go
 git show lab-04:studi-kasus/account/internal/fault/fault_test.go \
   > account/internal/fault/fault_test.go
 ```]
@@ -976,7 +1087,7 @@ func mapError(kind, number string, err error) error {
 }
 ```
 
-Kode REST di Lab 3 harus menyusun URL, mengodekan JSON, membaca _body_ dan menutupnya. Dengan gRPC, pemanggilan cukup satu baris `c.api.Debit(...)`. _Policy_ _resiliency_ tidak tampak di metode `Debit`, karena _interceptor_ sudah membungkus setiap RPC. Fungsi `mapError` menerjemahkan kode gRPC menjadi _error_ domain, sehingga paket `transfer` tidak perlu mengimpor gRPC dan _handler_ HTTP `transfer` tetap memetakan _error_ tersebut ke HTTP 422, 503 atau 502 seperti sebelumnya.
+Kode REST di Lab 3 harus menyusun URL, mengodekan JSON, membaca _body_ dan menutupnya. Dengan gRPC, pemanggilan cukup satu baris `c.api.Debit(...)`. _Policy_ _resiliency_ tidak tampak di metode `Debit`, karena _interceptor_ sudah membungkus setiap RPC. Fungsi `mapError` menerjemahkan kode gRPC menjadi _error_ domain, sehingga paket `transfer` tidak perlu mengimpor gRPC dan _handler_ HTTP `transfer` tetap memetakan _error_ tersebut seperti di Lab 3. HTTP 503 hanya muncul bila _circuit breaker_ yang terbuka menolak _debit_: belum ada saldo yang berubah, sehingga _request_ aman diulang. Setiap kegagalan _credit_ sesudah _debit_ berhasil, termasuk rekening tujuan yang tidak ada dan _circuit breaker_ yang baru terbuka, dijawab HTTP 502: saldo sumber sudah berkurang dan perlu dikembalikan manual, sehingga _request_ tidak boleh diulang. HTTP 422 tersisa untuk rekening sumber yang tidak ada atau saldo yang tidak cukup.
 
 === `main.go` di `transfer`
 
@@ -1168,6 +1279,36 @@ make breaker
 # {"account":"closed"}
 ```]
 
+=== Nominal dengan Tiga Digit Desimal
+
+#perintah[```bash
+curl -sS -i -X POST localhost:28082/transfers \
+  -d '{"from_account":"1111111111","to_account":"2222222222","amount":"100.005"}'
+```]
+
+Hasilnya `HTTP/1.1 400 Bad Request` dengan _body_ berikut, dan tidak ada transfer yang tercatat:
+
+#perintah[```
+{"error":"validation failed","fields":{"amount":"must have at most 2 decimal places"}}
+```]
+
+`POST /accounts` dengan `"initial_balance":"100.005"` juga dijawab HTTP 400, dengan `fields.initial_balance` berisi pesan yang sama.
+
+=== Rekening Tujuan Tidak Ada
+
+#perintah[```bash
+curl -sS -i -X POST localhost:28082/transfers \
+  -d '{"from_account":"1111111111","to_account":"9999999999","amount":"1"}'
+```]
+
+Hasilnya `HTTP/1.1 502 Bad Gateway` dengan `"status":"FAILED"` dan `failure_reason` berikut:
+
+#perintah[```
+credit failed after debit: credit 9999999999: account not found
+```]
+
+_Debit_ sudah berhasil sebelum _credit_ ditolak `NotFound`, sehingga saldo rekening `1111111111` berkurang 1 dan _log_ `transfer` mencatat ERROR `credit failed after debit, source account needs manual reversal`. Jawaban 502, bukan 422, memberi tahu aplikasi _channel_ bahwa _request_ ini tidak boleh diulang. Lab 5 menambahkan kompensasi otomatis untuk kasus ini.
+
 === _Endpoint_ REST _Debit_ Sudah Tidak Ada
 
 #perintah[```bash
@@ -1278,6 +1419,12 @@ Jalankan `account` kembali dengan `make -C account run`. Setelah _circuit breake
 + *Program pemeriksa _health_.* Tulis program Go kecil di dalam modul `account`, misalnya `account/cmd/grpchealth/main.go`, yang tersambung ke `localhost:29091` dengan `grpc.NewClient` dan `insecure.NewCredentials()`, lalu memanggil `grpc_health_v1.NewHealthClient(conn).Check` dengan `Service: "account.v1.AccountService"`. Jalankan dengan `go run ./cmd/grpchealth` dari folder `account`. Status yang diharapkan adalah `SERVING`. Hentikan `account` dengan Ctrl+C sambil menjalankan program tersebut berulang-ulang, lalu amati kapan statusnya berubah atau koneksinya ditolak. Pastikan juga bahwa `make fault-error RATE=1` tidak memengaruhi hasil pemeriksaan _health_.
 + *Evolusi kontrak.* Tambahkan _field_ `string currency = 5;` pada _message_ `Account`, jalankan `make proto`, lalu isi _field_ tersebut di `toProto`. Jalankan `transfer` yang belum di-_build_ ulang terhadap `account` yang baru. Jelaskan mengapa `transfer` tetap berjalan, lalu coba hal sebaliknya: apa yang terjadi bila nomor _field_ `balance` diubah dari `3` menjadi `6`?
 + *Urutan _interceptor_.* Tukar urutan `interceptor.Logging` dan `faults.UnaryServerInterceptor` di `grpc.ChainUnaryInterceptor`, lalu ulangi `make fault-error RATE=1` dan `make fault-slow`. Bandingkan baris `grpc request` di _log_ `account` sebelum dan sesudah penukaran, terutama nilai `code` dan `duration_ms`, dan jelaskan perbedaannya.
++ *Pemanggil berhenti menunggu.* Kunci baris rekening `1111111111` selama 4 detik dari `psql`, lalu kirim transfer dari rekening tersebut di terminal lain dalam rentang waktu itu:
+  #perintah[```bash
+  docker exec studi-kasus-db-account-1 psql -U account -d account -c \
+    "begin; select number from account where number='1111111111' for update; select pg_sleep(4); commit;"
+  ```]
+  Transfer dijawab 502 setelah sekitar 2 detik dengan `failure_reason` `debit failed: debit 1111111111: timeout exceeded`. _Log_ `account` mencatat WARN `caller gave up before the request finished` dengan `code=Canceled`, bukan ERROR `grpc request failed`. Jelaskan mengapa kodenya `Canceled`, bukan `DeadlineExceeded`: siapa yang mengakhiri _context_ RPC tersebut? Lalu pertimbangkan: bila kunci baris dilepas tepat sebelum _context_ berakhir, apakah _debit_ dapat sudah terjadi walaupun transfer tercatat `FAILED`?
 + *_Breaker_ untuk kode `InvalidArgument`.* Tambahkan _test_ di `client_test.go` yang memastikan sepuluh kali `InvalidArgument` tidak membuka _circuit breaker_, mengikuti pola `TestBusinessRejectionsDoNotOpenBreaker`. Kemudian pertimbangkan: apakah `ResourceExhausted` (misalnya _rate limit_ di server) sebaiknya dihitung sebagai kegagalan, dan apakah boleh di-_retry_?
 
 == Checkpoint
