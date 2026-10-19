@@ -1,0 +1,6 @@
+# Text files are checked out with LF on every OS, including Git for Windows:
+# shell scripts, Makefiles and Go sources break with CRLF line endings.
+* text=auto eol=lf
+*.pdf binary
+*.png binary
+*.svg text eol=lf
