@@ -14,9 +14,9 @@ Setelah menyelesaikan lab ini, peserta mampu:
 
 == Gambaran
 
-Pada akhir Lab 2, `transfer` _service_ memanggil `account` _service_ dengan `http.Client` tanpa _timeout_. Kode tersebut menyimpan dua masalah yang baru terlihat ketika `account` bermasalah:
+Pada akhir Lab 2, `transfer` _service_ memanggil `account` _service_ dengan `http.Client` tanpa _timeout_. Kode tersebut mengandung dua masalah yang baru terlihat ketika `account` bermasalah:
 
-- Bila `account` lambat, setiap transfer ikut menunggu selama apa pun `account` membutuhkannya. _Goroutine_ dan koneksi di `transfer` menumpuk, sehingga `transfer` ikut lambat walaupun database milik `transfer` sehat.
+- Bila `account` lambat, setiap transfer ikut menunggu tanpa batas sampai `account` menjawab. _Goroutine_ dan koneksi di `transfer` menumpuk, sehingga `transfer` ikut lambat walaupun database milik `transfer` sehat.
 - Bila `account` mati atau kewalahan, setiap transfer tetap mengirim _request_ ke `account`. Setiap _request_ tersebut gagal, dan beban tambahan tersebut memperlambat `account` saat sedang berusaha kembali aktif.
 
 Lab ini membungkus HTTP _client_ di paket `transfer/internal/accountclient` dengan tiga _policy_ dari pustaka failsafe-go.
@@ -213,6 +213,14 @@ Pola `/accounts/` (diakhiri garis miring) pada `ServeMux` mencakup seluruh _path
 
 #note[
   *Jalan pintas.* _Fault injector_ hanya sarana latihan. Peserta yang ingin langsung masuk ke failsafe-go dapat mengambil paket tersebut dari _checkpoint_ dengan `git checkout lab-03 -- account/internal/fault account/main.go`, lalu lanjut ke Langkah 2. Paket ini juga membawa _unit test_ `fault_test.go`.
+]
+
+Peserta yang mengetik Langkah 1 sendiri tetap perlu mengambil _unit test_ paket `fault` dari _checkpoint_:
+
+#perintah[
+```bash
+git checkout lab-03 -- account/internal/fault/fault_test.go
+```
 ]
 
 === Langkah 2: Target `make` untuk Mengatur _Fault_
@@ -458,13 +466,13 @@ Beberapa hal yang perlu diperhatikan dari kode di atas:
 
 - *Satu _circuit breaker_ untuk `account`.* _Debit_ dan _credit_ menuju _service_ yang sama. Bila `account` mati, keduanya sama-sama gagal, sehingga keduanya berbagi satu _circuit breaker_.
 - *Urutan argumen `NewRoundTripper`.* _Policy_ pertama adalah yang paling luar: `retry`, lalu `breaker`, lalu _timeout_. Argumen pertama `nil` berarti _round tripper_ di bagian terdalam adalah `http.DefaultTransport`.
-- *`AbortOnErrors(circuitbreaker.ErrOpen)`.* Bila _circuit breaker_ beralih ke _open_ di tengah rangkaian _retry_, _retry_ berikutnya langsung dihentikan. Menunggu _backoff_ hanya untuk ditolak lagi oleh _circuit breaker_ tidak ada gunanya.
+- *`AbortOnErrors(circuitbreaker.ErrOpen)`.* Bila _circuit breaker_ beralih ke _open_ di tengah rangkaian _retry_, _retry_ berikutnya langsung dihentikan. Tidak ada gunanya menunggu _backoff_ bila percobaan berikutnya pasti ditolak _circuit breaker_.
 - *_Jitter_.* Faktor 0,25 mengacak jeda _backoff_ hingga 25%. Bila seratus transfer gagal bersamaan, _retry_ mereka tidak tiba di `account` pada milidetik yang sama.
 - *`ReturnLastFailure()`.* Bila _retry_ habis, failsafe-go mengembalikan _response_ 503 terakhir apa adanya. Dengan begitu fungsi `mutate` tetap membaca kode status seperti biasa.
-- *`OnRetry` menutup _body_.* _Response_ 503 yang memicu _retry_ tidak akan dibaca lagi oleh siapa pun. _Body_ tersebut harus dibaca habis dan ditutup agar koneksinya kembali ke _connection pool_.
+- *`OnRetry` menutup _body_.* Kode lain tidak membaca lagi _response_ 503 yang memicu _retry_. _Body_ tersebut harus dibaca habis dan ditutup agar koneksinya kembali ke _connection pool_.
 - *_Log_ di setiap perubahan status.* `OnStateChanged` menulis _log_ `circuit breaker state changed` dengan atribut `from` dan `to`. _Log_ inilah yang diamati di bagian Verifikasi.
 
-=== Langkah 8: Menerjemahkan Error dan Membuka Status _Circuit Breaker_
+=== Langkah 8: Menerjemahkan Error dan Menampilkan Status _Circuit Breaker_
 
 Ketika _circuit breaker_ berstatus _open_, `c.http.Do(req)` mengembalikan error yang membungkus `circuitbreaker.ErrOpen`. Di fungsi `mutate`, sisipkan pemeriksaan berikut tepat setelah baris `resp, err := c.http.Do(req)` dan sebelum pemeriksaan `if err != nil` yang sudah ada.
 
@@ -539,7 +547,7 @@ Terakhir, perbarui komentar di atas `Execute` pada `transfer/internal/transfer/s
 
 Ketiga _policy_ diuji dengan `httptest.Server` yang perilakunya diatur oleh _test_. `account` _service_ dan database tidak perlu berjalan. Angka _policy_ diperkecil agar setiap _test_ selesai dalam milidetik, sedangkan bentuk _policy_-nya tetap sama dengan `ProductionSettings`.
 
-Di `transfer/internal/accountclient/client_test.go`, tambahkan _import_ `bytes`, `io`, `log/slog`, `strings`, `sync/atomic`, dan `time`. Lalu tambahkan fungsi pembantu berikut setelah blok _import_.
+Di `transfer/internal/accountclient/client_test.go`, tambahkan _import_ `bytes`, `io`, `log/slog`, `strings`, `sync/atomic`, dan `time`. _Import_ `bytes` dan `strings` dipakai oleh _test_ keempat. Lalu tambahkan fungsi pembantu berikut setelah blok _import_.
 
 ```go
 // testSettings keeps the production policy shape with short durations so the
@@ -592,7 +600,7 @@ func TestServerError(t *testing.T) {
 }
 ```
 
-Tambahkan tiga _test_ utama berikut. _Test_ pertama memastikan 503 di-_retry_ hingga berhasil.
+Tambahkan empat _test_ utama berikut. _Test_ pertama memastikan 503 di-_retry_ hingga berhasil.
 
 ```go
 func TestRetryOn503Succeeds(t *testing.T) {
@@ -673,10 +681,32 @@ func TestBreakerOpensAndRejectsFast(t *testing.T) {
 }
 ```
 
-_Checkpoint_ `lab-03` memuat empat _test_ tambahan dengan pola yang sama. Peserta disarankan menulisnya sendiri sebagai latihan sebelum membandingkan dengan _checkpoint_:
+_Test_ keempat memastikan kegagalan koneksi di-_retry_. _Server_ langsung ditutup, sehingga setiap percobaan menghasilkan _connection refused_. _Log_ ditampung di `bytes.Buffer` agar jumlah baris `retrying account call` dapat dihitung. Empat kegagalan masih di bawah ambang 5, sehingga _circuit breaker_ tetap _closed_.
+
+```go
+func TestRetryOnConnectionRefused(t *testing.T) {
+	srv := httptest.NewServer(http.NotFoundHandler())
+	url := srv.URL
+	srv.Close() // nothing listens on this port any more
+
+	var logs bytes.Buffer
+	c := New(url, testSettings, slog.New(slog.NewTextHandler(&logs, nil)))
+	if err := debit(c); err == nil || errors.Is(err, transfer.ErrAccountUnavailable) {
+		t.Fatalf("err = %v, want a connection error", err)
+	}
+	if got := strings.Count(logs.String(), "retrying account call"); got != 3 {
+		t.Fatalf("retries = %d, want 3; logs:\n%s", got, logs.String())
+	}
+	// 4 refused attempts count as 4 breaker failures, still under 5.
+	if got := c.BreakerState(); got != "closed" {
+		t.Fatalf("breaker = %s, want closed", got)
+	}
+}
+```
+
+_Checkpoint_ `lab-03` memuat tiga _test_ tambahan dengan pola yang sama. Peserta disarankan menulisnya sendiri sebagai latihan sebelum membandingkan dengan _checkpoint_:
 
 - `TestRetryGivesUpAfterMaxRetries`: _server_ selalu menjawab 503, dan _server_ harus menerima tepat 4 _request_ (1 percobaan awal ditambah 3 _retry_).
-- `TestRetryOnConnectionRefused`: alamat _server_ yang sudah ditutup menghasilkan _connection refused_. _Log_ harus memuat tepat 3 baris `retrying account call`, dan _circuit breaker_ tetap _closed_ karena 4 kegagalan masih di bawah 5.
 - `TestBusinessRejectionsDoNotOpenBreaker`: sepuluh jawaban 422 berturut-turut tidak mengubah _circuit breaker_ dari _closed_.
 - `TestBreakerHalfOpenCloses`: dengan `BreakerDelay` 50 ms, _circuit breaker_ beralih dari _open_ ke _half-open_ setelah panggilan uji pertama berhasil, lalu ke _closed_ setelah panggilan uji ketiga.
 
@@ -736,7 +766,7 @@ Transfer dijawab `HTTP 201` dengan `"status":"COMPLETED"`, dan `make breaker` me
 {"account":"closed"}
 ```
 
-=== `account` Lambat: _Timeout_ dan _Circuit Breaker_
+=== _Timeout_ dan _Circuit Breaker_ Saat `account` Lambat
 
 Aktifkan jeda 3 detik, lebih lama dari _timeout_ 2 detik. Catat saldo rekening sumber, lalu kirim enam transfer berturut-turut sambil mencetak kode HTTP dan lama setiap _request_.
 
@@ -782,7 +812,7 @@ level=WARN msg="transfer failed" transfer_id=... reason="debit failed: debit 111
 
 Periksa lagi saldo rekening sumber dengan `curl -s localhost:8081/accounts/1111111111`. Saldo tidak berubah dibandingkan sebelum `make fault-slow`. Ingat penjelasan di Langkah 6: saldo tetap utuh hanya karena _fault injector_ berhenti saat `transfer` membatalkan _request_. Database yang lambat di sistem sungguhan dapat saja sudah menerapkan _debit_ tersebut, dan itulah alasan _timeout_ tidak di-_retry_.
 
-=== Kembali Normal: _Half-Open_ ke _Closed_
+=== Perpindahan _Half-Open_ ke _Closed_
 
 Matikan _fault_, tunggu lebih dari 10 detik, lalu periksa status _circuit breaker_.
 
@@ -828,7 +858,7 @@ level=WARN msg="circuit breaker state changed" target=account from=open to=half-
 level=WARN msg="circuit breaker state changed" target=account from=half-open to=closed
 ```
 
-=== `account` Sering Gagal: _Retry_
+=== _Retry_ Saat `account` Sering Gagal
 
 Aktifkan jawaban 503 untuk 20% _request_, lalu kirim sepuluh transfer.
 
@@ -881,7 +911,15 @@ Kondisi kode di akhir lab ini tersimpan di _tag_ `lab-03`. Bandingkan hasil kerj
 
 #perintah[
 ```bash
-git diff lab-03 -- studi-kasus
+git diff lab-03 -- .
+```
+]
+
+Selisih pada `README.md` dan `go.work.sum` memang wajar. `README.md` di _checkpoint_ memuat bagian baru tentang _resiliency_, dan `go.work.sum` berubah mengikuti dependensi yang terunduh. Keduanya dapat diambil dari _checkpoint_:
+
+#perintah[
+```bash
+git checkout lab-03 -- README.md go.work.sum
 ```
 ]
 
