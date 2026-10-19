@@ -3,12 +3,15 @@ module github.com/artivisi/training-microservices-2026-01/studi-kasus/transfer
 go 1.26.0
 
 require (
+	github.com/failsafe-go/failsafe-go v0.9.8
 	github.com/jackc/pgx-shopspring-decimal v0.0.0-20220624020537-1d36b5a1853e
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/shopspring/decimal v1.6.0
 )
 
 require (
+	github.com/bits-and-blooms/bitset v1.24.4 // indirect
+	github.com/influxdata/tdigest v0.0.1 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect

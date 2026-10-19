@@ -69,7 +69,9 @@ func TestExecute(t *testing.T) {
 	}{
 		{"success", &fakeAccounts{}, Completed, nil, 2},
 		{"insufficient funds stops before credit", &fakeAccounts{debitErr: ErrInsufficientFunds}, Failed, ErrInsufficientFunds, 1},
-		{"credit fails after debit", &fakeAccounts{creditErr: unavailable}, Failed, unavailable, 2},
+		{"credit fails after debit", &fakeAccounts{creditErr: unavailable}, Failed, ErrCreditFailed, 2},
+		{"open circuit breaker fails the transfer", &fakeAccounts{debitErr: ErrAccountUnavailable}, Failed, ErrAccountUnavailable, 1},
+		{"breaker opens between debit and credit", &fakeAccounts{creditErr: ErrAccountUnavailable}, Failed, ErrCreditFailed, 2},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
