@@ -38,7 +38,7 @@ Prinsip tersebut disebut _database-per-service_. Setiap _service_ memiliki datab
   +--------------------+
 ```]
 
-Selama Lab 1 hingga Lab 8, _service_ Go dijalankan langsung di laptop dengan `go run`, sedangkan infrastruktur (database, Kafka, dan lain-lain) berjalan di _container_. Pembagian ini mempercepat siklus ubah kode lalu jalankan ulang. Port database sengaja dimulai dari 15432 agar tidak bentrok dengan PostgreSQL yang mungkin sudah terpasang di laptop pada port 5432.
+Selama Lab 1 hingga Lab 8, _service_ Go dijalankan langsung di laptop dengan `go run`, sedangkan infrastruktur (database, Kafka, dan lain-lain) berjalan di _container_. Dengan pembagian ini, perubahan kode dapat langsung dicoba dengan menjalankan ulang `go run`, tanpa membangun _image_ baru. Port database sengaja dimulai dari 15432 agar tidak bentrok dengan PostgreSQL yang mungkin sudah terpasang di laptop pada port 5432.
 
 Struktur kode di akhir lab ini:
 
@@ -48,8 +48,10 @@ studi-kasus/
 ├── compose.yaml                infrastruktur lab (PostgreSQL)
 ├── Makefile                    infra-up, infra-down, infra-reset, test
 ├── .gitignore
+├── README.md                   disediakan oleh checkpoint
 └── account/
     ├── go.mod
+    ├── go.sum
     ├── Makefile                run, test, build
     ├── main.go                 run(): config, database, HTTP server, shutdown
     ├── config.go               LoadConfig() dari environment variable
@@ -61,7 +63,7 @@ studi-kasus/
         └── http_test.go        unit test handler dengan fake store
 ```]
 
-Kode di dalam `internal/account` dikelompokkan menurut fitur (_package by feature_): seluruh kode yang berkaitan dengan rekening berada di satu _package_. Direktori `internal` juga mencegah _module_ lain mengimpor _package_ tersebut, sehingga _service_ lain tidak dapat bergantung pada detail implementasi `account`.
+Kode di dalam `internal/account` disusun dengan pola _package by feature_ (pengelompokan menurut fitur): seluruh kode yang berkaitan dengan rekening berada di satu _package_. Direktori `internal` juga mencegah _module_ lain mengimpor _package_ tersebut, sehingga _service_ lain tidak dapat bergantung pada detail implementasi `account`.
 
 == Titik Awal
 
@@ -195,7 +197,7 @@ Kolom `STATUS` untuk `db-account` harus menampilkan `healthy`.
 
 _Service_ membutuhkan dua nilai konfigurasi: alamat HTTP yang didengarkan dan URL koneksi database. Nilai tersebut berbeda di setiap tempat _service_ dijalankan (laptop, _container_, Kubernetes), sehingga dibaca dari _environment variable_ sesuai prinsip _twelve-factor app_.
 
-Setiap variabel bersifat wajib. Bila salah satu kosong, _service_ berhenti saat _startup_ dengan pesan error yang menyebutkan nama variabelnya. Nilai _default_ seperti `localhost:5432` sengaja tidak disediakan: _service_ yang terhubung ke database yang salah karena nilai _default_ jauh lebih sulit dilacak dibandingkan _service_ yang gagal _start_ dengan pesan yang jelas.
+Setiap variabel bersifat wajib. Bila salah satu kosong, _service_ berhenti saat _startup_ dengan pesan error yang menyebutkan nama variabelnya. Nilai _default_ seperti `localhost:5432` sengaja tidak disediakan. Bila _service_ diam-diam menggunakan nilai _default_ dan terhubung ke database yang salah, penyebab masalahnya sulit ditemukan. _Service_ yang langsung berhenti dengan pesan error jauh lebih mudah diperbaiki.
 
 *File `studi-kasus/account/config.go`*
 
@@ -337,7 +339,7 @@ create table if not exists account (
 
 _Constraint_ `check (balance >= 0)` menjaga saldo agar tidak pernah negatif, bahkan bila ada kode yang lupa memeriksanya. Aturan bisnis yang paling penting sebaiknya juga dijaga oleh database.
 
-Implementasi `Store` menggunakan `pgxpool`, yaitu _connection pool_ dari pgx. _Pool_ menyimpan beberapa koneksi yang dapat digunakan bergantian oleh _request_ yang datang bersamaan. Tipe `numeric` PostgreSQL perlu dipetakan ke `decimal.Decimal`; pemetaan ini didaftarkan oleh _package_ `pgx-shopspring-decimal` pada setiap koneksi baru melalui `AfterConnect`.
+Implementasi `Store` menggunakan `pgxpool`, yaitu _connection pool_ dari pgx. _Pool_ menyimpan beberapa koneksi yang dapat digunakan bergantian oleh _request_ yang datang bersamaan. Kolom `numeric` PostgreSQL dibaca ke `decimal.Decimal`. Tanpa pendaftaran apa pun, pgx sudah dapat membacanya melalui _interface_ `sql.Scanner`, dengan nilai yang dikonversi lewat teks. _Package_ `pgx-shopspring-decimal` mendaftarkan _codec_ khusus pada setiap koneksi baru melalui `AfterConnect`, sehingga konversi `numeric` dilakukan langsung tanpa melalui teks.
 
 *File `studi-kasus/account/internal/account/store.go`*
 
@@ -447,8 +449,8 @@ Sejak Go 1.22, `http.ServeMux` bawaan Go mendukung pola yang memuat _method_ dan
 
 Bagian ini juga menyediakan dua _endpoint_ pemeriksaan kesehatan yang nanti digunakan Kubernetes pada Lab 9:
 
-- `/healthz` (_liveness_) menjawab pertanyaan apakah proses masih hidup dan mampu melayani HTTP. _Endpoint_ ini tidak memeriksa database. Bila database ikut diperiksa, gangguan database membuat Kubernetes me-_restart_ seluruh _pod_ yang sebenarnya sehat, padahal _restart_ tidak memperbaiki database.
-- `/readyz` (_readiness_) menjawab pertanyaan apakah _service_ siap menerima _request_, yaitu ketika database dapat dihubungi. Bila gagal, Kubernetes berhenti mengirim _traffic_ ke _pod_ tersebut tanpa me-_restart_-nya.
+- `/healthz` (_liveness_) memeriksa bahwa proses masih hidup dan dapat melayani HTTP. _Endpoint_ ini tidak memeriksa database. Bila database ikut diperiksa, gangguan database membuat Kubernetes me-_restart_ seluruh _pod_ yang sebenarnya sehat, padahal _restart_ tidak memperbaiki database.
+- `/readyz` (_readiness_) memeriksa bahwa _service_ siap menerima _request_, yaitu database dapat dihubungi. Bila gagal, Kubernetes berhenti mengirim _traffic_ ke _pod_ tersebut tanpa me-_restart_-nya.
 
 *File `studi-kasus/account/internal/account/http.go`*
 
@@ -656,7 +658,7 @@ Beberapa konsep Go yang muncul di sini:
 - `ReadHeaderTimeout` membatasi waktu klien mengirim _header_ HTTP. Tanpa batas ini, klien yang sangat lambat dapat menahan koneksi selamanya.
 - _Logger_ `slog` menulis _log_ terstruktur berformat `key=value`. Pada Lab 8, format ini diganti menjadi JSON dan dilengkapi _correlation ID_.
 
-=== Dependensi dan Makefile Service
+=== Dependensi dan Makefile per Service
 
 Unduh _library_ yang digunakan, dengan versi yang sama seperti _checkpoint_:
 
@@ -711,9 +713,9 @@ Baris terakhir _output_ yang diharapkan (waktu akan berbeda):
 time=2026-10-26T09:15:02.123+07:00 level=INFO msg="account service listening" addr=:8081
 ```]
 
-Biarkan terminal ini tetap berjalan, lalu buka terminal kedua untuk langkah verifikasi.
+Biarkan terminal ini tetap berjalan, lalu buka terminal kedua untuk langkah berikutnya (unit test dan verifikasi).
 
-=== Unit Test Handler dengan Fake Store
+=== Unit Test untuk Handler dengan Fake Store
 
 _Handler_ HTTP diuji tanpa PostgreSQL. `fakeStore` mengimplementasikan _interface_ `Store` dengan _map_ di memori, lalu `httptest.NewRecorder` menangkap respons _handler_ tanpa membuka port jaringan. Test ini berjalan dalam hitungan milidetik dan dapat dijalankan di _pipeline_ CI yang tidak memiliki database.
 
@@ -990,9 +992,6 @@ exit status 1
   [_Field_ `balance` atau `created_at` kosong atau tertukar pada respons],
   [Urutan kolom di `select`/`returning` tidak sama dengan urutan _field_ di _struct_ `Account`],
   [Samakan urutan kolom dengan urutan _field_: `number`, `owner_name`, `balance`, `created_at`],
-  [Error `can't scan into dest[2]` saat membaca saldo],
-  [Pemetaan `numeric` ke `decimal.Decimal` belum didaftarkan],
-  [Pastikan `cfg.AfterConnect` memanggil `pgxdecimal.Register(conn.TypeMap())` sebelum _pool_ dibuat],
 )
 
 == Eksplorasi Mandiri
@@ -1010,6 +1009,8 @@ Kondisi kode di akhir lab ini tersimpan di tag `lab-01`. Untuk membandingkan has
 git diff lab-01 -- .
 ```]
 
+Perbedaan pada `README.md` dapat diabaikan, karena isi file tersebut disediakan oleh _checkpoint_ dan tidak ditulis pada langkah lab.
+
 Bila hasil pekerjaan belum selesai atau tidak dapat dijalankan, simpan pekerjaan lalu lanjutkan dari _checkpoint_:
 
 #perintah[```bash
@@ -1017,4 +1018,4 @@ git add -A && git commit -m "Lab 1 (pekerjaan sendiri)"
 git checkout -b lab-01-checkpoint lab-01
 ```]
 
-Lab 2 dimulai dari kondisi ini: `account` _service_ berjalan di port 8081 dengan database `db-account`, dan Lab 2 menambahkan `transfer` _service_ yang memanggil API `account` melalui REST.
+Lab 2 dimulai dari kondisi ini: _service_ `account` berjalan di port 8081 dengan database `db-account`. Lab 2 menambahkan _service_ `transfer` yang memanggil API `account` melalui REST.
