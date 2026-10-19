@@ -501,8 +501,10 @@ Tambahkan _import_ `.../account/internal/auth`, lalu buat `Verifier` sebelum `gr
 		return !strings.HasPrefix(method, "/"+accountv1.AccountService_ServiceDesc.ServiceName+"/")
 	}
 
+	// gRPC: the internal API (GetAccount, Debit, Credit) for other services.
 	// Interceptors run in the order given: logging sees the code that auth or the
-	// fault injector produced. Auth comes before faults: a caller without a valid
+	// fault injector produced, so rejections and injected failures show up in
+	// the log like real ones. Auth comes before faults: a caller without a valid
 	// token is turned away before any work, simulated or real, is done.
 	grpcSrv := grpc.NewServer(grpc.ChainUnaryInterceptor(
 		interceptor.Logging(log),
@@ -699,8 +701,8 @@ grpc-go sudah menyediakan implementasi siap pakai di paket `credentials/oauth`. 
 Tiga keputusan desain di dalam `tokenCredentials`:
 
 - *_Token_ disimpan dan digunakan ulang* hingga 10 detik sebelum kedaluwarsa (`oauth2.Token.Valid()`). Hydra menerima satu permintaan per masa berlaku _token_, bukan satu permintaan per transfer.
-- *Gagal mengambil _token_ menghasilkan `Unauthenticated`*, bukan `Unavailable`. Kebijakan _retry_ dari Lab 4 hanya mengulang `Unavailable` (dan `DeadlineExceeded` sejak Lab 5), dan _circuit breaker_ hanya menghitung error infrastruktur. Hydra yang mati tidak berarti `account` bermasalah, jadi _circuit breaker_ ke `account` tidak boleh terbuka karenanya. Error ini dibuat sebagai tipe tersendiri, `tokenFetchError`, agar dapat dibedakan dari `Unauthenticated` yang dikirim oleh `account`. Panggilan tersebut tidak pernah keluar dari `transfer`, dan transfer berakhir `FAILED` dengan kode HTTP 502.
-- *_Token_ yang ditolak `account` diganti sekali.* _Token_ bisa ditolak sebelum kedaluwarsa, misalnya karena Hydra merotasi _signing key_. Hydra di lab mendapat _key_ baru setiap kali di-_restart_. Tanpa mekanisme ini, setiap panggilan gagal hingga _token_ lama kedaluwarsa, paling lama satu jam. Penggantian hanya dilakukan bila penolakan datang dari `account`. Bila yang gagal adalah pengambilan _token_ itu sendiri, percobaan kedua hanya akan menghubungi Hydra lagi dalam panggilan yang sama. Mengulang `Debit` atau `Credit` aman karena keduanya sudah _idempotent_ berdasarkan `reference` sejak Lab 5.
+- *Gagal mengambil _token_ menghasilkan `Unauthenticated`*, bukan `Unavailable`. Kebijakan _retry_ dari Lab 4 hanya mengulang `Unavailable` (dan `DeadlineExceeded` sejak Lab 5), dan _circuit breaker_ hanya menghitung error infrastruktur. Hydra yang mati tidak berarti `account` bermasalah, jadi _circuit breaker_ ke `account` tidak boleh terbuka karenanya. Error ini dibuat sebagai tipe tersendiri, `tokenFetchError`, agar dapat dibedakan dari `Unauthenticated` yang dikirim oleh `account`. Panggilan gRPC yang gagal mendapat _token_ tidak pernah keluar dari `transfer`. Bila ini terjadi saat `Debit`, transfer berakhir `FAILED` dengan kode HTTP 502.
+- *_Token_ yang ditolak `account` diganti sekali.* _Token_ bisa ditolak sebelum kedaluwarsa, misalnya karena Hydra merotasi _signing key_. Hydra di lab mendapat _key_ baru setiap kali di-_restart_. Tanpa mekanisme ini, setiap panggilan gagal hingga _token_ lama kedaluwarsa, paling lama satu jam. Penggantian hanya dilakukan bila penolakan datang dari `account`. Kegagalan mengambil _token_ (`tokenFetchError`) tidak diulang, karena percobaan kedua dalam panggilan yang sama hanya menghubungi Hydra sekali lagi. Mengulang `Debit` atau `Credit` aman karena keduanya sudah _idempotent_ berdasarkan `reference` sejak Lab 5.
 
 Buat _file_ `transfer/internal/accountclient/credentials.go`:
 
@@ -844,7 +846,7 @@ func dial(target string, tokens *tokenCredentials, resilience grpc.UnaryClientIn
 Urutannya penting. `refreshOnUnauthenticated` berada di luar kebijakan _resiliency_, sehingga panggilan yang diulang dengan _token_ baru kembali melewati _timeout_, _retry_, dan _circuit breaker_ (atau _retry_ khusus _reversal_ di koneksi kedua).
 
 #note[
-  *Batasan yang belum ditangani.* Kebijakan _retry_ _reversal_ dari Lab 5 hanya mengulang error infrastruktur (`Unavailable`, `DeadlineExceeded`, `Internal`, `Unknown`). Kegagalan mengambil _token_ bernilai `Unauthenticated`, jadi tidak diulang. Bila Hydra mati tepat saat _reversal_ berjalan dan _token_ di _cache_ sudah kedaluwarsa, transfer langsung berakhir `COMPENSATION_FAILED` (HTTP 500) dan perlu koreksi manual.
+  *Batasan yang belum ditangani.* Kebijakan _retry_ _reversal_ dari Lab 5 hanya mengulang error infrastruktur (`Unavailable`, `DeadlineExceeded`, `Internal`, `Unknown`). Kegagalan mengambil _token_ menghasilkan kode `Unauthenticated`, jadi tidak diulang. Bila Hydra mati tepat saat _reversal_ berjalan dan _token_ di _cache_ sudah kedaluwarsa, transfer langsung berakhir `COMPENSATION_FAILED` (HTTP 500) dan perlu koreksi manual.
 ]
 
 ==== Memasang _Verifier_ dan _Client_ OAuth2 di `transfer/main.go`
@@ -942,7 +944,18 @@ reason = reason + "; reversal failed: " + publicReason(err)
 
 Cabang _reversal_ gagal tetap mengembalikan error yang membungkus `ErrReversalFailed` dari Lab 5, sehingga transfer `COMPENSATION_FAILED` tetap dijawab 500. Yang berubah hanya teks `reason`.
 
-`publicReason` menaruh pesan _sentinel_ (misalnya `insufficient funds`) di akhir teks. Fungsi `replayOutcome` dari Lab 6 bergantung pada sifat ini: kode HTTP untuk _replay_ ditentukan dari akhiran `failure_reason`. Teks lama sebelum Lab 7 (`debit failed: debit 1111111111: insufficient funds`) juga berakhir dengan pesan yang sama, jadi _replay_ untuk transfer lama tetap menghasilkan kode yang sama. Perbarui komentar di atas `replayOutcome` agar menyebut kedua format tersebut.
+`publicReason` menaruh pesan _sentinel_ (misalnya `insufficient funds`) di akhir teks. Fungsi `replayOutcome` dari Lab 6 bergantung pada sifat ini: kode HTTP untuk _replay_ ditentukan dari akhiran `failure_reason`. Teks lama sebelum Lab 7 (`debit failed: debit 1111111111: insufficient funds`) juga berakhir dengan pesan yang sama, jadi _replay_ untuk transfer lama tetap menghasilkan kode yang sama. Perbarui komentar di atas `replayOutcome` agar menyebut kedua format tersebut:
+
+```go
+// replayOutcome rebuilds, from the stored transfer, the error the original
+// request ended with: nil for COMPLETED, ErrReversalFailed for
+// COMPENSATION_FAILED, ErrInProgress for PENDING and DEBITED. For FAILED and
+// COMPENSATED the cause is only kept as text in failure_reason ("debit failed:
+// insufficient funds"); publicReason puts the sentinel's message last. Rows
+// written before Lab 7 hold the raw error ("debit failed: debit 1111111111:
+// insufficient funds"), which ends the same way. Anything else was a dependency
+// failure, the 502 of the original request.
+```
 
 Agar detail error tidak hilang, tambahkan `"error", cause` ke log `transfer not completed` di fungsi `finish`:
 
@@ -979,7 +992,8 @@ _Test_ di `accountclient` mencakup perilaku baru berikut. Fungsi bantu `serve` k
 - `TestTokenFailureIsNotAnAccountFailure`: gagal mengambil _token_ tidak di-_retry_, tidak membuka _circuit breaker_, dan tidak memicu pengambilan _token_ kedua. Sepuluh panggilan menghasilkan tepat sepuluh kali pengambilan _token_.
 - `TestRejectedTokenIsReplaced`: _token_ yang ditolak `account` diganti, lalu panggilan diulang dan berhasil.
 - `TestRejectedTokenIsReplacedOnlyOnce`: bila _token_ pengganti juga ditolak, panggilan gagal dengan `Unauthenticated` setelah dua kali sampai di server dan dua kali pengambilan _token_, tanpa berulang terus.
- `TestFailureReasonIsGeneric` di `service_test.go` memastikan alamat internal tidak muncul di `failure_reason`.
+
+`TestFailureReasonIsGeneric` di `service_test.go` memastikan alamat internal tidak muncul di `failure_reason`.
 
 == Verifikasi
 
