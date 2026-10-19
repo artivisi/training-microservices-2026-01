@@ -40,6 +40,13 @@ var (
 	// Business rejections from the account service: the request itself cannot succeed.
 	ErrAccountNotFound   = errors.New("account not found")
 	ErrInsufficientFunds = errors.New("insufficient funds")
+	// The circuit breaker to the account service is open: the call was rejected
+	// without being sent.
+	ErrAccountUnavailable = errors.New("account service unavailable")
+	// The debit was applied but the credit was not: the source account needs a
+	// manual reversal. Whatever made the credit fail, the transfer is no longer
+	// safe to retry.
+	ErrCreditFailed = errors.New("credit failed after debit")
 )
 
 type ValidationError map[string]string

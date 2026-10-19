@@ -37,10 +37,13 @@ func run(log *slog.Logger) error {
 	}
 	defer store.Close()
 
-	svc := transfer.NewService(store, accountclient.New(cfg.AccountServiceURL), log)
+	accounts := accountclient.New(cfg.AccountServiceURL, accountclient.ProductionSettings, log)
+	svc := transfer.NewService(store, accounts, log)
+	mux := transfer.NewHandler(svc, log).Routes()
+	mux.HandleFunc("GET /debug/circuit-breaker", accounts.ServeCircuitBreaker)
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           transfer.NewHandler(svc, log).Routes(),
+		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

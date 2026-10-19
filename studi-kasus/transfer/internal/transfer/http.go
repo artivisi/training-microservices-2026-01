@@ -45,8 +45,17 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusCreated, t)
 	case t.ID == "":
 		h.internalError(w, r, err)
+	case errors.Is(err, ErrCreditFailed):
+		// Checked first: the debit was applied, so this must not look retryable
+		// (503) or like a plain business rejection (422). A retried POST would
+		// debit again. The service already logged it for manual reversal.
+		writeJSON(w, http.StatusBadGateway, t)
 	case errors.Is(err, ErrAccountNotFound), errors.Is(err, ErrInsufficientFunds):
 		writeJSON(w, http.StatusUnprocessableEntity, t)
+	case errors.Is(err, ErrAccountUnavailable):
+		// The open breaker refused the debit, so nothing was applied: 503 tells the
+		// caller it is safe to come back later.
+		writeJSON(w, http.StatusServiceUnavailable, t)
 	default:
 		// Recorded but not completed because a dependency failed.
 		writeJSON(w, http.StatusBadGateway, t)
