@@ -1,0 +1,24 @@
+# Stable name and virtual IP in front of the ready account pods:
+# account:8081 (REST) and account:9091 (gRPC) inside the namespace.
+# gRPC keeps one long-lived HTTP/2 connection per client, and a ClusterIP
+# Service balances connections, not calls: after scaling account up, the
+# calls of one transfer pod still go to the same account pod. Production
+# balances per call (headless Service + client-side round_robin, or a service
+# mesh).
+apiVersion: v1
+kind: Service
+metadata:
+  name: account
+  labels:
+    app.kubernetes.io/name: account
+spec:
+  selector:
+    app.kubernetes.io/name: account
+  ports:
+    - name: http
+      port: 8081
+      targetPort: http
+    - name: grpc
+      port: 9091
+      targetPort: grpc
+      appProtocol: grpc

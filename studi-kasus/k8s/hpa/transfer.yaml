@@ -1,0 +1,34 @@
+# Scales transfer on CPU against its request (deployment.yaml: requests.cpu
+# 50m). 70 % = an average of 35m per pod; above it the HPA adds pods, up to 4.
+# The metrics come from metrics-server, which k3s runs by default
+# (kubectl top pods). Other clusters need it installed.
+#
+# With an HPA the Deployment's replicas field belongs to the HPA. A later
+# make k8s-apply sets it back to 1 (replicas: 1 in base), and the HPA scales
+# up again at its next check. In production the replicas field is removed
+# from the Deployment once an HPA owns it.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: transfer
+  labels:
+    app.kubernetes.io/name: transfer
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: transfer
+  minReplicas: 1
+  maxReplicas: 4
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  # Scale-down waits until the load has been low for 60 s (default 300 s), so
+  # the way back to 1 replica is visible within the exercise.
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 60

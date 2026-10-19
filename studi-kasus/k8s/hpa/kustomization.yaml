@@ -1,0 +1,9 @@
+# HPA for transfer, optional after Lab 9 (README, "HPA"). Kept out of
+# overlays/k3d so Lab 9 and Lab 10 run without it.
+#   make hpa-apply     kubectl apply -k k8s/hpa
+#   make hpa-delete    removes it and scales transfer back to 1 replica
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: bank
+resources:
+  - transfer.yaml

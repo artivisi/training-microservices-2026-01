@@ -1,0 +1,24 @@
+# k3d on the laptop (Lab 9): the three services run in the cluster, the
+# infrastructure stays in Docker Compose (make infra-up). Pods reach it through
+# host.k3d.internal, a name k3d adds to the cluster DNS that points at the
+# laptop, and the ports compose publishes there.
+#   kubectl apply -k k8s/overlays/k3d    (make k8s-apply)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: bank
+resources:
+  - namespace.yaml
+  - ../../base
+patches:
+  - path: config.yaml
+  - path: secrets.yaml
+# Images built with make images VERSION=1.0.0 and imported with make
+# k3d-import VERSION=1.0.0. A rolling update with a new tag: change newTag
+# here and apply again, or kubectl set image (see README).
+images:
+  - name: studi-kasus/account
+    newTag: "1.0.0"
+  - name: studi-kasus/transfer
+    newTag: "1.0.0"
+  - name: studi-kasus/notification
+    newTag: "1.0.0"
