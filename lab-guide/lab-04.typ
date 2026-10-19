@@ -22,7 +22,7 @@ Lab ini memisahkan kedua jenis pemanggil:
 - *REST untuk _channel_.* Aplikasi _channel_ tetap menggunakan REST API `account` (membuat dan membaca rekening). Format JSON di atas HTTP mudah digunakan dari _browser_, aplikasi _mobile_ maupun sistem mitra.
 - *gRPC untuk komunikasi internal.* _Service_ lain memanggil `GetAccount`, `Debit` dan `Credit` melalui gRPC. Kontraknya ditulis dalam file `.proto`, kode _client_ dan server dihasilkan dari kontrak tersebut, dan _payload_-nya dikodekan secara biner (_protobuf_) di atas HTTP/2. Perubahan kontrak terlihat sebagai _diff_ pada file `.proto` dan pada kode hasil _generate_, sehingga ketidakcocokan antara _client_ dan server tertangkap saat kompilasi, sebelum _service_ dijalankan.
 
-Endpoint REST _debit_ dan _credit_ dihapus. Sejak lab ini, perubahan saldo hanya dapat dilakukan melalui gRPC.
+_Endpoint_ REST _debit_ dan _credit_ dihapus. Sejak lab ini, perubahan saldo hanya dapat dilakukan melalui gRPC.
 
 ```
              REST :28082                   gRPC :29091
@@ -264,7 +264,7 @@ Versi `v0.0.0` hanya pengisi: dengan `replace`, Go selalu mengambil isi folder `
 
 === Implementasi `AccountService` di `account`
 
-Buat file `account/internal/account/grpc.go`. File ini berada di _package_ yang sama dengan _handler_ REST (`http.go`) dan menggunakan `Store` yang sama. Perbedaannya hanya pada _transport_ dan kosakata _error_-nya.
+Buat file `account/internal/account/grpc.go`. File ini berada di _package_ yang sama dengan _handler_ REST (`http.go`) dan menggunakan `Store` yang sama. Perbedaannya hanya pada _transport_ dan cara _error_ dilaporkan (kode status gRPC sebagai pengganti kode HTTP).
 
 ```go
 package account
@@ -524,7 +524,7 @@ Ubah juga komentar _field_ `ErrorRate` pada _struct_ `Config` menjadi "answered 
 
 Dua perilaku pada _interceptor_ tersebut menentukan hasil latihan di bagian Verifikasi:
 
-- Kegagalan yang disuntikkan dijawab `codes.Unavailable` tanpa menjalankan _handler_. Kode tersebut setara dengan HTTP 503 di Lab 3: permintaan ditolak sebelum diproses, sehingga `transfer` boleh mengulanginya.
+- Kegagalan yang disuntikkan dijawab `codes.Unavailable` tanpa menjalankan _handler_. Kode tersebut setara dengan HTTP 503 di Lab 3: _request_ ditolak sebelum diproses, sehingga `transfer` boleh mengulanginya.
 - Bila pemanggil menyerah selama jeda berlangsung (misalnya karena _timeout_ 2 detik di `transfer`), _handler_ tidak dijalankan dan _interceptor_ mengembalikan kode dari _context_ yang berakhir, yaitu `Canceled` atau `DeadlineExceeded`.
 
 === Server gRPC di `main.go` `account`
@@ -653,9 +653,9 @@ Server HTTP dan server gRPC kini berjalan bersamaan, masing-masing di _goroutine
 	}
 ```
 
-Kapasitas `errCh` menjadi 2 karena ada dua server yang dapat berhenti. Bila salah satu server gagal, server lainnya ikut dihentikan, sehingga proses tidak berjalan setengah hidup. Saat _shutdown_, `healthSrv.Shutdown()` mengubah status _health_ menjadi `NOT_SERVING` lebih dahulu. Setelah itu `GracefulStop` menunggu RPC yang sedang berjalan selesai, dengan batas waktu 10 detik yang sama dengan server HTTP.
+Kapasitas `errCh` menjadi 2 karena ada dua server yang dapat berhenti. Bila salah satu server gagal, server lainnya ikut dihentikan, sehingga tidak ada kondisi ketika hanya satu server yang masih menerima panggilan. Saat _shutdown_, `healthSrv.Shutdown()` mengubah status _health_ menjadi `NOT_SERVING` lebih dahulu. Setelah itu `GracefulStop` menunggu RPC yang sedang berjalan selesai, dengan batas waktu 10 detik yang sama dengan server HTTP.
 
-=== Penghapusan Endpoint REST _Debit_ dan _Credit_
+=== Penghapusan _Endpoint_ REST _Debit_ dan _Credit_
 
 Di `account/internal/account/http.go`, hapus dua rute berikut beserta fungsi `mutate` milik `Handler`:
 
@@ -664,7 +664,7 @@ Di `account/internal/account/http.go`, hapus dua rute berikut beserta fungsi `mu
 	mux.HandleFunc("POST /accounts/{number}/credit", h.mutate(Credit))
 ```
 
-Tambahkan penjelasan di atas fungsi `Routes`, agar pembaca kode berikutnya tahu ke mana kedua endpoint tersebut pindah:
+Tambahkan penjelasan di atas fungsi `Routes`, agar pembaca kode berikutnya tahu ke mana kedua _endpoint_ tersebut pindah:
 
 ```go
 // Routes uses the Go 1.22+ ServeMux patterns: method + path, with {wildcards}.
@@ -674,7 +674,7 @@ Tambahkan penjelasan di atas fungsi `Routes`, agar pembaca kode berikutnya tahu 
 // client should change a balance without going through a transfer.
 ```
 
-Hapus juga _import_ yang tidak lagi digunakan bila kompilator memintanya. Di `http_test.go`, lima kasus uji _debit_ dan _credit_ diganti dengan satu kasus yang memastikan endpoint tersebut sudah tidak ada:
+Hapus juga _import_ yang tidak lagi digunakan bila kompilator memintanya. Di `http_test.go`, lima kasus _test_ _debit_ dan _credit_ diganti dengan satu kasus yang memastikan _endpoint_ tersebut sudah tidak ada:
 
 ```go
 		{"no debit over REST", "POST", "/accounts/1234567890/debit", `{"amount":"1","reference":"T-1"}`, 404, ""},
@@ -721,12 +721,19 @@ func newGRPCClient(t *testing.T, store Store) accountv1.AccountServiceClient {
 
 Skema `passthrough:///` membuat gRPC meneruskan alamat `bufnet` apa adanya ke _dialer_, tanpa mencoba me-_resolve_ nama tersebut lewat DNS.
 
-Uji `TestGRPCAccountService` di _checkpoint_ memeriksa dua hal:
+_Test_ `TestGRPCAccountService` di _checkpoint_ memeriksa dua hal:
 
 - Jalur sukses: `GetAccount` mengembalikan saldo `"500000.00"`, `Debit` sebesar `"200000.50"` menghasilkan saldo `"299999.50"`, dan `Credit` sebesar `"0.50"` menghasilkan `"300000.00"`. Saldo selalu dikirim dengan dua angka desimal karena `toProto` memanggil `StringFixed(2)`.
 - Penolakan: rekening tidak ada menghasilkan `NotFound`, saldo kurang menghasilkan `FailedPrecondition`, nominal `"1e"` atau nominal nol tanpa `reference` menghasilkan `InvalidArgument`. Saldo tidak berubah setelah semua penolakan tersebut.
 
-Di `account/internal/fault/fault_test.go`, uji `TestUnaryServerInterceptor` memanggil fungsi _interceptor_ secara langsung dengan `grpc.UnaryServerInfo` buatan. Uji tersebut memastikan `error_rate` 1 menghasilkan `Unavailable` tanpa menjalankan _handler_, RPC _health_ tidak terkena gangguan, dan _deadline_ pemanggil yang lebih pendek dari jeda menghasilkan `DeadlineExceeded` tanpa menjalankan _handler_. Kode lengkap kedua uji tersedia di _checkpoint_ `lab-04`.
+Di `account/internal/fault/fault_test.go`, _test_ `TestUnaryServerInterceptor` memanggil fungsi _interceptor_ secara langsung dengan `grpc.UnaryServerInfo` buatan. _Test_ tersebut memastikan `error_rate` 1 menghasilkan `Unavailable` tanpa menjalankan _handler_, RPC _health_ tidak terkena gangguan, dan _deadline_ pemanggil yang lebih pendek dari jeda menghasilkan `DeadlineExceeded` tanpa menjalankan _handler_. Salin kode lengkap kedua _test_ dari _checkpoint_ `lab-04`:
+
+#perintah[```bash
+git show lab-04:studi-kasus/account/internal/account/grpc_test.go \
+  > account/internal/account/grpc_test.go
+git show lab-04:studi-kasus/account/internal/fault/fault_test.go \
+  > account/internal/fault/fault_test.go
+```]
 
 === Dependensi dan Konfigurasi di _Service_ `transfer`
 
@@ -1000,7 +1007,7 @@ cd ..
 
 === Pengujian _Client_ dengan `bufconn`
 
-Uji _client_ di Lab 3 menggunakan `httptest.Server`. Padanannya untuk gRPC adalah server gRPC palsu yang berjalan di `bufconn`. Server palsu ini mengimplementasikan `AccountServiceServer` dan menjawab setiap panggilan sesuai fungsi `answer` yang ditentukan oleh masing-masing uji.
+_Test_ _client_ di Lab 3 menggunakan `httptest.Server`. Padanannya untuk gRPC adalah server gRPC palsu yang berjalan di `bufconn`. Server palsu ini mengimplementasikan `AccountServiceServer` dan menjawab setiap panggilan sesuai fungsi `answer` yang ditentukan oleh masing-masing _test_.
 
 ```go
 // fakeAccountService answers every Debit/Credit with answer(n), n = 1 for the
@@ -1033,13 +1040,13 @@ func serve(t *testing.T, answer func(ctx context.Context, n int64) error, s Sett
 }
 ```
 
-Parameter variadik `opts` pada `New` memungkinkan uji memasukkan _dialer_ `bufconn`, sementara `main.go` tidak mengirim opsi tambahan. Nilai `testSettings` mempertahankan bentuk _policy_ di `ProductionSettings` (3 _retry_, ambang 5 dari 10, 3 keberhasilan untuk menutup) dengan durasi pendek: _timeout_ 100 ms dan _backoff_ beberapa milidetik.
+Parameter variadik `opts` pada `New` memungkinkan _test_ memasukkan _dialer_ `bufconn`, sementara `main.go` tidak mengirim opsi tambahan. Nilai `testSettings` mempertahankan bentuk _policy_ di `ProductionSettings` (3 _retry_, ambang 5 dari 10, 3 keberhasilan untuk menutup) dengan durasi pendek: _timeout_ 100 ms dan _backoff_ beberapa milidetik.
 
-Daftar uji di _checkpoint_ `lab-04`:
+Daftar _test_ di _checkpoint_ `lab-04`:
 
 #table(
   columns: (auto, 1fr),
-  [Uji], [Yang dipastikan],
+  [_Test_], [Yang dipastikan],
   [`TestCodeMapping`], [`NotFound` dan `FailedPrecondition` menjadi `ErrAccountNotFound` dan `ErrInsufficientFunds`. Nominal `10.50` terkirim sebagai `"10.5"`.],
   [`TestInternalIsNotRetried`], [`Internal` hanya dipanggil sekali.],
   [`TestRetryOnUnavailableSucceeds`], [Dua kali `Unavailable` lalu OK: transfer berhasil setelah 3 panggilan.],
@@ -1052,7 +1059,7 @@ Daftar uji di _checkpoint_ `lab-04`:
   [`TestBreakerHalfOpenCloses`], [Setelah jeda berlalu, _breaker_ masih _half-open_ sesudah satu panggilan uji sukses dan baru tertutup sesudah tiga panggilan uji sukses.],
 )
 
-Uji terpenting bagi keamanan uang memastikan _timeout_ tidak di-_retry_:
+_Test_ terpenting untuk mencegah saldo terdebit dua kali memastikan _timeout_ tidak di-_retry_:
 
 ```go
 func TestNoRetryOnTimeout(t *testing.T) {
@@ -1076,16 +1083,14 @@ func TestNoRetryOnTimeout(t *testing.T) {
 }
 ```
 
-Salin _file_ uji lengkap dari _checkpoint_ bila tidak ingin menulisnya sendiri:
+Salin file _test_ lengkap dari _checkpoint_ bila tidak ingin menulisnya sendiri:
 
 #perintah[```bash
 git show lab-04:studi-kasus/transfer/internal/accountclient/client_test.go \
   > transfer/internal/accountclient/client_test.go
-git show lab-04:studi-kasus/account/internal/account/grpc_test.go \
-  > account/internal/account/grpc_test.go
 ```]
 
-Jalankan seluruh uji dari folder `studi-kasus`:
+Jalankan seluruh _test_ dari folder `studi-kasus`:
 
 #perintah[```bash
 make test
@@ -1163,7 +1168,7 @@ make breaker
 # {"account":"closed"}
 ```]
 
-=== Endpoint REST _Debit_ Sudah Tidak Ada
+=== _Endpoint_ REST _Debit_ Sudah Tidak Ada
 
 #perintah[```bash
 curl -sS -i -X POST localhost:28081/accounts/1111111111/debit \
@@ -1199,7 +1204,7 @@ make breaker
 # {"account":"open"}
 ```]
 
-=== Pemulihan melalui _Half-Open_
+=== _Circuit Breaker_ Kembali _Closed_ melalui _Half-Open_
 
 Hapus gangguan, lalu tunggu lebih dari 10 detik (jeda _circuit breaker_):
 
@@ -1229,17 +1234,24 @@ _Log_ `transfer` tidak memuat `retrying account call`. Di _log_ `account` tercat
 level=WARN msg="grpc request" method=/account.v1.AccountService/Debit code=Canceled duration_ms=2000
 ```]
 
-Kode `Canceled` muncul karena `transfer` membatalkan RPC setelah 2 detik. _Fault injector_ di `account` melihat _context_ yang sudah berakhir, sehingga _handler_ tidak dijalankan dan saldo tidak berubah. Ulangi transfer hingga lima kali: _circuit breaker_ terbuka, dan transfer berikutnya langsung dijawab 503. Kembalikan `account` ke kondisi normal sebelum melanjutkan:
+Kode `Canceled` muncul karena `transfer` membatalkan RPC setelah 2 detik. _Fault injector_ di `account` melihat _context_ yang sudah berakhir, sehingga _handler_ tidak dijalankan dan saldo tidak berubah. Ulangi transfer hingga lima kali: _circuit breaker_ terbuka, dan transfer berikutnya langsung dijawab 503. Hapus gangguan, lalu tunggu lebih dari 10 detik:
 
 #perintah[```bash
 make fault-clear
 ```]
 
+Kirim dua transfer agar _circuit breaker_ melewati _half-open_ dan kembali _closed_, sama seperti langkah sebelumnya. Pastikan statusnya sudah _closed_ sebelum melanjutkan:
+
+#perintah[```bash
+make breaker
+# {"account":"closed"}
+```]
+
 === `account` Mati
 
-Hentikan `account` dengan Ctrl+C, lalu kirim satu transfer. `transfer` mencoba empat kali (1 percobaan + 3 _retry_), karena koneksi yang ditolak juga dilaporkan sebagai `Unavailable`. Jawabannya 502 dengan `failure_reason` yang memuat teks _error_ gRPC lengkap, misalnya `... dial tcp 127.0.0.1:29091: connect: connection refused`.
+Langkah ini membutuhkan _circuit breaker_ dalam keadaan _closed_. Bila masih _open_ atau _half-open_, panggilan langsung ditolak dan transfer dijawab 503 dengan `account service unavailable`. Hentikan `account` dengan Ctrl+C, lalu kirim satu transfer. `transfer` mencoba empat kali (1 percobaan + 3 _retry_), karena koneksi yang ditolak juga dilaporkan sebagai `Unavailable`. Jawabannya 502 dengan `failure_reason` yang memuat teks _error_ gRPC lengkap, misalnya `... dial tcp 127.0.0.1:29091: connect: connection refused`. Empat percobaan yang ditolak dihitung sebagai empat kegagalan, masih di bawah ambang 5, sehingga _circuit breaker_ tetap _closed_ (sesuai `TestRetryOnConnectionRefused`).
 
-#note[`failure_reason` saat ini memuat teks _error_ gRPC apa adanya, termasuk alamat internal `account`. Informasi tersebut tidak layak diterima aplikasi _channel_. Lab 7 mengganti `failure_reason` menjadi pesan umum, dan rinciannya hanya disimpan di _log_.]
+#note[`failure_reason` saat ini memuat teks _error_ gRPC apa adanya, termasuk alamat internal `account`. Informasi tersebut tidak layak diterima aplikasi _channel_. Pada sistem sungguhan, `failure_reason` untuk aplikasi _channel_ sebaiknya berupa pesan umum, sedangkan rinciannya hanya dicatat di _log_.]
 
 Jalankan `account` kembali dengan `make -C account run`. Setelah _circuit breaker_ (bila sempat terbuka) melewati jeda 10 detik dan koneksi gRPC tersambung ulang, transfer kembali berhasil.
 
@@ -1266,7 +1278,7 @@ Jalankan `account` kembali dengan `make -C account run`. Setelah _circuit breake
 + *Program pemeriksa _health_.* Tulis program Go kecil di dalam modul `account`, misalnya `account/cmd/grpchealth/main.go`, yang tersambung ke `localhost:29091` dengan `grpc.NewClient` dan `insecure.NewCredentials()`, lalu memanggil `grpc_health_v1.NewHealthClient(conn).Check` dengan `Service: "account.v1.AccountService"`. Jalankan dengan `go run ./cmd/grpchealth` dari folder `account`. Status yang diharapkan adalah `SERVING`. Hentikan `account` dengan Ctrl+C sambil menjalankan program tersebut berulang-ulang, lalu amati kapan statusnya berubah atau koneksinya ditolak. Pastikan juga bahwa `make fault-error RATE=1` tidak memengaruhi hasil pemeriksaan _health_.
 + *Evolusi kontrak.* Tambahkan _field_ `string currency = 5;` pada _message_ `Account`, jalankan `make proto`, lalu isi _field_ tersebut di `toProto`. Jalankan `transfer` yang belum di-_build_ ulang terhadap `account` yang baru. Jelaskan mengapa `transfer` tetap berjalan, lalu coba hal sebaliknya: apa yang terjadi bila nomor _field_ `balance` diubah dari `3` menjadi `6`?
 + *Urutan _interceptor_.* Tukar urutan `interceptor.Logging` dan `faults.UnaryServerInterceptor` di `grpc.ChainUnaryInterceptor`, lalu ulangi `make fault-error RATE=1` dan `make fault-slow`. Bandingkan baris `grpc request` di _log_ `account` sebelum dan sesudah penukaran, terutama nilai `code` dan `duration_ms`, dan jelaskan perbedaannya.
-+ *_Breaker_ untuk kode `InvalidArgument`.* Tambahkan uji di `client_test.go` yang memastikan sepuluh kali `InvalidArgument` tidak membuka _circuit breaker_, mengikuti pola `TestBusinessRejectionsDoNotOpenBreaker`. Kemudian pertimbangkan: apakah `ResourceExhausted` (misalnya _rate limit_ di server) sebaiknya dihitung sebagai kegagalan, dan apakah boleh di-_retry_?
++ *_Breaker_ untuk kode `InvalidArgument`.* Tambahkan _test_ di `client_test.go` yang memastikan sepuluh kali `InvalidArgument` tidak membuka _circuit breaker_, mengikuti pola `TestBusinessRejectionsDoNotOpenBreaker`. Kemudian pertimbangkan: apakah `ResourceExhausted` (misalnya _rate limit_ di server) sebaiknya dihitung sebagai kegagalan, dan apakah boleh di-_retry_?
 
 == Checkpoint
 
