@@ -11,6 +11,7 @@ import (
 // with a guessed default.
 type Config struct {
 	HTTPAddr    string
+	GRPCAddr    string
 	DatabaseURL string
 }
 
@@ -25,6 +26,7 @@ func LoadConfig() (Config, error) {
 	}
 	cfg := Config{
 		HTTPAddr:    get("HTTP_ADDR"),
+		GRPCAddr:    get("GRPC_ADDR"),
 		DatabaseURL: get("DATABASE_URL"),
 	}
 	if len(missing) > 0 {

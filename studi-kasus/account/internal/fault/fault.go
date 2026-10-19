@@ -3,19 +3,24 @@
 package fault
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
 	"sync/atomic"
 	"time"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type Config struct {
 	// DelayMS is added before every request is processed.
 	DelayMS int `json:"delay_ms"`
-	// ErrorRate is the fraction of requests (0.0–1.0) answered with 503 without
-	// being processed.
+	// ErrorRate is the fraction of requests (0.0–1.0) answered with 503 (HTTP) or
+	// Unavailable (gRPC) without being processed.
 	ErrorRate float64 `json:"error_rate"`
 }
 
@@ -33,22 +38,51 @@ func NewInjector(log *slog.Logger) *Injector {
 // Wrap applies the current fault configuration to every request of next.
 func (i *Injector) Wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		cfg := i.cfg.Load()
-		if cfg.DelayMS > 0 {
-			select {
-			case <-time.After(time.Duration(cfg.DelayMS) * time.Millisecond):
-			case <-r.Context().Done(): // caller gave up; do not process the request
-				return
-			}
-		}
-		if cfg.ErrorRate > 0 && rand.Float64() < cfg.ErrorRate {
+		if i.inject(r.Context()) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_, _ = w.Write([]byte(`{"error":"injected fault"}` + "\n"))
 			return
 		}
+		if r.Context().Err() != nil { // caller gave up during the delay; do not process
+			return
+		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// UnaryServerInterceptor is the gRPC counterpart of Wrap, driven by the same
+// configuration: one PUT /admin/fault degrades REST and gRPC together. The
+// injected error is Unavailable, the gRPC equivalent of HTTP 503 ("refused
+// before processing"), which the transfer client is allowed to retry.
+// skip names full methods that must stay fast, e.g. the health service.
+func (i *Injector) UnaryServerInterceptor(skip func(fullMethod string) bool) grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		if skip(info.FullMethod) {
+			return handler(ctx, req)
+		}
+		if i.inject(ctx) {
+			return nil, status.Error(codes.Unavailable, "injected fault")
+		}
+		if err := ctx.Err(); err != nil { // caller gave up during the delay; do not process
+			return nil, status.FromContextError(err).Err()
+		}
+		return handler(ctx, req)
+	}
+}
+
+// inject sleeps for the configured delay (or until ctx ends) and reports whether
+// this request must be answered with an injected error.
+func (i *Injector) inject(ctx context.Context) bool {
+	cfg := i.cfg.Load()
+	if cfg.DelayMS > 0 {
+		select {
+		case <-time.After(time.Duration(cfg.DelayMS) * time.Millisecond):
+		case <-ctx.Done():
+			return false
+		}
+	}
+	return cfg.ErrorRate > 0 && rand.Float64() < cfg.ErrorRate
 }
 
 // Register adds GET/PUT/DELETE /admin/fault to mux.

@@ -102,3 +102,30 @@ func TestValidate(t *testing.T) {
 		t.Fatalf("got %v, want errors on to_account and amount", err)
 	}
 }
+
+// TestValidateAmount: the amount must fit numeric(19,2) exactly, or the database
+// would round it before the debit.
+func TestValidateAmount(t *testing.T) {
+	tests := []struct {
+		amount string
+		want   string
+	}{
+		{"100.5", ""},
+		{"100.50", ""},
+		{"100.005", "must have at most 2 decimal places"},
+		{"1e-3", "must have at most 2 decimal places"},
+		{"100000000000000000", "must be less than 10^17"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.amount, func(t *testing.T) {
+			err := CreateRequest{FromAccount: "1111111111", ToAccount: "2222222222", Amount: decimal.RequireFromString(tc.amount)}.Validate()
+			var got string
+			if v, ok := err.(ValidationError); ok {
+				got = v["amount"]
+			}
+			if got != tc.want {
+				t.Fatalf("amount error = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

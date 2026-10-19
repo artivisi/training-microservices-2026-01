@@ -10,9 +10,10 @@ import (
 // required: a missing value stops the service at startup instead of running
 // with a guessed default.
 type Config struct {
-	HTTPAddr          string
-	DatabaseURL       string
-	AccountServiceURL string
+	HTTPAddr    string
+	DatabaseURL string
+	// AccountGRPCAddr is host:port of the account service's gRPC API.
+	AccountGRPCAddr string
 }
 
 func LoadConfig() (Config, error) {
@@ -25,9 +26,9 @@ func LoadConfig() (Config, error) {
 		return v
 	}
 	cfg := Config{
-		HTTPAddr:          get("HTTP_ADDR"),
-		DatabaseURL:       get("DATABASE_URL"),
-		AccountServiceURL: get("ACCOUNT_SERVICE_URL"),
+		HTTPAddr:        get("HTTP_ADDR"),
+		DatabaseURL:     get("DATABASE_URL"),
+		AccountGRPCAddr: get("ACCOUNT_GRPC_ADDR"),
 	}
 	if len(missing) > 0 {
 		return Config{}, fmt.Errorf("missing required environment variables: %s", strings.Join(missing, ", "))
