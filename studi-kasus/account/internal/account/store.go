@@ -79,12 +79,49 @@ func (s *PostgresStore) Get(ctx context.Context, number string) (Account, error)
 	return a, err
 }
 
-func (s *PostgresStore) Mutate(ctx context.Context, number string, t MutationType, req MutationRequest) (Account, error) {
+func (s *PostgresStore) Mutate(ctx context.Context, number string, t MutationType, req MutationRequest) (Account, bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return Account{}, err
+		return Account{}, false, err
 	}
 	defer tx.Rollback(ctx) // no-op after Commit
+
+	// The mutation row goes in first, as the idempotency check. A concurrent call
+	// with the same reference waits on the unique index until this transaction
+	// ends and then sees the conflict, so two racing retries still apply once.
+	tag, err := tx.Exec(ctx, `
+		insert into mutation (account_number, type, amount, reference)
+		values (@number, @type, @amount, @reference)
+		on conflict (account_number, type, reference) do nothing`,
+		pgx.NamedArgs{"number": number, "type": string(t), "amount": req.Amount, "reference": req.Reference})
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23503" { // foreign_key_violation: no such account
+		return Account{}, false, ErrNotFound
+	}
+	if err != nil {
+		return Account{}, false, err
+	}
+	if tag.RowsAffected() == 0 {
+		// Applied before: this is a retry of a call whose answer got lost (timeout,
+		// dropped connection). Answer with the current account, as if it were the
+		// first call. A stricter API would also compare the amount and reject a
+		// different amount under the same reference.
+		//
+		// Read inside the same transaction, not with s.Get: that would take a second
+		// pool connection while this one is still held, and under load (pool
+		// exhausted by concurrent retries) wait for itself.
+		rows, err := tx.Query(ctx,
+			`select number, owner_name, balance, created_at from account where number = @number`,
+			pgx.NamedArgs{"number": number})
+		if err != nil {
+			return Account{}, false, err
+		}
+		a, err := pgx.CollectExactlyOneRow(rows, pgx.RowToStructByPos[Account])
+		if err != nil {
+			return Account{}, false, err
+		}
+		return a, false, tx.Commit(ctx)
+	}
 
 	delta := req.Amount
 	if t == Debit {
@@ -98,27 +135,19 @@ func (s *PostgresStore) Mutate(ctx context.Context, number string, t MutationTyp
 		returning number, owner_name, balance, created_at`,
 		pgx.NamedArgs{"number": number, "delta": delta})
 	if err != nil {
-		return Account{}, err
+		return Account{}, false, err
 	}
 	a, err := pgx.CollectExactlyOneRow(rows, pgx.RowToStructByPos[Account])
 	if errors.Is(err, pgx.ErrNoRows) {
-		// Nothing updated: either the account does not exist or the balance is too low.
-		if _, getErr := s.Get(ctx, number); getErr != nil {
-			return Account{}, getErr
-		}
-		return Account{}, ErrInsufficientFunds
+		// The account exists (the foreign key accepted the mutation row), so the
+		// balance is too low. Rollback removes the mutation row again: a later
+		// retry with the same reference is evaluated afresh.
+		return Account{}, false, ErrInsufficientFunds
 	}
 	if err != nil {
-		return Account{}, err
+		return Account{}, false, err
 	}
-
-	if _, err := tx.Exec(ctx, `
-		insert into mutation (account_number, type, amount, reference)
-		values (@number, @type, @amount, @reference)`,
-		pgx.NamedArgs{"number": number, "type": string(t), "amount": req.Amount, "reference": req.Reference}); err != nil {
-		return Account{}, err
-	}
-	return a, tx.Commit(ctx)
+	return a, true, tx.Commit(ctx)
 }
 
 func (s *PostgresStore) List(ctx context.Context) ([]Account, error) {

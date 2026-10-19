@@ -13,12 +13,17 @@ import (
 
 // fakeStore keeps accounts in memory so the HTTP layer is tested without PostgreSQL.
 type fakeStore struct {
-	accounts  map[string]Account
+	accounts map[string]Account
+	// applied holds "number type reference" of every mutation, like the unique
+	// index on the mutation table.
+	applied   map[string]bool
 	pingErr   error
 	mutateErr error // returned by Mutate when set, e.g. a context error
 }
 
-func newFakeStore() *fakeStore { return &fakeStore{accounts: map[string]Account{}} }
+func newFakeStore() *fakeStore {
+	return &fakeStore{accounts: map[string]Account{}, applied: map[string]bool{}}
+}
 
 func (f *fakeStore) Create(_ context.Context, req CreateRequest) (Account, error) {
 	if _, ok := f.accounts[req.Number]; ok {
@@ -45,24 +50,29 @@ func (f *fakeStore) List(context.Context) ([]Account, error) {
 	return out, nil
 }
 
-func (f *fakeStore) Mutate(_ context.Context, number string, t MutationType, req MutationRequest) (Account, error) {
+func (f *fakeStore) Mutate(_ context.Context, number string, t MutationType, req MutationRequest) (Account, bool, error) {
 	if f.mutateErr != nil {
-		return Account{}, f.mutateErr
+		return Account{}, false, f.mutateErr
 	}
 	a, ok := f.accounts[number]
 	if !ok {
-		return Account{}, ErrNotFound
+		return Account{}, false, ErrNotFound
+	}
+	key := number + " " + string(t) + " " + req.Reference
+	if f.applied[key] {
+		return a, false, nil
 	}
 	if t == Debit {
 		if a.Balance.LessThan(req.Amount) {
-			return Account{}, ErrInsufficientFunds
+			return Account{}, false, ErrInsufficientFunds
 		}
 		a.Balance = a.Balance.Sub(req.Amount)
 	} else {
 		a.Balance = a.Balance.Add(req.Amount)
 	}
 	f.accounts[number] = a
-	return a, nil
+	f.applied[key] = true
+	return a, true, nil
 }
 
 func (f *fakeStore) Ping(context.Context) error { return f.pingErr }

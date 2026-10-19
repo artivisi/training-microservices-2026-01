@@ -61,9 +61,15 @@ func (s *GRPCServer) mutate(ctx context.Context, t MutationType, number, amount,
 	if err := req.Validate(); err != nil {
 		return Account{}, s.toStatus(err)
 	}
-	a, err := s.store.Mutate(ctx, number, t, req)
+	a, applied, err := s.store.Mutate(ctx, number, t, req)
 	if err != nil {
 		return Account{}, s.toStatus(err)
+	}
+	if !applied {
+		// Not an error: the caller retried after losing our first answer. It gets
+		// a success with the current balance, and the money moved only once.
+		s.log.Info("mutation already applied, not repeated", "number", a.Number, "type", t, "reference", req.Reference)
+		return a, nil
 	}
 	s.log.Info("account mutated", "number", a.Number, "type", t, "amount", req.Amount, "reference", req.Reference)
 	return a, nil

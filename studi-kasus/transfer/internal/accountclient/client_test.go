@@ -27,14 +27,17 @@ import (
 // testSettings keeps the production policy shape with short durations so the
 // tests run in milliseconds.
 var testSettings = Settings{
-	AttemptTimeout:   100 * time.Millisecond,
-	MaxRetries:       3,
-	BackoffMin:       time.Millisecond,
-	BackoffMax:       5 * time.Millisecond,
-	BreakerFailures:  5,
-	BreakerWindow:    10,
-	BreakerDelay:     time.Hour, // stays open for the whole test
-	BreakerSuccesses: 3,
+	AttemptTimeout:      100 * time.Millisecond,
+	MaxRetries:          3,
+	BackoffMin:          time.Millisecond,
+	BackoffMax:          5 * time.Millisecond,
+	BreakerFailures:     5,
+	BreakerWindow:       10,
+	BreakerDelay:        time.Hour, // stays open for the whole test
+	BreakerSuccesses:    3,
+	ReversalMaxDuration: 300 * time.Millisecond,
+	ReversalBackoffMin:  time.Millisecond,
+	ReversalBackoffMax:  10 * time.Millisecond,
 }
 
 // fakeAccountService answers every Debit/Credit with answer(n), n = 1 for the
@@ -44,6 +47,8 @@ type fakeAccountService struct {
 	calls  atomic.Int64
 	answer func(ctx context.Context, n int64) error
 	last   atomic.Pointer[accountv1.DebitRequest]
+	// credits holds the reference of every Credit that reached the server.
+	credits chan string
 }
 
 func (f *fakeAccountService) Debit(ctx context.Context, req *accountv1.DebitRequest) (*accountv1.DebitResponse, error) {
@@ -55,6 +60,7 @@ func (f *fakeAccountService) Debit(ctx context.Context, req *accountv1.DebitRequ
 }
 
 func (f *fakeAccountService) Credit(ctx context.Context, req *accountv1.CreditRequest) (*accountv1.CreditResponse, error) {
+	f.credits <- req.GetReference()
 	if err := f.answer(ctx, f.calls.Add(1)); err != nil {
 		return nil, err
 	}
@@ -65,7 +71,7 @@ func (f *fakeAccountService) Credit(ctx context.Context, req *accountv1.CreditRe
 // wired to it with s and log. No TCP port is opened.
 func serve(t *testing.T, answer func(ctx context.Context, n int64) error, s Settings, log *slog.Logger) (*Client, *fakeAccountService, *bufconn.Listener) {
 	t.Helper()
-	fake := &fakeAccountService{answer: answer}
+	fake := &fakeAccountService{answer: answer, credits: make(chan string, 1000)}
 	lis := bufconn.Listen(1 << 20)
 	srv := grpc.NewServer()
 	accountv1.RegisterAccountServiceServer(srv, fake)
@@ -126,7 +132,7 @@ func TestInternalIsNotRetried(t *testing.T) {
 	if err == nil || errors.Is(err, transfer.ErrAccountNotFound) || errors.Is(err, transfer.ErrInsufficientFunds) {
 		t.Fatalf("err = %v, want a non-business error", err)
 	}
-	// Internal may come from a call that was half processed: no retry.
+	// Internal is a server-side failure; the same request most likely fails again.
 	if got := fake.calls.Load(); got != 1 {
 		t.Fatalf("calls = %d, want 1", got)
 	}
@@ -157,33 +163,36 @@ func TestRetryGivesUpAfterMaxRetries(t *testing.T) {
 	}
 }
 
-func TestNoRetryOnTimeout(t *testing.T) {
-	c, fake := newTestClient(t, func(ctx context.Context, _ int64) error {
-		select {
-		case <-time.After(300 * time.Millisecond):
-		case <-ctx.Done():
+// A timed-out attempt is retried since Lab 5: the account service deduplicates
+// by reference, so even a debit that was applied late is not applied twice.
+func TestRetryOnTimeout(t *testing.T) {
+	c, fake := newTestClient(t, func(ctx context.Context, n int64) error {
+		if n == 1 {
+			select {
+			case <-time.After(300 * time.Millisecond):
+			case <-ctx.Done():
+			}
 		}
 		return nil
 	})
-	start := time.Now()
-	if err := debit(c); err == nil {
-		t.Fatal("err = nil, want timeout")
+	if err := debit(c); err != nil {
+		t.Fatalf("err = %v, want success on the second attempt", err)
 	}
-	if got := fake.calls.Load(); got != 1 {
-		t.Fatalf("calls = %d, want 1: a timed-out debit may have been applied", got)
+	if got := fake.calls.Load(); got != 2 {
+		t.Fatalf("calls = %d, want 2 (timeout, then OK)", got)
 	}
-	if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
-		t.Fatalf("took %s, want about the attempt timeout", elapsed)
+	if req := fake.last.Load(); req.GetReference() != "ref" {
+		t.Fatalf("retry reference = %q, want the same reference", req.GetReference())
 	}
 }
 
-func TestNoRetryOnDeadlineExceeded(t *testing.T) {
+func TestRetryOnDeadlineExceeded(t *testing.T) {
 	c, fake := newTestClient(t, always(codes.DeadlineExceeded))
 	if err := debit(c); status.Code(err) != codes.DeadlineExceeded {
 		t.Fatalf("err = %v, want DeadlineExceeded", err)
 	}
-	if got := fake.calls.Load(); got != 1 {
-		t.Fatalf("calls = %d, want 1", got)
+	if got := fake.calls.Load(); got != 4 {
+		t.Fatalf("calls = %d, want 4 (1 attempt + 3 retries)", got)
 	}
 }
 
@@ -281,5 +290,91 @@ func TestBreakerHalfOpenCloses(t *testing.T) {
 	}
 	if got := c.BreakerState(); got != "closed" {
 		t.Fatalf("breaker = %s, want closed after 3 trial successes", got)
+	}
+}
+
+// TestReversalBypassesOpenBreaker is the saga situation: the account service
+// fails, the breaker opens, the forward credit is rejected without being sent.
+// The reversal must still be sent, keep retrying while the service is down,
+// and succeed once it is back, with the same reference on every attempt.
+func TestReversalBypassesOpenBreaker(t *testing.T) {
+	var down atomic.Bool
+	down.Store(true)
+	c, fake := newTestClient(t, func(context.Context, int64) error {
+		if down.Load() {
+			return status.Error(codes.Unavailable, "account down")
+		}
+		return nil
+	})
+	ctx := context.Background()
+	for range 2 {
+		_ = debit(c) // 4 attempts each: the breaker opens after 5 failures
+	}
+	if got := c.BreakerState(); got != "open" {
+		t.Fatalf("breaker = %s, want open", got)
+	}
+	err := c.Credit(ctx, "2222222222", decimal.NewFromInt(10), "T-1")
+	if !errors.Is(err, transfer.ErrAccountUnavailable) {
+		t.Fatalf("forward credit err = %v, want ErrAccountUnavailable", err)
+	}
+	if n := len(fake.credits); n != 0 {
+		t.Fatalf("forward credit reached the server %d times, want 0", n)
+	}
+
+	// The account service comes back while the reversal is retrying.
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		down.Store(false)
+	}()
+	if err := c.Reverse(ctx, "1111111111", decimal.NewFromInt(10), "T-1:reversal"); err != nil {
+		t.Fatalf("reverse err = %v, want success once the account service is back", err)
+	}
+	close(fake.credits)
+	attempts := 0
+	for ref := range fake.credits {
+		attempts++
+		if ref != "T-1:reversal" {
+			t.Fatalf("reversal attempt %d reference = %q, want T-1:reversal", attempts, ref)
+		}
+	}
+	if attempts < 2 {
+		t.Fatalf("reversal attempts = %d, want retries while the service was down", attempts)
+	}
+	if got := c.BreakerState(); got != "open" {
+		t.Fatalf("breaker = %s, want still open: the reversal does not touch it", got)
+	}
+}
+
+// TestReversalGivesUpAfterMaxDuration: the window is bounded, so a saga does not
+// hang forever on a dead account service; it ends in COMPENSATION_FAILED.
+func TestReversalGivesUpAfterMaxDuration(t *testing.T) {
+	c, _ := newTestClient(t, always(codes.Unavailable))
+	start := time.Now()
+	err := c.Reverse(context.Background(), "1111111111", decimal.NewFromInt(10), "T-1:reversal")
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("err = %v, want the last Unavailable", err)
+	}
+	elapsed := time.Since(start)
+	if elapsed < testSettings.ReversalMaxDuration || elapsed > testSettings.WorstCaseReversal()+100*time.Millisecond {
+		t.Fatalf("gave up after %s, want between %s and %s", elapsed, testSettings.ReversalMaxDuration, testSettings.WorstCaseReversal())
+	}
+}
+
+func TestReversalBusinessRejectionIsFinal(t *testing.T) {
+	c, fake := newTestClient(t, always(codes.NotFound))
+	err := c.Reverse(context.Background(), "1111111111", decimal.NewFromInt(10), "T-1:reversal")
+	if !errors.Is(err, transfer.ErrAccountNotFound) {
+		t.Fatalf("err = %v, want ErrAccountNotFound", err)
+	}
+	if got := fake.calls.Load(); got != 1 {
+		t.Fatalf("calls = %d, want 1", got)
+	}
+}
+
+func TestNewRejectsMissingReversalWindow(t *testing.T) {
+	s := testSettings
+	s.ReversalMaxDuration = 0
+	if _, err := New("passthrough:///bufnet", s, slog.New(slog.NewTextHandler(io.Discard, nil))); err == nil {
+		t.Fatal("New accepted ReversalMaxDuration = 0, which would retry forever")
 	}
 }

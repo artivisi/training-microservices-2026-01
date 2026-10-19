@@ -1,4 +1,4 @@
-SERVICES := account transfer
+SERVICES := account transfer notification
 
 # Fault injection on the account service (Lab 3). Faults apply to REST /accounts*
 # and, from Lab 4, to the gRPC AccountService; probes, gRPC health and /admin
@@ -6,17 +6,25 @@ SERVICES := account transfer
 ACCOUNT_URL := http://localhost:8081
 TRANSFER_URL := http://localhost:8082
 
-.PHONY: infra-up infra-down infra-reset test proto fault-slow fault-error fault-clear fault-status breaker
+KAFKA_TOPIC := transfer-events
+KAFKA_BIN := /opt/kafka/bin
 
+.PHONY: infra-up infra-down infra-reset test proto fault-slow fault-error fault-clear fault-status breaker \
+	events outbox replay
+
+# kafka-init creates the topic (idempotent: --if-not-exists).
 infra-up:
 	docker compose up -d --wait
+	docker compose run --rm kafka-init
 
+# --profile init: down skips services of inactive profiles, and a leftover
+# kafka-init container would keep the network from being removed.
 infra-down:
-	docker compose down
+	docker compose --profile init down
 
-# Removes the database volumes too: all lab data is lost.
+# Removes the database and Kafka volumes too: all lab data is lost.
 infra-reset:
-	docker compose down -v
+	docker compose --profile init down -v
 
 test:
 	$(MAKE) -C proto test
@@ -46,3 +54,25 @@ fault-status:
 
 breaker:
 	curl -sS $(TRANSFER_URL)/debug/circuit-breaker
+
+# Lab 5 helpers.
+
+# Prints every event on the topic with its partition, headers and key, then
+# exits after 5 s without new events (that exit is logged as a TimeoutException
+# by the console consumer; it is not an error).
+events:
+	docker compose exec kafka $(KAFKA_BIN)/kafka-console-consumer.sh --bootstrap-server localhost:9092 \
+		--topic $(KAFKA_TOPIC) --from-beginning --timeout-ms 5000 \
+		--property print.key=true --property print.headers=true --property print.partition=true
+
+# The newest outbox rows in the transfer database; published_at empty = not on Kafka yet.
+outbox:
+	docker compose exec db-transfer psql -U transfer -d transfer -c \
+		"select id, aggregate_id, event_type, created_at, published_at from outbox order by created_at desc limit 20"
+
+# Rewinds the notification consumer group to the first event, so every event is
+# delivered again. Kafka only resets a group without active members: stop the
+# notification service first.
+replay:
+	docker compose exec kafka $(KAFKA_BIN)/kafka-consumer-groups.sh --bootstrap-server localhost:9092 \
+		--group notification --topic $(KAFKA_TOPIC) --reset-offsets --to-earliest --execute

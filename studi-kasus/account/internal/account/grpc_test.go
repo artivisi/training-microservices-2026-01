@@ -133,3 +133,25 @@ func TestGRPCCallerGaveUp(t *testing.T) {
 		})
 	}
 }
+
+func TestGRPCMutationIsIdempotent(t *testing.T) {
+	store := newFakeStore()
+	store.accounts["1234567890"] = Account{Number: "1234567890", OwnerName: "Budi", Balance: decimal.RequireFromString("500000")}
+	c := newGRPCClient(t, store)
+	ctx := context.Background()
+
+	// The same debit twice, e.g. a retry after a timeout: applied once, and both
+	// calls answer with the balance after that one debit.
+	for i := range 2 {
+		got, err := c.Debit(ctx, &accountv1.DebitRequest{Number: "1234567890", Amount: "100000", Reference: "T-1"})
+		if err != nil || got.GetAccount().GetBalance() != "400000.00" {
+			t.Fatalf("call %d: Debit = %v, %v; want balance 400000.00", i+1, got, err)
+		}
+	}
+	// Same reference, other type: a different mutation (a reversal uses its own
+	// reference anyway, see the transfer saga).
+	got, err := c.Credit(ctx, &accountv1.CreditRequest{Number: "1234567890", Amount: "100000", Reference: "T-1"})
+	if err != nil || got.GetAccount().GetBalance() != "500000.00" {
+		t.Fatalf("Credit = %v, %v; want balance 500000.00", got, err)
+	}
+}

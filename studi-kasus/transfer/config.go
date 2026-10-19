@@ -14,6 +14,9 @@ type Config struct {
 	DatabaseURL string
 	// AccountGRPCAddr is host:port of the account service's gRPC API.
 	AccountGRPCAddr string
+	// KafkaBrokers is a comma-separated list of host:port.
+	KafkaBrokers []string
+	KafkaTopic   string
 }
 
 func LoadConfig() (Config, error) {
@@ -29,6 +32,8 @@ func LoadConfig() (Config, error) {
 		HTTPAddr:        get("HTTP_ADDR"),
 		DatabaseURL:     get("DATABASE_URL"),
 		AccountGRPCAddr: get("ACCOUNT_GRPC_ADDR"),
+		KafkaBrokers:    strings.Split(get("KAFKA_BROKERS"), ","),
+		KafkaTopic:      get("KAFKA_TOPIC"),
 	}
 	if len(missing) > 0 {
 		return Config{}, fmt.Errorf("missing required environment variables: %s", strings.Join(missing, ", "))

@@ -124,6 +124,9 @@ type DebitRequest struct {
 	Number string                 `protobuf:"bytes,1,opt,name=number,proto3" json:"number,omitempty"`
 	Amount string                 `protobuf:"bytes,2,opt,name=amount,proto3" json:"amount,omitempty"`
 	// reference ties the mutation to the business transaction, e.g. a transfer ID.
+	// It is the idempotency key: a Debit or Credit repeated with the same number
+	// and reference is not applied again and answers with the current account,
+	// so callers may retry after a timeout.
 	Reference     string `protobuf:"bytes,3,opt,name=reference,proto3" json:"reference,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -225,10 +228,11 @@ func (x *DebitResponse) GetAccount() *Account {
 }
 
 type CreditRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Number        string                 `protobuf:"bytes,1,opt,name=number,proto3" json:"number,omitempty"`
-	Amount        string                 `protobuf:"bytes,2,opt,name=amount,proto3" json:"amount,omitempty"`
-	Reference     string                 `protobuf:"bytes,3,opt,name=reference,proto3" json:"reference,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Number string                 `protobuf:"bytes,1,opt,name=number,proto3" json:"number,omitempty"`
+	Amount string                 `protobuf:"bytes,2,opt,name=amount,proto3" json:"amount,omitempty"`
+	// Same idempotency rule as DebitRequest.reference.
+	Reference     string `protobuf:"bytes,3,opt,name=reference,proto3" json:"reference,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }

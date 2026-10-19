@@ -1,7 +1,7 @@
 # Lab infrastructure. Services run on the host (go run) and connect to these
 # containers through the published ports (15432+, away from a locally installed
 # PostgreSQL on 5432). One PostgreSQL container per service:
-# database-per-service.
+# database-per-service. Kafka from Lab 5.
 services:
   db-account:
     image: postgres:18.6-alpine
@@ -33,6 +33,76 @@ services:
       interval: 2s
       retries: 30
 
+  db-notification:
+    image: postgres:18.6-alpine
+    environment:
+      POSTGRES_DB: notification
+      POSTGRES_USER: notification
+      POSTGRES_PASSWORD: notification123
+    ports:
+      - "15434:5432"
+    volumes:
+      - db-notification:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "notification", "-d", "notification"]
+      interval: 2s
+      retries: 30
+
+  # Single-node Kafka in KRaft mode: the same process is broker and controller,
+  # no ZooKeeper. Two client listeners:
+  #   HOST     localhost:9092 for the services running on the laptop
+  #   INTERNAL kafka:29092 for containers on the compose network (kafka-init)
+  # A client connects to the bootstrap address, then reconnects to the address
+  # the broker advertises for its listener; that is why each audience needs its
+  # own listener.
+  kafka:
+    image: apache/kafka:4.3.1
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: HOST://:9092,INTERNAL://:29092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: HOST://localhost:9092,INTERNAL://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: HOST:PLAINTEXT,INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      # One broker: internal topics cannot have more than one replica.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      # A new consumer gets its partitions at once instead of after 3 s.
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # Topics are created on purpose (kafka-init), never by a typo in a client.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    ports:
+      - "9092:9092"
+    volumes:
+      - kafka:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD", "/opt/kafka/bin/kafka-broker-api-versions.sh", "--bootstrap-server", "localhost:9092"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+
+  # One-shot: creates the topic and exits. 3 partitions = up to 3 consumers of
+  # one group work in parallel; events with the same key (transfer ID) always
+  # land in the same partition, so they stay in order.
+  # Profile "init" keeps it out of "up --wait", which waits for running
+  # containers and does not expect one that exits; make infra-up runs it with
+  # "docker compose run" after Kafka is healthy.
+  kafka-init:
+    image: apache/kafka:4.3.1
+    profiles: ["init"]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/opt/kafka/bin/kafka-topics.sh"]
+    command: ["--bootstrap-server", "kafka:29092", "--create", "--if-not-exists",
+              "--topic", "transfer-events", "--partitions", "3", "--replication-factor", "1"]
+
 volumes:
   db-account:
   db-transfer:
+  db-notification:
+  kafka:
