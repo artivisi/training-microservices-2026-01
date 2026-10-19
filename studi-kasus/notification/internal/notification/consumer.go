@@ -10,8 +10,37 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/segmentio/kafka-go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/artivisi/training-microservices-2026-01/studi-kasus/notification/internal/telemetry"
 )
+
+// processed counts every event the consumer finished with (Lab 8):
+//
+//	sent       notification stored and sent
+//	duplicate  event seen before, skipped (Lab 6); a burst after a replay or
+//	           a rebalance is expected
+//	skipped    unreadable, invalid, rejected by the database, or without a
+//	           notification; should stay at 0
+var processed = promauto.NewCounterVec(prometheus.CounterOpts{
+	Name: "notifications_processed_total",
+	Help: "Events handled by the notification consumer, by result.",
+}, []string{"result"})
+
+// Every result starts at 0. A series that first appears with the value 5 shows
+// no increase to rate(): the first events after a start would be missing from
+// the dashboard.
+func init() {
+	for _, r := range []string{"sent", "duplicate", "skipped"} {
+		processed.WithLabelValues(r)
+	}
+}
 
 // Reader is the part of kafka.Reader the consumer uses; tests can fake it.
 type Reader interface {
@@ -37,13 +66,14 @@ func NewKafkaReader(brokers []string, topic, groupID string) *kafka.Reader {
 type Consumer struct {
 	reader Reader
 	store  Store
+	tracer trace.Tracer
 	log    *slog.Logger
 	// retryDelay is the pause before a failed fetch or insert is tried again.
 	retryDelay time.Duration
 }
 
 func NewConsumer(reader Reader, store Store, log *slog.Logger) *Consumer {
-	return &Consumer{reader: reader, store: store, log: log, retryDelay: time.Second}
+	return &Consumer{reader: reader, store: store, tracer: otel.Tracer("notification/consumer"), log: log, retryDelay: time.Second}
 }
 
 // Run handles events one by one until ctx is cancelled. Kafka or database
@@ -71,7 +101,7 @@ func (c *Consumer) Run(ctx context.Context) {
 			}
 			continue
 		}
-		if err := c.handle(ctx, m); err != nil {
+		if err := c.process(ctx, m); err != nil {
 			return // only ctx cancellation ends handle with an error
 		}
 		if err := c.reader.CommitMessages(ctx, m); err != nil {
@@ -83,6 +113,32 @@ func (c *Consumer) Run(ctx context.Context) {
 			c.log.Warn("committing offset failed", "partition", m.Partition, "offset", m.Offset, "error", err)
 		}
 	}
+}
+
+// process handles m inside a "process" span that continues the trace of the
+// transfer: the outbox relay put the trace context (traceparent) and the
+// correlation ID into the Kafka headers.
+func (c *Consumer) process(ctx context.Context, m kafka.Message) error {
+	headers := m.Headers
+	ctx = otel.GetTextMapPropagator().Extract(ctx, telemetry.KafkaHeaders{Headers: &headers})
+	ctx = telemetry.WithCorrelationID(ctx, telemetry.AcceptCorrelationID(header(m, telemetry.CorrelationKafkaHeader)))
+	ctx, span := c.tracer.Start(ctx, "process "+m.Topic,
+		trace.WithSpanKind(trace.SpanKindConsumer),
+		trace.WithAttributes(
+			attribute.String("messaging.system", "kafka"),
+			attribute.String("messaging.operation.type", "process"),
+			attribute.String("messaging.destination.name", m.Topic),
+			attribute.Int("messaging.destination.partition.id", m.Partition),
+			attribute.Int64("messaging.kafka.offset", m.Offset),
+			attribute.String("messaging.message.id", header(m, "event_id")),
+			attribute.String("correlation.id", telemetry.CorrelationID(ctx)),
+		))
+	defer span.End()
+	err := c.handle(ctx, m)
+	if err != nil {
+		span.SetStatus(codes.Error, "stopped before the event was handled")
+	}
+	return err
 }
 
 // handle stores the notification for m. Errors fall in two groups:
@@ -101,22 +157,29 @@ func (c *Consumer) Run(ctx context.Context) {
 func (c *Consumer) handle(ctx context.Context, m kafka.Message) error {
 	eventType := header(m, "event_type")
 	log := c.log.With("event_type", eventType, "partition", m.Partition, "offset", m.Offset)
+	span := trace.SpanFromContext(ctx)
 
 	var e TransferEvent
 	if err := json.Unmarshal(m.Value, &e); err != nil {
-		log.Error("skipping unreadable event", "error", err, "payload", string(m.Value))
+		log.ErrorContext(ctx, "skipping unreadable event", "error", err, "payload", string(m.Value))
+		processed.WithLabelValues("skipped").Inc()
+		span.SetStatus(codes.Error, "unreadable event")
 		return nil
 	}
 	// The columns are uuid: a malformed ID would fail the insert with 22P02 on
 	// every try.
 	if !isUUID(e.EventID) || !isUUID(e.TransferID) {
-		log.Error("skipping event with invalid event_id or transfer_id", "event_id", e.EventID,
+		log.ErrorContext(ctx, "skipping event with invalid event_id or transfer_id", "event_id", e.EventID,
 			"transfer_id", e.TransferID, "payload", string(m.Value))
+		processed.WithLabelValues("skipped").Inc()
+		span.SetStatus(codes.Error, "invalid event_id or transfer_id")
 		return nil
 	}
+	span.SetAttributes(attribute.String("transfer.id", e.TransferID))
 	msg, ok := Message(eventType, e)
 	if !ok {
-		log.Warn("skipping event type without notification", "event_id", e.EventID)
+		log.WarnContext(ctx, "skipping event type without notification", "event_id", e.EventID)
+		processed.WithLabelValues("skipped").Inc()
 		return nil
 	}
 
@@ -126,7 +189,9 @@ func (c *Consumer) handle(ctx context.Context, m kafka.Message) error {
 		if err == nil && !inserted {
 			// The offset is still committed by Run: the event is done, its
 			// redelivery must not block the partition.
-			log.Info("duplicate event skipped", "event_id", e.EventID, "transfer_id", e.TransferID)
+			log.InfoContext(ctx, "duplicate event skipped", "event_id", e.EventID, "transfer_id", e.TransferID)
+			processed.WithLabelValues("duplicate").Inc()
+			span.SetAttributes(attribute.Bool("event.duplicate", true))
 			return nil
 		}
 		if err == nil {
@@ -135,16 +200,19 @@ func (c *Consumer) handle(ctx context.Context, m kafka.Message) error {
 			// between loses the message; send before commit and it may go twice. With
 			// a provider that accepts an idempotency key (the event_id), sending
 			// before the commit is safe.
-			log.Info("notification sent", "event_id", e.EventID, "transfer_id", e.TransferID,
+			log.InfoContext(ctx, "notification sent", "event_id", e.EventID, "transfer_id", e.TransferID,
 				"notification_id", stored.ID, "message", msg)
+			processed.WithLabelValues("sent").Inc()
 			return nil
 		}
 		if permanentDBError(err) {
-			log.Error("skipping event the database rejects", "event_id", e.EventID, "error", err,
+			log.ErrorContext(ctx, "skipping event the database rejects", "event_id", e.EventID, "error", err,
 				"payload", string(m.Value))
+			processed.WithLabelValues("skipped").Inc()
+			span.SetStatus(codes.Error, "event rejected by the database")
 			return nil
 		}
-		log.Warn("storing notification failed, retrying", "event_id", e.EventID, "error", err)
+		log.WarnContext(ctx, "storing notification failed, retrying", "event_id", e.EventID, "error", err)
 		if !c.pause(ctx) {
 			return errors.Join(ctx.Err(), err)
 		}

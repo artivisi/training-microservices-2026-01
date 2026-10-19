@@ -9,6 +9,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/shopspring/decimal"
 )
 
@@ -129,6 +130,7 @@ func TestExecuteSaga(t *testing.T) {
 			store := newFakeStore()
 			accounts := &fakeAccounts{errs: tc.errs}
 			svc := NewService(store, accounts, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			before := testutil.ToFloat64(transfersTotal.WithLabelValues(string(tc.wantStatus)))
 
 			got, _, err := svc.Execute(context.Background(), req, "")
 			if !errors.Is(err, tc.wantErr) || (tc.wantErr == nil && err != nil) {
@@ -145,6 +147,9 @@ func TestExecuteSaga(t *testing.T) {
 			}
 			if !slices.Equal(store.events, tc.wantEvents) {
 				t.Fatalf("outbox events = %v, want %v", store.events, tc.wantEvents)
+			}
+			if after := testutil.ToFloat64(transfersTotal.WithLabelValues(string(tc.wantStatus))); after != before+1 {
+				t.Fatalf("transfers_total{status=%q} = %v, want %v", tc.wantStatus, after, before+1)
 			}
 		})
 	}

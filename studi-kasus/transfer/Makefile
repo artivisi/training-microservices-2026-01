@@ -14,6 +14,8 @@ run:
 	OAUTH_CLIENT_ID=transfer-service \
 	OAUTH_CLIENT_SECRET=transfer-service-secret \
 	OAUTH_TOKEN_URL=http://localhost:14444/oauth2/token \
+	OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:14317 \
+	OTEL_SERVICE_NAME=transfer \
 	go run .
 
 test:

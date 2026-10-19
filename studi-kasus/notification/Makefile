@@ -9,6 +9,8 @@ run:
 	KAFKA_BROKERS=localhost:19092 \
 	KAFKA_TOPIC=transfer-events \
 	KAFKA_GROUP_ID=notification \
+	OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:14317 \
+	OTEL_SERVICE_NAME=notification \
 	go run .
 
 test:

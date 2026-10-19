@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -75,14 +77,23 @@ func (i *Injector) UnaryServerInterceptor(skip func(fullMethod string) bool) grp
 // this request must be answered with an injected error.
 func (i *Injector) inject(ctx context.Context) bool {
 	cfg := i.cfg.Load()
+	// Lab 8: the span events tell a simulated fault from a real one in the
+	// trace. A real slow dependency shows up as a long span without them.
+	span := trace.SpanFromContext(ctx)
 	if cfg.DelayMS > 0 {
+		// Recorded before the wait: the caller usually gives up during it.
+		span.AddEvent("fault injected: delay", trace.WithAttributes(attribute.Int("fault.delay_ms", cfg.DelayMS)))
 		select {
 		case <-time.After(time.Duration(cfg.DelayMS) * time.Millisecond):
 		case <-ctx.Done():
 			return false
 		}
 	}
-	return cfg.ErrorRate > 0 && rand.Float64() < cfg.ErrorRate
+	failed := cfg.ErrorRate > 0 && rand.Float64() < cfg.ErrorRate
+	if failed {
+		span.AddEvent("fault injected: error", trace.WithAttributes(attribute.Float64("fault.error_rate", cfg.ErrorRate)))
+	}
+	return failed
 }
 
 // Register adds GET/PUT/DELETE /admin/fault to mux.

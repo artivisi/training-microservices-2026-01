@@ -19,7 +19,10 @@ import (
 	"github.com/failsafe-go/failsafe-go/failsafegrpc"
 	"github.com/failsafe-go/failsafe-go/retrypolicy"
 	"github.com/failsafe-go/failsafe-go/timeout"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/shopspring/decimal"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/backoff"
 	"google.golang.org/grpc/codes"
@@ -27,8 +30,34 @@ import (
 	"google.golang.org/grpc/status"
 
 	accountv1 "github.com/artivisi/training-microservices-2026-01/studi-kasus/proto/gen/account/v1"
+	"github.com/artivisi/training-microservices-2026-01/studi-kasus/transfer/internal/telemetry"
 	"github.com/artivisi/training-microservices-2026-01/studi-kasus/transfer/internal/transfer"
 )
+
+// Breaker metrics (Lab 8). The state as a number so Grafana can graph it and
+// alert on it; transitions as a counter, because a breaker that flaps between
+// open and closed within one scrape interval never shows up in the gauge.
+var (
+	breakerState = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "circuit_breaker_state",
+		Help: "Circuit breaker state per target: 0 closed, 1 half-open, 2 open.",
+	}, []string{"target"})
+	breakerTransitions = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "circuit_breaker_transitions_total",
+		Help: "Circuit breaker state changes per target.",
+	}, []string{"target", "from", "to"})
+)
+
+// stateValue maps the breaker state to the circuit_breaker_state value.
+func stateValue(s circuitbreaker.State) float64 {
+	switch s {
+	case circuitbreaker.HalfOpenState:
+		return 1
+	case circuitbreaker.OpenState:
+		return 2
+	}
+	return 0
+}
 
 // Settings are the resiliency parameters. They live in code, not in environment
 // variables: changing them is a design decision that goes through review and
@@ -124,10 +153,15 @@ func New(target string, s Settings, fetch FetchToken, log *slog.Logger, opts ...
 		WithDelay(s.BreakerDelay).
 		WithSuccessThreshold(s.BreakerSuccesses).
 		OnStateChanged(func(e circuitbreaker.StateChangedEvent) {
+			// No request context: the change belongs to the breaker, not to the
+			// call that happened to trigger it.
 			log.Warn("circuit breaker state changed", "target", "account",
 				"from", e.OldState.String(), "to", e.NewState.String())
+			breakerState.WithLabelValues("account").Set(stateValue(e.NewState))
+			breakerTransitions.WithLabelValues("account", e.OldState.String(), e.NewState.String()).Inc()
 		}).
 		Build()
+	breakerState.WithLabelValues("account").Set(stateValue(breaker.State()))
 
 	retry := retrypolicy.NewBuilder[any]().
 		HandleIf(retryable).
@@ -143,7 +177,7 @@ func New(target string, s Settings, fetch FetchToken, log *slog.Logger, opts ...
 		// so mapError sees the real gRPC code.
 		ReturnLastFailure().
 		OnRetry(func(e failsafe.ExecutionEvent[any]) {
-			log.Warn("retrying account call", "next_attempt", e.Attempts(), "cause", e.LastError())
+			log.WarnContext(e.Context(), "retrying account call", "next_attempt", e.Attempts(), "cause", e.LastError())
 		}).
 		Build()
 
@@ -175,7 +209,7 @@ func New(target string, s Settings, fetch FetchToken, log *slog.Logger, opts ...
 		WithJitterFactor(jitterFactor).
 		ReturnLastFailure().
 		OnRetry(func(e failsafe.ExecutionEvent[any]) {
-			log.Warn("retrying reversal", "next_attempt", e.Attempts(), "elapsed", e.ElapsedTime(), "cause", e.LastError())
+			log.WarnContext(e.Context(), "retrying reversal", "next_attempt", e.Attempts(), "elapsed", e.ElapsedTime(), "cause", e.LastError())
 		}).
 		Build()
 	reversalResilience := failsafegrpc.NewUnaryClientInterceptor[any](reversalRetry, timeout.New[any](s.AttemptTimeout))
@@ -210,8 +244,12 @@ func dial(target string, tokens *tokenCredentials, resilience grpc.UnaryClientIn
 		// attempt carries a valid token too.
 		grpc.WithPerRPCCredentials(tokens),
 		// First interceptor = outermost: a call repeated with a new token goes
-		// through the resiliency policies again.
-		grpc.WithChainUnaryInterceptor(tokens.refreshOnUnauthenticated, resilience),
+		// through the resiliency policies again. The correlation ID is added once,
+		// before all of them.
+		grpc.WithChainUnaryInterceptor(telemetry.UnaryClientCorrelation(), tokens.refreshOnUnauthenticated, resilience),
+		// Lab 8: one client span per attempt, so retries and timeouts are visible
+		// in the trace, and the trace context sent along in the metadata.
+		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
 		// After a failed connect, gRPC waits before reconnecting, growing up to
 		// 120 s by default. Capped at 5 s so a restarted account service is used
 		// again within seconds, which is what the breaker's half-open trials and

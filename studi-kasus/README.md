@@ -13,7 +13,7 @@ Port database dimulai dari 15432 agar tidak bentrok dengan PostgreSQL yang terpa
 ## Menjalankan
 
 ```
-make infra-up            # PostgreSQL, Kafka, dan Hydra via Docker Compose, termasuk pembuatan topic dan client OAuth2
+make infra-up            # PostgreSQL, Kafka, Hydra, dan otel-lgtm via Docker Compose, termasuk pembuatan topic dan client OAuth2
 make -C account run      # account service di http://localhost:28081
 make -C transfer run     # transfer service di http://localhost:28082
 make -C notification run # notification service di http://localhost:28083 (Lab 5)
@@ -296,6 +296,137 @@ curl -H "Authorization: Bearer $RO" localhost:28082/transfers/<id>              
 Isi _token_ dapat dibaca di https://jwt.io atau dengan `cut -d. -f2 <<<"$TOKEN" | base64 -d`. Log `account mutated` di `account` mencatat `client_id` pemanggil.
 
 Database dari Lab 6 tidak perlu di-_reset_.
+
+## Observability (Lab 8)
+
+Tiga sinyal dari setiap service:
+
+| Sinyal | Cara keluar dari service | Tujuan di `otel-lgtm` |
+|---|---|---|
+| Log | JSON ke _stdout_ dan OTLP gRPC ke `localhost:14317` (`otelslog`) | Loki |
+| _Trace_ | OTLP gRPC ke `localhost:14317` | Tempo |
+| _Metric_ | `GET /metrics` di port HTTP masing-masing, diambil Prometheus setiap 5 detik | Prometheus |
+
+`otel-lgtm` (`grafana/otel-lgtm:0.37.0`) berisi OpenTelemetry Collector, Prometheus, Tempo, Loki, dan Grafana dalam satu _container_, khusus untuk lab. Grafana: http://localhost:13000, tanpa _login_. Data hilang bila _container_ dibuat ulang.
+
+Prometheus di dalam _container_ mengambil `/metrics` service di laptop lewat `host.docker.internal` (`observability/prometheus.yaml`). Docker Desktop menyediakan nama ini; di Docker Engine Linux, `extra_hosts: host-gateway` di `compose.yaml` yang membuatnya. Status _scrape_: panel _Target scrape_ di _dashboard_, atau query `up` di Grafana Explore.
+
+### Konfigurasi
+
+| Variabel | Nilai di laptop | Keterangan |
+|---|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:14317` | Wajib berupa URL `http://host:port` atau `https://host:port`; format lain menghentikan service saat _startup_ |
+| `OTEL_SERVICE_NAME` | `account`, `transfer`, `notification` | Nama service di Tempo dan Loki |
+
+Keduanya wajib di ketiga service. Service tetap berjalan walaupun Collector mati. Kegagalan kirim dicatat di _stdout_ sebagai `telemetry export failed`, lalu _span_ dan log yang gagal dikirim dibuang.
+
+### _Correlation ID_ dan _trace context_
+
+| Jalur | _Correlation ID_ | _Trace context_ (W3C) |
+|---|---|---|
+| REST | _Header_ `X-Correlation-ID`; dibuat (UUID) bila tidak ada atau formatnya salah; dikembalikan di respons | _Header_ `traceparent` (`otelhttp`) |
+| gRPC `transfer` → `account` | _Metadata_ `x-correlation-id` | _Metadata_ `traceparent` (`otelgrpc`) |
+| Kafka `transfer` → `notification` | _Header_ `correlation_id` | _Header_ `traceparent` |
+
+Format _correlation ID_ yang diterima: 1–100 karakter `A-Z a-z 0-9 . _ : -`.
+
+_Relay outbox_ berjalan setelah _request_ selesai, di _goroutine_ terpisah. Karena itu _correlation ID_ dan _trace context_ disimpan di baris `outbox` (kolom `correlation_id`, `trace_context`) dalam transaksi yang sama dengan _event_. _Relay_ membuat _span_ `publish transfer-events` sebagai _child_ dari _request_ asal, lalu `notification` membuat _span_ `process transfer-events` sebagai _child_-nya. Hasilnya, satu transfer menjadi satu _trace_ di tiga service:
+
+```
+transfer      POST /transfers
+transfer        HTTP POST                              (ambil token ke Hydra, hanya bila token belum ada)
+transfer        account.v1.AccountService/Debit        (client, satu span per percobaan)
+account           account.v1.AccountService/Debit      (server)
+transfer        account.v1.AccountService/Credit
+account           account.v1.AccountService/Credit
+transfer        publish transfer-events
+notification      process transfer-events
+```
+
+Setiap baris log yang ditulis dalam konteks _request_ atau _event_ membawa `correlation_id`, `trace_id`, dan `span_id`:
+
+```
+{"level":"INFO","msg":"account mutated","number":"1111111111","type":"DEBIT",...,"correlation_id":"lab8-1","trace_id":"122d873a...","span_id":"c65886ff..."}
+```
+
+_Probe_ (`/healthz`, `/readyz`) dan `/metrics` tidak di-_trace_. _Publish_ yang gagal karena Kafka mati tidak menghasilkan _span_; _retry_ setiap 500 ms tercatat di log `outbox publish failed` dan di `outbox_pending`.
+
+Atribut _span_ untuk pencarian di Tempo (TraceQL):
+
+```
+{ span.correlation.id = "lab8-1" }
+{ span.transfer.id = "<transfer_id>" }
+{ span.transfer.status = "FAILED" }
+```
+
+_Fault injection_ di `account` menambah _event_ `fault injected: delay` atau `fault injected: error` pada _span_ server gRPC, sehingga gangguan simulasi dapat dibedakan dari gangguan sebenarnya.
+
+### _Metric_
+
+| _Metric_ | Service | Label | Isi |
+|---|---|---|---|
+| `http_server_request_duration_seconds` | Ketiganya | `method`, `route`, `status` | _Histogram_ durasi _request_ REST; `route` = _pattern_ ServeMux (`/transfers/{id}`), `unmatched` untuk 404 dari ServeMux |
+| `grpc_server_request_duration_seconds` | `account` | `method`, `code` | _Histogram_ durasi panggilan gRPC, termasuk delay _fault injection_ |
+| `transfers_total` | `transfer` | `status` | Transfer yang mencapai status akhir |
+| `circuit_breaker_state` | `transfer` | `target` | 0 `closed`, 1 `half-open`, 2 `open` |
+| `circuit_breaker_transitions_total` | `transfer` | `target`, `from`, `to` | Jumlah perpindahan status _circuit breaker_ |
+| `outbox_pending` | `transfer` | – | Baris `outbox` yang belum terkirim ke Kafka |
+| `notifications_processed_total` | `notification` | `result` | `sent`, `duplicate`, `skipped` |
+
+Ditambah _metric_ bawaan `go_*` dan `process_*`.
+
+```
+make metrics    # metric domain dari /metrics ketiga service
+```
+
+### _Dashboard_
+
+Grafana → _Dashboards_ → folder _Studi Kasus_ → _Studi Kasus: Transfer_ (`observability/dashboards/studi-kasus.json`):
+
+| Panel | Query utama |
+|---|---|
+| Transfer per status | `sum by (status) (rate(transfers_total[1m]))` |
+| Latensi p95 REST per service | `histogram_quantile(0.95, ... http_server_request_duration_seconds_bucket ...)` per `job` |
+| Circuit breaker transfer → account | `circuit_breaker_state{target="account"}` |
+| Perubahan status circuit breaker | `increase(circuit_breaker_transitions_total[1m])` per `from`, `to` |
+| Outbox pending | `outbox_pending` |
+| Notifikasi per hasil | `sum by (result) (rate(notifications_processed_total[1m]))` |
+| Latensi p95 gRPC account per method | `histogram_quantile(0.95, ... grpc_server_request_duration_seconds_bucket ...)` per `method` |
+| Latensi p95 REST per route | Seperti latensi REST, per `route` |
+| Target scrape | `up` |
+
+Perubahan file JSON baru terbaca setelah `docker compose restart otel-lgtm`. Perubahan lewat UI Grafana tidak tersimpan ke file.
+
+### Latihan: mencari service yang lambat
+
+```
+TOKEN=$(make -s token)
+while true; do
+  curl -sS -o /dev/null -w "%{http_code}\n" -X POST localhost:28082/transfers -H "Authorization: Bearer $TOKEN" \
+    -d '{"from_account":"1111111111","to_account":"2222222222","amount":"1000"}'
+  sleep 0.5
+done
+```
+
+Di terminal lain:
+
+```
+make fault-slow     # account menahan setiap panggilan 3 detik
+make breaker        # setelah beberapa transfer: {"account":"open"}
+make metrics
+make fault-clear
+```
+
+| Langkah | Tempat | Yang terlihat |
+|---|---|---|
+| 1 | _Dashboard_ | Latensi p95 gRPC `Debit` naik ke sekitar 2 detik (panggilan diputus _timeout_ 2 detik dari `transfer`), lalu _circuit breaker_ `OPEN`, `FAILED` naik, respons berubah dari 201 ke 502 lalu 503 |
+| 2 | Explore → Tempo, query `{ span.transfer.status = "FAILED" }` | _Trace_ dengan empat _span_ `Debit` sekitar 2 detik: satu percobaan ditambah tiga _retry_. _Span_ server di `account` sama panjangnya dan membawa _event_ `fault injected: delay` |
+| 3 | Explore → Loki, query `{service_name=~"account\|transfer\|notification"} \| trace_id="<trace_id>"` | Log `retrying account call` dan `transfer not completed` dari _trace_ yang sama |
+| 4 | _Dashboard_, setelah `make fault-clear` | _Circuit breaker_ `HALF-OPEN` lalu `CLOSED`, transfer kembali `COMPLETED` |
+
+Transfer yang ditolak _circuit breaker_ yang terbuka hanya memiliki _span_ `POST /transfers` tanpa _span_ `Debit`: panggilan ke `account` tidak pernah dikirim.
+
+Database dari Lab 7 tidak perlu di-_reset_: kolom `correlation_id` dan `trace_context` di tabel `outbox` dibuat otomatis saat `transfer` dijalankan. `make infra-up` menambah _container_ `otel-lgtm`.
 
 ## Checkpoint
 

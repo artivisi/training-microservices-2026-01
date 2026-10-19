@@ -10,11 +10,15 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/clientcredentials"
 
 	"github.com/artivisi/training-microservices-2026-01/studi-kasus/transfer/internal/accountclient"
 	"github.com/artivisi/training-microservices-2026-01/studi-kasus/transfer/internal/auth"
 	"github.com/artivisi/training-microservices-2026-01/studi-kasus/transfer/internal/outbox"
+	"github.com/artivisi/training-microservices-2026-01/studi-kasus/transfer/internal/telemetry"
 	"github.com/artivisi/training-microservices-2026-01/studi-kasus/transfer/internal/transfer"
 )
 
@@ -34,7 +38,9 @@ import (
 const shutdownGrace = 60 * time.Second
 
 func main() {
-	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	// Until the configuration is read there is no collector address: startup
+	// errors go to stdout only, as JSON like every later log line.
+	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	if err := run(log); err != nil {
 		log.Error("transfer service stopped", "error", err)
 		os.Exit(1)
@@ -49,6 +55,23 @@ func run(log *slog.Logger) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Lab 8: from here on, log lines also go to the collector (OTLP) and carry
+	// correlation_id / trace_id when logged with a request context.
+	tel, err := telemetry.Setup(ctx, cfg.OTelServiceName, cfg.OTelEndpoint)
+	if err != nil {
+		return err
+	}
+	// Deferred first, so it runs last: spans and logs of the shutdown itself
+	// are flushed too.
+	defer func(boot *slog.Logger) {
+		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := tel.Shutdown(flushCtx); err != nil {
+			boot.Warn("flushing telemetry failed", "error", err)
+		}
+	}(log)
+	log = tel.Logger
 
 	store, err := transfer.NewPostgresStore(ctx, cfg.DatabaseURL)
 	if err != nil {
@@ -67,7 +90,13 @@ func run(log *slog.Logger) error {
 		Scopes:       []string{"account:write"},
 	}
 	// The fetch runs inside a gRPC attempt and is bounded by its 2 s timeout.
-	accounts, err := accountclient.New(cfg.AccountGRPCAddr, accountclient.ProductionSettings, tokenCfg.Token, log)
+	// Its HTTP call to the authorization server becomes a span of the transfer's
+	// trace: a slow first transfer after a restart shows why.
+	tokenHTTP := &http.Client{Transport: otelhttp.NewTransport(http.DefaultTransport)}
+	fetchToken := func(ctx context.Context) (*oauth2.Token, error) {
+		return tokenCfg.Token(context.WithValue(ctx, oauth2.HTTPClient, tokenHTTP))
+	}
+	accounts, err := accountclient.New(cfg.AccountGRPCAddr, accountclient.ProductionSettings, fetchToken, log)
 	if err != nil {
 		return err
 	}
@@ -82,9 +111,12 @@ func run(log *slog.Logger) error {
 	// Open on purpose, like the probes: an operator reads it during an incident.
 	// Production keeps /debug on an internal port or behind the gateway.
 	mux.HandleFunc("GET /debug/circuit-breaker", accounts.ServeCircuitBreaker)
+	// Lab 8: Prometheus pulls the metrics from here. Open like the probes;
+	// production restricts it to the monitoring network.
+	mux.Handle("GET /metrics", promhttp.Handler())
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           mux,
+		Handler:           telemetry.HTTPHandler(mux),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -95,7 +127,7 @@ func run(log *slog.Logger) error {
 	relayCtx, stopRelay := context.WithCancel(context.Background())
 	relayDone := make(chan struct{})
 	go func() {
-		outbox.NewRelay(store.Pool(), writer, log).Run(relayCtx)
+		outbox.NewRelay(store.Pool(), writer, cfg.KafkaTopic, log).Run(relayCtx)
 		close(relayDone)
 	}()
 	// Runs before the deferred store.Close: the relay must stop using the pool first.
@@ -107,7 +139,8 @@ func run(log *slog.Logger) error {
 	errCh := make(chan error, 1)
 	go func() {
 		log.Info("transfer service listening", "addr", cfg.HTTPAddr, "account_grpc", cfg.AccountGRPCAddr,
-			"kafka_brokers", cfg.KafkaBrokers, "kafka_topic", cfg.KafkaTopic, "oauth_issuer", cfg.OAuthIssuer)
+			"kafka_brokers", cfg.KafkaBrokers, "kafka_topic", cfg.KafkaTopic, "oauth_issuer", cfg.OAuthIssuer,
+			"otlp_endpoint", cfg.OTelEndpoint)
 		errCh <- srv.ListenAndServe()
 	}()
 

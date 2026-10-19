@@ -41,7 +41,7 @@ func NewGRPCServer(store Store, log *slog.Logger) *GRPCServer {
 func (s *GRPCServer) GetAccount(ctx context.Context, req *accountv1.GetAccountRequest) (*accountv1.GetAccountResponse, error) {
 	a, err := s.store.Get(ctx, req.GetNumber())
 	if err != nil {
-		return nil, s.toStatus(err)
+		return nil, s.toStatus(ctx, err)
 	}
 	return &accountv1.GetAccountResponse{Account: toProto(a)}, nil
 }
@@ -65,26 +65,26 @@ func (s *GRPCServer) Credit(ctx context.Context, req *accountv1.CreditRequest) (
 func (s *GRPCServer) mutate(ctx context.Context, t MutationType, number, amount, reference string) (Account, error) {
 	parsed, err := parseAmount(amount)
 	if err != nil {
-		return Account{}, s.toStatus(err)
+		return Account{}, s.toStatus(ctx, err)
 	}
 	req := MutationRequest{Amount: parsed, Reference: reference}
 	if err := req.Validate(); err != nil {
-		return Account{}, s.toStatus(err)
+		return Account{}, s.toStatus(ctx, err)
 	}
 	a, applied, err := s.store.Mutate(ctx, number, t, req)
 	if err != nil {
-		return Account{}, s.toStatus(err)
+		return Account{}, s.toStatus(ctx, err)
 	}
 	// client_id from the verified token (Lab 7): who moved the money, for the audit trail.
 	caller, _ := auth.ClaimsFrom(ctx)
 	if !applied {
 		// Not an error: the caller retried after losing our first answer. It gets
 		// a success with the current balance, and the money moved only once.
-		s.log.Info("mutation already applied, not repeated", "number", a.Number, "type", t, "reference", req.Reference,
+		s.log.InfoContext(ctx, "mutation already applied, not repeated", "number", a.Number, "type", t, "reference", req.Reference,
 			"client_id", caller.ClientID)
 		return a, nil
 	}
-	s.log.Info("account mutated", "number", a.Number, "type", t, "amount", req.Amount, "reference", req.Reference,
+	s.log.InfoContext(ctx, "account mutated", "number", a.Number, "type", t, "amount", req.Amount, "reference", req.Reference,
 		"client_id", caller.ClientID)
 	return a, nil
 }
@@ -97,12 +97,12 @@ func (s *GRPCServer) mutate(ctx context.Context, t MutationType, number, amount,
 //     hung up) while the store was still working. Not our failure, so it is
 //     not logged as one; the caller already has its own error.
 //   - Anything unexpected becomes Internal, with the detail only in our log.
-func (s *GRPCServer) toStatus(err error) error {
+func (s *GRPCServer) toStatus(ctx context.Context, err error) error {
 	var v ValidationError
 	switch {
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		st := status.FromContextError(err)
-		s.log.Warn("caller gave up before the request finished", "code", st.Code().String(), "error", err)
+		s.log.WarnContext(ctx, "caller gave up before the request finished", "code", st.Code().String(), "error", err)
 		return st.Err()
 	case errors.As(err, &v):
 		return status.Error(codes.InvalidArgument, v.describe())
@@ -111,7 +111,7 @@ func (s *GRPCServer) toStatus(err error) error {
 	case errors.Is(err, ErrInsufficientFunds):
 		return status.Error(codes.FailedPrecondition, err.Error())
 	default:
-		s.log.Error("grpc request failed", "error", err)
+		s.log.ErrorContext(ctx, "grpc request failed", "error", err)
 		return status.Error(codes.Internal, "internal error")
 	}
 }

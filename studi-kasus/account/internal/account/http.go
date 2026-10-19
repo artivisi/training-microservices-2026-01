@@ -87,7 +87,7 @@ func (h *Handler) readyz(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	if err := h.store.Ping(ctx); err != nil {
 		// Connection details stay in the log; callers only learn that the database is down.
-		h.log.Warn("readiness check failed", "error", err)
+		h.log.WarnContext(r.Context(), "readiness check failed", "error", err)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "DOWN", "database": "DOWN"})
 		return
 	}
@@ -95,7 +95,7 @@ func (h *Handler) readyz(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) internalError(w http.ResponseWriter, r *http.Request, err error) {
-	h.log.Error("request failed", "method", r.Method, "path", r.URL.Path, "error", err)
+	h.log.ErrorContext(r.Context(), "request failed", "method", r.Method, "path", r.URL.Path, "error", err)
 	writeError(w, http.StatusInternalServerError, "internal error")
 }
 

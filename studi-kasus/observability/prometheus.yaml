@@ -1,0 +1,60 @@
+# Prometheus configuration for the otel-lgtm container (Lab 8), mounted over
+# /otel-lgtm/prometheus.yaml. otel-lgtm 0.37.0 has no switch for extra scrape
+# targets: its Prometheus always reads this one file. Everything below
+# "scrape_configs" is the image's own file, unchanged; it keeps the OTLP
+# receiver working the way the image expects.
+#
+# The services run on the laptop, outside the container: Prometheus reaches
+# them through host.docker.internal (Docker Desktop provides it; on Linux,
+# compose.yaml maps it with extra_hosts: host-gateway).
+scrape_configs:
+  - job_name: account
+    scrape_interval: 5s
+    static_configs:
+      - targets: ["host.docker.internal:28081"]
+  - job_name: transfer
+    scrape_interval: 5s
+    static_configs:
+      - targets: ["host.docker.internal:28082"]
+  - job_name: notification
+    scrape_interval: 5s
+    static_configs:
+      - targets: ["host.docker.internal:28083"]
+
+global:
+  scrape_native_histograms: true
+otlp:
+  keep_identifying_resource_attributes: true
+  # Recommended attributes to be promoted to labels.
+  promote_resource_attributes:
+    - service.instance.id
+    - service.name
+    - service.namespace
+    - service.version
+    - cloud.availability_zone
+    - cloud.region
+    - container.name
+    - deployment.environment # backward compatibility
+    - deployment.environment.name
+    - k8s.cluster.name
+    - k8s.container.name
+    - k8s.cronjob.name
+    - k8s.daemonset.name
+    - k8s.deployment.name
+    - k8s.job.name
+    - k8s.namespace.name
+    - k8s.node.name
+    - k8s.pod.name
+    - k8s.replicaset.name
+    - k8s.statefulset.name
+    - host.name
+    - postgresql.database.name
+    - postgresql.schema.name
+    - postgresql.table.name
+    - postgresql.index.name
+    - database # used by otelcol/receiver/mongodb
+    - kafka.cluster.alias
+storage:
+  tsdb:
+    # A 10min time window is enough because it can easily absorb retries and network delays.
+    out_of_order_time_window: 10m
