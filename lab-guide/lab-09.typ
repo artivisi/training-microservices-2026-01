@@ -223,16 +223,17 @@ Makefile
 
 === Target `make images`
 
-Tambahkan bagian berikut di akhir `studi-kasus/Makefile`. `VERSION` sengaja tidak memiliki nilai _default_, sehingga nama _image_ selalu menyebut _build_ yang mana.
+Tambahkan bagian berikut di akhir `studi-kasus/Makefile`. `VERSION` sengaja tidak memiliki nilai _default_, sehingga _tag_ setiap _image_ selalu ditentukan secara eksplisit saat _build_.
 
 #perintah[```makefile
 # Lab 9 helpers.
 
 # Images for k3d. VERSION is the tag, e.g. make images VERSION=1.0.0, and is
 # required: the image name says which build it is. Nothing stops a rebuild under
-# an existing tag, and that rebuild never reaches the cluster: the Deployments
-# use imagePullPolicy IfNotPresent, and an unchanged image reference rolls
-# nothing. A change = a new VERSION (1.0.1), make k3d-import with it, then
+# an existing tag, and it rolls nothing: the image reference is unchanged, so
+# running pods keep the old image while pods created later (after another
+# k3d-import) get the new one. A change = a new VERSION (1.0.1), make k3d-import
+# with it, then
 # kubectl set image or newTag in k8s/overlays/k3d/kustomization.yaml.
 # Build context is this directory: account and transfer copy proto/ next to the
 # service (go.mod replace ../proto); notification does not import it.
@@ -248,7 +249,7 @@ images:
 
 Baris perintah di bawah target diawali karakter _tab_, bukan spasi. Tambahkan juga `images` ke daftar `.PHONY` di bagian atas `Makefile`. Variabel `SERVICES` sudah ada sejak lab sebelumnya (`account transfer notification`).
 
-`make` tidak mencegah _build_ ulang dengan _tag_ yang sudah ada, tetapi _image_ hasil _build_ ulang tersebut tidak pernah sampai ke _pod_. Deployment menggunakan `imagePullPolicy: IfNotPresent`, dan referensi _image_ yang tidak berubah tidak memicu _rollout_. Karena itu setiap perubahan kode mendapat `VERSION` baru (`1.0.1`, `1.0.2`, dan seterusnya), seperti di latihan _rolling update_.
+`make` tidak mencegah _build_ ulang dengan _tag_ yang sudah ada. Referensi _image_ di Deployment tidak berubah, sehingga tidak ada _rollout_; _pod_ yang sedang berjalan tetap memakai _image_ lama, sedangkan _pod_ yang dibuat kemudian (setelah `make k3d-import` ulang) memakai _image_ baru dengan _tag_ yang sama. Dua _build_ berbeda dapat berjalan bersamaan dengan satu _tag_ tanpa terlihat. Karena itu setiap perubahan kode mendapat `VERSION` baru (`1.0.1`, `1.0.2`, dan seterusnya), seperti di latihan _rolling update_.
 
 Bangun ketiga _image_:
 
@@ -434,7 +435,28 @@ Tambahkan ketiga service berikut di `compose.yaml`, di bawah `hydra-init` dan se
         condition: service_healthy
 ```]
 
-`stop_grace_period: 70s` pada `transfer` berkaitan dengan _graceful shutdown_ dari Lab 5. Setelah menerima `SIGTERM`, `transfer` menunggu transfer yang sedang berjalan hingga 60 detik (`shutdownGrace` di `transfer/main.go`) agar tidak ada _saga_ yang terpotong di antara _debit_ dan _credit_. Docker secara _default_ mengirim `SIGKILL` 10 detik setelah `SIGTERM`, sehingga tanpa pengaturan ini _saga_ yang sedang berjalan dapat terhenti di tengah.
+`stop_grace_period: 70s` pada `transfer` mengikuti batas waktu _graceful shutdown_ `transfer`. Setelah menerima `SIGTERM`, `transfer` menunggu transfer yang sedang berjalan hingga 60 detik agar tidak ada _saga_ yang terpotong di antara _debit_ dan _credit_. Batas ini adalah konstanta `shutdownGrace` di `transfer/main.go` pada _checkpoint_ `lab-08`. Nilainya menutup durasi terburuk satu _saga_: _debit_ dan _credit_ masing-masing 11,75 detik (4 percobaan × 2 detik + 3 _backoff_), _reversal_ 32 detik, ditambah beberapa detik untuk penulisan ke database. Jika `transfer/main.go` hasil kerja peserta masih memakai `10*time.Second` sebagai batas waktu `srv.Shutdown`, tambahkan konstanta berikut di atas `func main()`:
+
+```go
+// shutdownGrace is how long the HTTP server waits on SIGTERM for transfers in
+// flight. A saga cut mid-way leaves a PENDING or DEBITED row that nothing
+// resumes (see README), so the wait covers the worst case of one saga under
+// accountclient.ProductionSettings:
+//
+//	debit    4 attempts x 2 s + 3 backoffs x 1.25 s  = 11.75 s
+//	credit   same                                    = 11.75 s
+//	reversal 30 s retry window + one last 2 s attempt = 32 s
+//	                                                    55.5 s
+//
+// plus a few seconds for the database writes in between. The platform must
+// give the process at least this long before SIGKILL (Kubernetes:
+// terminationGracePeriodSeconds).
+const shutdownGrace = 60 * time.Second
+```
+
+lalu ganti `10*time.Second` pada `context.WithTimeout` sebelum `srv.Shutdown` dengan `shutdownGrace`.
+
+Docker secara _default_ mengirim `SIGKILL` 10 detik setelah `SIGTERM`, sehingga tanpa pengaturan ini _saga_ yang sedang berjalan dapat terhenti di tengah.
 
 _Profile_ `apps` membuat ketiga service tersebut tidak ikut berjalan saat `make infra-up`; service baru berjalan jika _profile_ tersebut diaktifkan. Sisipkan kedua target berikut tepat di bawah komentar `# Lab 9 helpers.` di `Makefile`, sebelum `IMAGE_REPO :=`, dan tambahkan keduanya ke daftar `.PHONY`:
 
@@ -555,7 +577,7 @@ Kutipan lain dari `k8s/base/account/deployment.yaml`:
                 seconds: 5
 ```]
 
-Saat _pod_ dihentikan (_rolling update_, _scale down_), Kubernetes mengeluarkan _pod_ dari daftar _endpoint_ Service dan dari Traefik bersamaan dengan proses penghentiannya, bukan sebelumnya. Selama beberapa detik, _request_ baru masih dikirim ke _pod_ tersebut. Tanpa jeda, server di dalam _pod_ sudah mulai ditutup dan menolak _request_ tersebut.
+Saat _pod_ dihentikan (_rolling update_, _scale down_), Kubernetes mengeluarkan _pod_ dari daftar _endpoint_ Service dan dari Traefik pada saat yang sama dengan dimulainya penghentian _pod_. Akibatnya, selama beberapa detik _request_ baru masih dikirim ke _pod_ tersebut. Tanpa jeda, server di dalam _pod_ sudah mulai ditutup dan menolak _request_ tersebut.
 
 _Hook_ `preStop` dijalankan kubelet sebelum `SIGTERM`. Aksi `sleep` menunda `SIGTERM` selama 5 detik, cukup lama hingga _pod_ tidak lagi menerima _request_ baru. Setelah itu, _graceful shutdown_ di `main.go` menyelesaikan _request_ yang sedang diproses. Aksi `sleep` bawaan Kubernetes (tersedia sejak versi 1.30) tidak membutuhkan _shell_. Bentuk `exec` dengan perintah `sleep 5` tidak dapat digunakan, karena _image_ `scratch` tidak memiliki _shell_ maupun _binary_ `sleep`.
 
@@ -565,7 +587,7 @@ _Hook_ `preStop` dijalankan kubelet sebelum `SIGTERM`. Aksi `sleep` menunda `SIG
   columns: (auto, auto, 1fr),
   [Service], [`terminationGracePeriodSeconds`], [Rincian],
   [`account`], [30], [5 detik `preStop` + 10 detik untuk panggilan HTTP dan gRPC yang sedang berjalan + 5 detik telemetri, ditambah cadangan],
-  [`notification`], [30], [5 detik `preStop` + _consumer_ berhenti dan 10 detik untuk _request_ HTTP + 5 detik telemetri, ditambah cadangan],
+  [`notification`], [30], [5 detik `preStop` + 10 detik untuk _request_ HTTP yang sedang diproses (setelah _consumer_ Kafka dihentikan) + 5 detik telemetri, ditambah cadangan],
   [`transfer`], [75], [5 detik `preStop` + 60 detik `shutdownGrace` agar _saga_ tidak terpotong di antara _debit_ dan _credit_ + 5 detik telemetri, ditambah cadangan],
 )
 
@@ -693,7 +715,7 @@ k3d-down:
 
 _Image_ k3s di-_pin_ ke `rancher/k3s:v1.36.5-k3s1`. k3d mengunduh sendiri _image_ pendukungnya (`k3d-proxy` untuk _load balancer_ dan `k3d-tools` untuk `image import`) dengan versi yang sama dengan _binary_ k3d.
 
-Bagian kedua `k3d-up` menunggu DNS _cluster_. k3d menulis nama `host.k3d.internal` ke ConfigMap CoreDNS, tetapi CoreDNS baru menjawab nama tersebut setelah ConfigMap sampai ke _pod_-nya, hingga sekitar satu menit kemudian. _Pod_ yang dijalankan sebelum itu berhenti dengan pesan `lookup host.k3d.internal ... no such host` dan di-_restart_ berulang kali. Perulangan di atas menanyakan nama tersebut ke DNS _cluster_ (alamat _default_ k3s `10.43.0.10`) dari _container node_ k3d setiap 2 detik, dan menyerah setelah 180 detik.
+Bagian kedua `k3d-up` menunggu DNS _cluster_. k3d menulis nama `host.k3d.internal` ke ConfigMap CoreDNS, tetapi CoreDNS baru menjawab nama tersebut setelah perubahan ConfigMap dimuat oleh _pod_ CoreDNS, hingga sekitar satu menit kemudian. _Pod_ yang dijalankan sebelum itu berhenti dengan pesan `lookup host.k3d.internal ... no such host` dan di-_restart_ berulang kali. Perulangan di atas menanyakan nama tersebut ke DNS _cluster_ (alamat _default_ k3s `10.43.0.10`) dari _container node_ k3d setiap 2 detik, dan berhenti dengan pesan _error_ jika nama tersebut belum dapat di-_resolve_ setelah 180 detik.
 
 === Menjalankan Sistem di k3d
 
