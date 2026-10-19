@@ -24,6 +24,8 @@ func (h *Handler) Routes() *http.ServeMux {
 	mux.HandleFunc("POST /accounts", h.create)
 	mux.HandleFunc("GET /accounts", h.list)
 	mux.HandleFunc("GET /accounts/{number}", h.get)
+	mux.HandleFunc("POST /accounts/{number}/debit", h.mutate(Debit))
+	mux.HandleFunc("POST /accounts/{number}/credit", h.mutate(Credit))
 	mux.HandleFunc("GET /healthz", h.healthz)
 	mux.HandleFunc("GET /readyz", h.readyz)
 	return mux
@@ -31,10 +33,7 @@ func (h *Handler) Routes() *http.ServeMux {
 
 func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	var req CreateRequest
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+	if !decode(w, r, &req) {
 		return
 	}
 	if err := req.Validate(); err != nil {
@@ -62,6 +61,31 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 		h.internalError(w, r, err)
 	default:
 		writeJSON(w, http.StatusOK, a)
+	}
+}
+
+func (h *Handler) mutate(t MutationType) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req MutationRequest
+		if !decode(w, r, &req) {
+			return
+		}
+		if err := req.Validate(); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "fields": err})
+			return
+		}
+		a, err := h.store.Mutate(r.Context(), r.PathValue("number"), t, req)
+		switch {
+		case errors.Is(err, ErrNotFound):
+			writeError(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, ErrInsufficientFunds):
+			writeError(w, http.StatusUnprocessableEntity, err.Error())
+		case err != nil:
+			h.internalError(w, r, err)
+		default:
+			h.log.Info("account mutated", "number", a.Number, "type", t, "amount", req.Amount, "reference", req.Reference)
+			writeJSON(w, http.StatusOK, a)
+		}
 	}
 }
 
@@ -96,6 +120,17 @@ func (h *Handler) readyz(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) internalError(w http.ResponseWriter, r *http.Request, err error) {
 	h.log.Error("request failed", "method", r.Method, "path", r.URL.Path, "error", err)
 	writeError(w, http.StatusInternalServerError, "internal error")
+}
+
+// decode reads a JSON body into dst and answers 400 itself when the body is invalid.
+func decode(w http.ResponseWriter, r *http.Request, dst any) bool {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		return false
+	}
+	return true
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {

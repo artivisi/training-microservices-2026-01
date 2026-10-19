@@ -24,9 +24,24 @@ type CreateRequest struct {
 	InitialBalance decimal.Decimal `json:"initial_balance"`
 }
 
+// MutationRequest is the body of a debit or credit. Reference ties the mutation to
+// the business transaction that caused it, e.g. a transfer ID.
+type MutationRequest struct {
+	Amount    decimal.Decimal `json:"amount"`
+	Reference string          `json:"reference"`
+}
+
+type MutationType string
+
+const (
+	Debit  MutationType = "DEBIT"
+	Credit MutationType = "CREDIT"
+)
+
 var (
-	ErrNotFound      = errors.New("account not found")
-	ErrAlreadyExists = errors.New("account already exists")
+	ErrNotFound          = errors.New("account not found")
+	ErrAlreadyExists     = errors.New("account already exists")
+	ErrInsufficientFunds = errors.New("insufficient funds")
 )
 
 // ValidationError maps field name to the problem found in that field.
@@ -53,10 +68,27 @@ func (r CreateRequest) Validate() error {
 	return nil
 }
 
+func (r MutationRequest) Validate() error {
+	v := ValidationError{}
+	if !r.Amount.IsPositive() {
+		v["amount"] = "must be greater than zero"
+	}
+	if strings.TrimSpace(r.Reference) == "" || len(r.Reference) > 64 {
+		v["reference"] = "must be 1 to 64 characters"
+	}
+	if len(v) > 0 {
+		return v
+	}
+	return nil
+}
+
 // Store is the persistence contract; the HTTP handler depends on this, not on PostgreSQL.
 type Store interface {
 	Create(ctx context.Context, req CreateRequest) (Account, error)
 	Get(ctx context.Context, number string) (Account, error)
 	List(ctx context.Context) ([]Account, error)
+	// Mutate debits or credits the account and records the mutation, atomically.
+	// It returns the account with its new balance.
+	Mutate(ctx context.Context, number string, t MutationType, req MutationRequest) (Account, error)
 	Ping(ctx context.Context) error
 }

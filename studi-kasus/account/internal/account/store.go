@@ -79,6 +79,48 @@ func (s *PostgresStore) Get(ctx context.Context, number string) (Account, error)
 	return a, err
 }
 
+func (s *PostgresStore) Mutate(ctx context.Context, number string, t MutationType, req MutationRequest) (Account, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Account{}, err
+	}
+	defer tx.Rollback(ctx) // no-op after Commit
+
+	delta := req.Amount
+	if t == Debit {
+		delta = delta.Neg()
+	}
+	// The balance check sits in the WHERE clause, so two concurrent debits cannot
+	// both pass it: the second one waits for the row lock and re-evaluates.
+	rows, err := tx.Query(ctx, `
+		update account set balance = balance + @delta
+		where number = @number and balance + @delta >= 0
+		returning number, owner_name, balance, created_at`,
+		pgx.NamedArgs{"number": number, "delta": delta})
+	if err != nil {
+		return Account{}, err
+	}
+	a, err := pgx.CollectExactlyOneRow(rows, pgx.RowToStructByPos[Account])
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Nothing updated: either the account does not exist or the balance is too low.
+		if _, getErr := s.Get(ctx, number); getErr != nil {
+			return Account{}, getErr
+		}
+		return Account{}, ErrInsufficientFunds
+	}
+	if err != nil {
+		return Account{}, err
+	}
+
+	if _, err := tx.Exec(ctx, `
+		insert into mutation (account_number, type, amount, reference)
+		values (@number, @type, @amount, @reference)`,
+		pgx.NamedArgs{"number": number, "type": string(t), "amount": req.Amount, "reference": req.Reference}); err != nil {
+		return Account{}, err
+	}
+	return a, tx.Commit(ctx)
+}
+
 func (s *PostgresStore) List(ctx context.Context) ([]Account, error) {
 	rows, err := s.pool.Query(ctx,
 		`select number, owner_name, balance, created_at from account order by number limit 100`)
