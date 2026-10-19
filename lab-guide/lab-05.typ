@@ -14,7 +14,7 @@ Setelah menyelesaikan lab ini, peserta mampu:
 
 == Gambaran
 
-Di akhir Lab 4, `transfer` memanggil `account` melalui gRPC dengan _timeout_, _retry_, dan _circuit breaker_. Dua celah dari Lab 2 masih tersisa. Pertama, _debit_ yang terkena _timeout_ tidak boleh di-_retry_, karena `account` mungkin sudah memproses _debit_ tersebut dan _retry_ akan memotong saldo dua kali. Kedua, bila _credit_ ke rekening tujuan gagal setelah _debit_ berhasil, uang sudah keluar dari rekening asal tetapi tidak sampai ke mana pun. Transfer hanya ditandai `FAILED` dan seseorang harus mengembalikan uang tersebut secara manual.
+Di akhir Lab 4, `transfer` memanggil `account` melalui gRPC dengan _timeout_, _retry_, dan _circuit breaker_. Dua celah dari Lab 2 masih tersisa. Pertama, _debit_ yang terkena _timeout_ tidak boleh di-_retry_, karena `account` mungkin sudah memproses _debit_ tersebut dan _retry_ akan memotong saldo dua kali. Kedua, bila _credit_ ke rekening tujuan gagal setelah _debit_ berhasil, uang sudah keluar dari rekening asal tetapi tidak masuk ke rekening tujuan. Transfer hanya ditandai `FAILED` dan seseorang harus mengembalikan uang tersebut secara manual.
 
 Lab ini menutup kedua celah tersebut dan sekaligus menambah service ketiga:
 
@@ -38,7 +38,7 @@ Lab ini menutup kedua celah tersebut dan sekaligus menambah service ketiga:
                             notification ──▶ db-notification
 ```]
 
-Status transfer mengikuti mesin status berikut. Hanya status akhir yang menarik bagi service lain yang menghasilkan _event_.
+Status transfer mengikuti mesin status berikut. _Event_ hanya dihasilkan untuk status akhir yang perlu diketahui service lain.
 
 #table(
   columns: (auto, 1fr, auto),
@@ -51,7 +51,7 @@ Status transfer mengikuti mesin status berikut. Hanya status akhir yang menarik 
   [`COMPENSATION_FAILED`], [_Credit_ gagal dan pengembalian juga gagal, sehingga perlu penanganan manual], [–],
 )
 
-Mengapa tidak langsung menulis ke Kafka setelah transaksi database selesai? Database dan Kafka tidak memiliki transaksi bersama. Bila proses berhenti di antara keduanya, ada dua kemungkinan buruk: status sudah tersimpan tetapi _event_-nya hilang, atau _event_ terkirim untuk perubahan yang ternyata di-_rollback_. Tabel `outbox` memindahkan masalah tersebut ke satu database saja, dan di dalam satu database transaksi tersedia.
+Mengapa tidak langsung menulis ke Kafka setelah transaksi database selesai? Database dan Kafka tidak memiliki transaksi bersama. Bila proses berhenti di antara keduanya, ada dua kemungkinan buruk: status sudah tersimpan tetapi _event_-nya hilang, atau _event_ terkirim untuk perubahan yang ternyata di-_rollback_. Dengan tabel `outbox`, perubahan status dan _event_ ditulis ke database yang sama, sehingga keduanya dapat disimpan dalam satu transaksi.
 
 == Titik Awal
 
@@ -211,7 +211,7 @@ Selanjutnya `Store.Mutate` perlu memberi tahu pemanggilnya apakah mutasi benar-b
 	Mutate(ctx context.Context, number string, t MutationType, req MutationRequest) (a Account, applied bool, err error)
 ```
 
-Di Lab 2, `PostgresStore.Mutate` mengubah saldo terlebih dahulu, lalu mencatat baris `mutation`. Urutannya sekarang dibalik: baris `mutation` ditulis lebih dahulu dengan `on conflict do nothing` sebagai pemeriksaan _idempotency_. Bila tidak ada baris yang masuk, mutasi tersebut sudah pernah diterapkan, dan saldo tidak disentuh lagi. Urutan ini juga menangani _race condition_: panggilan kedua dengan `reference` yang sama menunggu di _unique index_ sampai transaksi pertama selesai, lalu melihat konflik. Foreign key ke tabel `account` sekaligus memeriksa keberadaan rekening, sehingga pemanggilan `s.Get` untuk membedakan "rekening tidak ada" dari "saldo kurang" tidak diperlukan lagi.
+Di Lab 2, `PostgresStore.Mutate` mengubah saldo terlebih dahulu, lalu mencatat baris `mutation`. Urutannya sekarang dibalik: baris `mutation` ditulis lebih dahulu dengan `on conflict do nothing` sebagai pemeriksaan _idempotency_. Bila tidak ada baris yang masuk, mutasi tersebut sudah pernah diterapkan, dan saldo tidak disentuh lagi. Urutan ini juga menangani _race condition_: panggilan kedua dengan `reference` yang sama menunggu di _unique index_ sampai transaksi pertama selesai, lalu melihat konflik. _Foreign key_ ke tabel `account` sekaligus memeriksa keberadaan rekening, sehingga pemanggilan `s.Get` untuk membedakan "rekening tidak ada" dari "saldo kurang" tidak diperlukan lagi.
 
 Ganti seluruh fungsi `Mutate` di `account/internal/account/store.go`:
 
@@ -321,7 +321,7 @@ Hanya komentar yang berubah, tetapi komentar tersebut ikut tersalin ke kode hasi
 make proto
 ```]
 
-_Test_ di `account` menggunakan `fakeStore` di `account/internal/account/http_test.go`. `fakeStore` harus mengikuti tanda tangan `Mutate` yang baru dan meniru _unique index_ dengan sebuah _map_. Ubah struktur, konstruktor, dan metode `Mutate`-nya:
+_Test_ di `account` menggunakan `fakeStore` di `account/internal/account/http_test.go`. `fakeStore` harus mengikuti _signature_ `Mutate` yang baru dan meniru _unique index_ dengan sebuah _map_. Ubah struktur, konstruktor, dan metode `Mutate`-nya:
 
 ```go
 // fakeStore keeps accounts in memory so the HTTP layer is tested without PostgreSQL.
@@ -1130,10 +1130,11 @@ _File_ _test_ lengkapnya tersedia di _checkpoint_ dan dapat diambil langsung:
 
 #perintah[```bash
 git checkout lab-05 -- transfer/internal/transfer/service_test.go
+cd transfer && go mod tidy && cd ..
 make -C transfer test
 ```]
 
-=== Notification Service
+=== Service `notification`
 
 `notification` adalah modul Go baru di _workspace_. Service ini mengetahui hasil transfer hanya dari _event_ di Kafka dan tidak pernah memanggil `transfer`. Struktur _payload_ _event_ ditulis ulang di modul `notification` dan tidak diimpor dari `transfer`: service berbagi format data (kontrak), tidak berbagi kode.
 
@@ -1543,7 +1544,7 @@ Kegagalan menyimpan ke database di-_retry_ terus-menerus dan tidak dilewati. Mel
 
 ==== API HTTP dan `main.go`
 
-API `notification` hanya menyediakan `GET /notifications?transfer_id=...` beserta _probe_. Parameter `transfer_id` wajib diisi: daftar notifikasi seluruh nasabah tanpa filter tidak boleh bisa diminta oleh _channel_. _Readiness probe_ hanya memeriksa database. Selama Kafka mati, _consumer_ cukup menunggu, dan API tetap dapat menjawab dari database.
+API `notification` hanya menyediakan `GET /notifications?transfer_id=...` beserta _probe_. Parameter `transfer_id` wajib diisi agar _channel_ tidak dapat meminta daftar notifikasi seluruh nasabah sekaligus. _Readiness probe_ hanya memeriksa database. Selama Kafka mati, _consumer_ cukup menunggu, dan API tetap dapat menjawab dari database.
 
 Buat `notification/internal/notification/http.go`:
 
@@ -1910,7 +1911,7 @@ make fault-clear
 
 Transfer dijawab HTTP `500` dengan `"status":"COMPENSATION_FAILED"`. Log `transfer` menampilkan `level=ERROR msg="compensation failed, source account needs manual reversal"`. Tidak ada _event_ yang terbit untuk transfer ini, sehingga `notification` tidak mencatat apa pun. Saldo `1111111111` berkurang 10000 tanpa ada uang yang masuk ke `2222222222`.
 
-Setelah `make fault-clear`, _circuit breaker_ mungkin masih terbuka karena kegagalan beruntun tadi. Tunggu 10 detik, lalu periksa dengan `make breaker` hingga statusnya `closed` sebelum melanjutkan.
+Setelah `make fault-clear`, _circuit breaker_ kemungkinan masih `open`. Status tersebut tidak berubah tanpa panggilan. Tunggu 10 detik, lalu kirim tiga transfer kecil yang sah (misalnya 1000 dari `2222222222` ke `1111111111`). Ketiga panggilan tersebut menjadi panggilan uji pada status _half-open_. Setelah itu `make breaker` menampilkan `closed`.
 
 == Masalah Umum
 
@@ -1944,6 +1945,6 @@ Setelah `make fault-clear`, _circuit breaker_ mungkin masih terbuka karena kegag
 Kondisi kode di akhir lab ini tersedia di tag `lab-05`. Bandingkan hasil kerja dengan _checkpoint_, atau lanjutkan dari _checkpoint_ bila tertinggal:
 
 #perintah[```bash
-git diff lab-05 -- studi-kasus
+git diff lab-05 -- .
 git checkout lab-05
 ```]
