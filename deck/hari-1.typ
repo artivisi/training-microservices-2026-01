@@ -61,6 +61,7 @@
     at(590pt, 230pt, node("notification", sub: "HTTP :8083")),
     at(740pt, 223pt, node("db-notif.", sub: "PostgreSQL", kind: "db", width: 110pt, height: 70pt)),
     edge((100pt, 153pt), (150pt, 153pt), label: "REST", label-dy: -18pt),
+    edge((50pt, 125pt), (390pt, 40pt), label: "REST", label-dx: -60pt),
     edge((270pt, 140pt), (390pt, 55pt), label: "gRPC (Hari 2)", label-dx: -30pt),
     edge((270pt, 166pt), (390pt, 250pt), label: "event (Hari 3)", dash: "dashed", label-dx: -30pt, label-dy: 4pt),
     edge((510pt, 48pt), (600pt, 48pt)),
@@ -146,7 +147,7 @@
 
 #slide(kicker: "Konsep", title: "Kondisi yang membuat microservices merugikan")[
   #bullets(
-    [*Tim kecil.* Bila satu tim mengelola semua service, tidak ada koordinasi antartim yang dihemat, sementara beban operasionalnya tetap muncul.],
+    [*Tim kecil.* Bila satu tim mengelola semua service, tidak ada koordinasi antartim yang berkurang, sedangkan beban operasional tetap bertambah.],
     [*Batas domain belum jelas.* Batas service yang salah jauh lebih sulit diperbaiki dibandingkan batas modul di dalam satu aplikasi.],
     [*Belum ada otomasi.* Tanpa _pipeline_ dan _observability_, setiap service tambahan menambah pekerjaan manual.],
     [*Beban merata.* Bila semua fitur menerima beban yang serupa, pemecahan tidak menambah kemampuan skala.],
@@ -211,7 +212,7 @@
   #note[Ketiga acuan ini sekaligus menjadi alat uji: batas service yang melanggar salah satunya akan mengarah ke _distributed monolith_.]
 ]
 
-#slide(kicker: "Kesalahan umum", title: "Dua cara memecah service yang berujung masalah")[
+#slide(kicker: "Kesalahan umum", title: "Pemecahan service yang keliru")[
   #two-col(
     card([Dipecah menurut _layer_ teknis], accent: red)[
       Contoh: service "database", service "validasi", service "API".
@@ -235,7 +236,7 @@
     [notification], [Memberi tahu hasil transfer (Hari 3)], [Tabel `notification`], [Tidak dipanggil langsung; membaca _event_ dari Kafka],
   )
   #v(10pt)
-  #note[Transfer dipisahkan dari account karena aturan transfer (status, kompensasi, _idempotency_) berkembang dengan ritme yang berbeda dari pengelolaan rekening. Saldo tetap hanya diubah oleh account service.]
+  #note[Transfer dipisahkan dari account karena aturan transfer (status, kompensasi, _idempotency_) berubah karena alasan dan pada waktu yang berbeda dari pengelolaan rekening. Saldo tetap hanya diubah oleh account service.]
 ]
 
 #slide(kicker: "Studi kasus", title: [_Database per service_])[
@@ -261,14 +262,14 @@
   )
 ]
 
-#code-slide(kicker: "Konsekuensi", title: "Transfer tidak lagi berada dalam satu transaksi",
+#code-slide(kicker: "Konsekuensi", title: "Debit dan credit tidak dapat dibungkus satu transaksi database",
   side: [
     Di monolith, debit dan credit cukup dibungkus satu transaksi: bila salah satu gagal, keduanya dibatalkan.
 
     Di microservices, debit dan credit menjadi dua panggilan jaringan ke account service. Bila credit gagal setelah debit berhasil, tidak ada _rollback_ otomatis.
 
     - Hari 1: transfer dicatat `FAILED` dan masuk _log_
-    - Hari 2: _timeout_ dan _retry_
+    - Hari 2: konsep saga dan _idempotency key_
     - Hari 3: saga dengan kompensasi
   ],
 )[
@@ -316,6 +317,7 @@ module github.com/artivisi/training-microservices-2026-01/studi-kasus/account
 go 1.26.0
 
 require (
+    github.com/jackc/pgx-shopspring-decimal v0.0.0-20220624020537-1d36b5a1853e
     github.com/jackc/pgx/v5 v5.11.0
     github.com/shopspring/decimal v1.6.0
 )
@@ -327,6 +329,7 @@ require (
     - _Struct tag_ `json:"..."` menentukan nama _field_ di JSON.
     - Nominal uang menggunakan `decimal.Decimal`, disimpan sebagai `numeric(19,2)`.
     - `float64` tidak dapat menyimpan 0.1 secara tepat, sehingga selisih pembulatan menumpuk pada saldo.
+    - Kolom `numeric` dipetakan ke `decimal.Decimal` dengan mendaftarkan `pgxdecimal.Register` di `AfterConnect`.
   ],
 )[
 ```go
@@ -375,27 +378,31 @@ type Handler struct {
   side: [
     - _Error_ berupa nilai biasa yang dikembalikan fungsi dan diperiksa tepat setelah pemanggilan.
     - `%w` membungkus _error_ dengan konteks tambahan tanpa menghilangkan identitas _error_ asalnya.
-    - `errors.Is` memeriksa seluruh rantai bungkusan, sehingga _handler_ tetap mengenali `ErrNotFound`.
+    - `errors.Is` memeriksa seluruh rantai bungkusan, sehingga _handler_ transfer tetap mengenali `ErrInsufficientFunds`.
   ],
 )[
 ```go
+// package transfer
 var (
-    ErrNotFound          = errors.New("account not found")
+    ErrAccountNotFound   = errors.New("account not found")
     ErrInsufficientFunds = errors.New("insufficient funds")
 )
 
-// di transfer service: bungkus dengan konteks
-return fmt.Errorf("debit %s: %w", number, ErrInsufficientFunds)
+// package accountclient: bungkus dengan konteks
+case http.StatusUnprocessableEntity:
+    return fmt.Errorf("%s %s: %w", kind, number,
+        transfer.ErrInsufficientFunds)
 
-// di handler: kenali jenis error, lalu pilih status HTTP
-a, err := h.store.Get(r.Context(), r.PathValue("number"))
+// handler transfer: kenali jenis error, lalu pilih status
+t, err := h.svc.Execute(ctx, req)
 switch {
-case errors.Is(err, ErrNotFound):
-    writeError(w, http.StatusNotFound, err.Error())
-case err != nil:
-    h.internalError(w, r, err)
+case err == nil:
+    writeJSON(w, http.StatusCreated, t)
+case errors.Is(err, ErrAccountNotFound),
+    errors.Is(err, ErrInsufficientFunds):
+    writeJSON(w, http.StatusUnprocessableEntity, t)
 default:
-    writeJSON(w, http.StatusOK, a)
+    writeJSON(w, http.StatusBadGateway, t)
 }
 ```
 ]
@@ -404,7 +411,7 @@ default:
   side: [
     - `go func()` menjalankan fungsi secara konkuren di _goroutine_ baru.
     - _Channel_ `errCh` mengirim hasil dari _goroutine_ tersebut ke fungsi `run`.
-    - `select` menunggu kejadian mana yang lebih dahulu terjadi: server berhenti karena _error_, atau sinyal berhenti dari sistem operasi.
+    - `select` berhenti menunggu begitu salah satu kejadian terjadi: server berhenti karena _error_, atau sistem operasi mengirim sinyal berhenti.
   ],
 )[
 ```go
@@ -508,7 +515,7 @@ studi-kasus/
   side: [
     - Sejak Go 1.22, pola _route_ memuat _method_ dan _path_ sekaligus.
     - `{number}` dibaca dengan `r.PathValue("number")`.
-    - _Request_ dengan _method_ yang tidak terdaftar otomatis dijawab `405 Method Not Allowed`.
+    - _Request_ dengan _method_ yang tidak terdaftar otomatis mendapat _response_ `405 Method Not Allowed`.
     - Kebutuhan _routing_ di lab terpenuhi tanpa _router_ pihak ketiga.
   ],
 )[
@@ -535,7 +542,7 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 #code-slide(kicker: "Anatomi service", title: "Validasi input",
   side: [
     - Validasi berjalan sebelum data menyentuh database.
-    - `ValidationError` mengumpulkan semua _field_ yang bermasalah, sehingga klien menerima seluruh daftar kesalahan dalam satu jawaban.
+    - `ValidationError` mengumpulkan semua _field_ yang bermasalah, sehingga klien menerima seluruh daftar kesalahan dalam satu _response_.
     - JSON dengan _field_ yang tidak dikenal ditolak (`DisallowUnknownFields`).
   ],
 )[
@@ -633,11 +640,7 @@ case <-ctx.Done():
     shutdownCtx, cancel := context.WithTimeout(
         context.Background(), 10*time.Second)
     defer cancel()
-    if err := srv.Shutdown(shutdownCtx); err != nil &&
-        !errors.Is(err, http.ErrServerClosed) {
-        return err
-    }
-    return nil
+    return srv.Shutdown(shutdownCtx)
 ```
 ]
 
@@ -707,7 +710,7 @@ curl -s localhost:8081/readyz
 ```
 ]
 
-#code-slide(kicker: "Lab 1", title: "Mutasi saldo yang aman dari debit bersamaan",
+#code-slide(kicker: "Lab 1", title: "Mencegah saldo negatif saat dua debit bersamaan",
   side: [
     - Pemeriksaan saldo berada di klausa `where`. Dua debit yang datang bersamaan tidak dapat sama-sama lolos: debit kedua menunggu _row lock_, lalu kondisinya dievaluasi ulang dengan saldo terbaru.
     - Perubahan saldo dan baris `mutation` ditulis dalam satu transaksi.
@@ -782,7 +785,7 @@ return a, tx.Commit(ctx)
   )
 ]
 
-#code-slide(kicker: "Lab 2", title: "Status transfer dan jawaban HTTP",
+#code-slide(kicker: "Lab 2", title: [Status transfer dan _response_ HTTP],
   side: [
     #table(
       columns: (1fr, auto),
@@ -815,7 +818,7 @@ func (s *Service) Execute(ctx context.Context,
 ```
 ]
 
-#slide(kicker: "Lab 2", title: "Dua celah yang sengaja dibiarkan")[
+#slide(kicker: "Lab 2", title: "Celah yang sengaja dibiarkan di Lab 2")[
   #two-col(
     card([Client tanpa _timeout_], accent: amber)[
       `accountclient` menggunakan `http.Client` tanpa _timeout_. Bila account service lambat, setiap transfer ikut menunggu tanpa batas, dan _goroutine_ serta koneksi menumpuk di transfer service.
@@ -831,7 +834,7 @@ func (s *Service) Execute(ctx context.Context,
     ],
   )
   #v(12pt)
-  #note(kind: "tip")[Account service sudah menyediakan `PUT /admin/fault` untuk menyuntikkan _delay_ dan _error_. Fitur ini digunakan di awal Hari 2 untuk memperlihatkan kedua celah tersebut.]
+  #note(kind: "tip")[Lab 3 diawali dengan _fault injection_ pada account service (`PUT /admin/fault`) untuk menyuntikkan _delay_ dan _error_, sehingga kedua celah ini terlihat langsung.]
 ]
 
 // ── Penutup ────────────────────────────────────────────────────────────────
