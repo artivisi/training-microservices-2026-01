@@ -9,7 +9,7 @@ Setelah lab ini, peserta mampu:
 - menyusun _target_ `make` yang sama untuk laptop, runner CI, dan Jenkins: `image`, `push`, `deploy`;
 - menulis _workflow_ per service yang hanya berisi _step_ `run:` dan dipicu oleh perubahan di direktori service tersebut;
 - memetakan setiap _step_ _workflow_ ke _stage_ _declarative pipeline_ Jenkins;
-- menjalankan tahapan _pipeline_ satu service di laptop terhadap k3d, lalu menelusuri versi yang berjalan lewat `kubectl rollout history`;
+- menjalankan tahapan _pipeline_ satu service di laptop hingga _deploy_ ke k3d, lalu menelusuri versi yang berjalan lewat `kubectl rollout history`;
 - menjelaskan selisih antara isi repository dan isi _cluster_ (_drift_) yang menjadi alasan GitOps.
 
 == Gambaran
@@ -65,7 +65,7 @@ git switch -c lab-10-saya
 ```
 ]
 
-Perintah `git switch -c` membuat _branch_ kerja. Langkah 8 meminta _commit_, dan _commit_ di atas _tag_ tanpa _branch_ menghasilkan _detached HEAD_ yang mudah hilang.
+Perintah `git switch -c` membuat _branch_ kerja. Langkah 8 meminta _commit_, dan _commit_ yang dibuat langsung di atas _tag_ berada dalam kondisi _detached HEAD_ dan mudah hilang setelah `git checkout` berikutnya.
 
 Pastikan prasyarat Lab 9 masih berjalan:
 
@@ -158,7 +158,7 @@ Baris resep di `Makefile` harus diawali karakter _Tab_, bukan spasi. Salinan dar
 
 === Langkah 2: _Include_ di `Makefile` setiap service
 
-Tambahkan dua baris berikut di akhir `account/Makefile`, `transfer/Makefile`, dan `notification/Makefile`. Ketiga _file_ itu sudah mengisi `SERVICE := <nama service>` di baris awal sejak Lab 1, dan `pipeline.mk` membaca variabel tersebut.
+Tambahkan dua baris berikut di akhir `account/Makefile`, `transfer/Makefile`, dan `notification/Makefile`. Ketiga _file_ itu sudah mengisi `SERVICE := <nama service>` di baris awal sejak service tersebut dibuat (Lab 1, 2, dan 5), dan `pipeline.mk` membaca variabel tersebut.
 
 #perintah[
 ```makefile
@@ -168,7 +168,7 @@ include ../pipeline.mk
 ```
 ]
 
-Periksa bahwa _target_ baru menolak berjalan tanpa variabel:
+Periksa bahwa _target_ baru berhenti dengan pesan error bila variabelnya kosong:
 
 #perintah[
 ```bash
@@ -185,6 +185,8 @@ Keluaran yang diharapkan:
 ../pipeline.mk:53: *** missing required variables: NAMESPACE.  Stop.
 ```
 ]
+
+GNU make 4.x (umumnya di Linux) juga mencetak baris `make: Entering directory '.../studi-kasus/transfer'` dan `make: Leaving directory ...` di sekitar keluaran setiap perintah `make -C`, termasuk perintah `make -n -C` di bawah. GNU make 3.81 bawaan macOS tidak mencetak baris tersebut.
 
 Opsi `-n` menampilkan perintah tanpa menjalankannya. Dengan opsi ini, isi _target_ `deploy` bisa diperiksa tanpa _cluster_:
 
@@ -206,7 +208,7 @@ Nama _container_ di `kubectl set image` (`transfer=...`) adalah nama _container_
 
 === Langkah 3: `.dockerignore`
 
-`Jenkinsfile` dan `pipeline.mk` tidak dibutuhkan untuk membangun _binary_. Bila keduanya masuk ke _build context_, setiap perubahan di salah satunya membatalkan _cache_ _layer_ `COPY` dan membuat _build_ berikutnya lebih lama. Tambahkan dua baris di akhir `studi-kasus/.dockerignore`:
+`Jenkinsfile` dan `pipeline.mk` tidak dibutuhkan untuk membangun _binary_. `Jenkinsfile` berada di dalam direktori service yang disalin oleh `COPY transfer/ /src/transfer/`, sehingga setiap perubahan `Jenkinsfile` membatalkan _cache layer_ tersebut dan membuat _build_ berikutnya lebih lama. `pipeline.mk` tidak disalin ke _image_, tetapi tetap ikut terkirim ke _builder_ sebagai bagian dari _build context_. Tambahkan keduanya ke `.dockerignore`, sama seperti `Makefile` dan `compose.yaml`, dengan dua baris di akhir `studi-kasus/.dockerignore`:
 
 #perintah[
 ```
@@ -219,8 +221,8 @@ pipeline.mk
 
 `Makefile` di `studi-kasus/` mendapat dua _target_ baru:
 
-- `pipeline-k3d` menjalankan tahapan _pipeline_ satu service di laptop terhadap k3d. Laptop tidak punya registry, sehingga `push` diganti `k3d image import`. _Tag_ _image_ adalah 12 karakter pertama SHA _commit_ saat ini. Karena itu _target_ ini menolak berjalan selama ada perubahan yang belum di-_commit_ di `studi-kasus/`: tanpa pemeriksaan tersebut, _image_ bisa berisi kode yang tidak ada di _commit_ yang namanya tertulis di _tag_.
-- `k8s-apply-server` memasang _overlay_ server pelatihan satu kali per peserta. _Target_ ini menolak berjalan selama masih ada _placeholder_ `replace-me` (Langkah 7).
+- `pipeline-k3d` menjalankan tahapan _pipeline_ satu service di laptop hingga _deploy_ ke k3d. Laptop tidak punya registry, sehingga `push` diganti `k3d image import`. _Tag_ _image_ adalah 12 karakter pertama SHA _commit_ saat ini. Karena itu _target_ ini berhenti dengan pesan error selama ada perubahan yang belum di-_commit_ di `studi-kasus/`: tanpa pemeriksaan tersebut, _image_ bisa berisi kode yang tidak ada di _commit_ yang namanya tertulis di _tag_.
+- `k8s-apply-server` memasang _overlay_ server pelatihan satu kali per peserta. _Target_ ini berhenti dengan pesan error selama masih ada _placeholder_ `replace-me` (Langkah 7).
 
 Tambahkan kedua nama _target_ ke baris `.PHONY` yang sudah ada:
 
@@ -387,7 +389,22 @@ sed -e 's/transfer/notification/g' -e '/studi-kasus\/proto/d' \
 ```
 ]
 
-Periksa hasilnya dengan `git diff --no-index`. Perintah `sed` juga mengganti kata `transfer` di dalam komentar, sehingga komentar tentang `proto/` di `account.yaml` dan `notification.yaml` perlu dibaca ulang dan diperbaiki.
+Periksa hasilnya dengan `git diff --no-index`. Perintah `sed` juga mengganti kata `transfer` di dalam komentar, sehingga komentar tentang `proto/` di kedua _file_ baru perlu diperbaiki. Di `account.yaml`, baris kedua komentar menjadi:
+
+#perintah[
+```yaml
+    # rebuilds both account and transfer.
+```
+]
+
+Di `notification.yaml`, ganti kedua baris komentar di atas `paths:` dengan:
+
+#perintah[
+```yaml
+    # No proto/: notification does not import the gRPC contract, it only reads
+    # the events on Kafka. go.work and pipeline.mk are shared by all services.
+```
+]
 
 // TODO(endy): verify on the actual git server version that secrets.GITHUB_TOKEN, vars.REGISTRY, vars.NAMESPACE and github.repository_owner resolve as written, and that the job token works as basic auth with user x-access-token for a fetch by SHA.
 
@@ -523,7 +540,7 @@ Seperti _manifest_ Lab 9, _overlay_ server disediakan, tidak ditulis dari awal. 
 
 #perintah[
 ```bash
-git checkout lab-10 -- studi-kasus/k8s/overlays/server
+git checkout lab-10 -- studi-kasus/k8s/overlays/server studi-kasus/README.md
 ls studi-kasus/k8s/overlays/server
 ```
 ]
@@ -533,6 +550,8 @@ ls studi-kasus/k8s/overlays/server
 config.yaml  ingress.yaml  kustomization.yaml  secrets.yaml
 ```
 ]
+
+Perintah yang sama mengambil `studi-kasus/README.md` versi Lab 10, yang menambahkan bagian ringkasan Lab 10.
 
 Perbedaan _overlay_ `server` dengan _overlay_ `k3d`:
 
@@ -547,7 +566,7 @@ Perbedaan _overlay_ `server` dengan _overlay_ `k3d`:
   [Ingress], [Semua _host_ di `localhost:8080`], [_Host_ per peserta, karena _ingress controller_ digunakan bersama],
 )
 
-Setiap nilai yang ditulis `replace-me` adalah _placeholder_ untuk alamat atau nama yang dibagikan instruktur ketika server siap. Domain `.invalid` adalah domain tingkat atas yang dicadangkan: _placeholder_ yang lolos tidak akan bisa di-_resolve_ dan tidak akan mengenai _host_ sungguhan. Selama masih ada _placeholder_, `make k8s-apply-server` menolak berjalan:
+Setiap nilai yang ditulis `replace-me` adalah _placeholder_ untuk alamat atau nama yang dibagikan instruktur ketika server siap. Domain `.invalid` adalah domain tingkat atas yang dicadangkan. Bila ada _placeholder_ yang terlewat, nama tersebut tidak bisa di-_resolve_, sehingga tidak ada koneksi yang sampai ke _host_ sungguhan. Selama masih ada _placeholder_, `make k8s-apply-server` berhenti tanpa memasang apa pun:
 
 #perintah[
 ```bash
@@ -568,7 +587,7 @@ Hasil _render_ _overlay_ bisa diperiksa tanpa _cluster_ dengan `kubectl kustomiz
 
 // TODO(endy): hand out the real values for every replace-me (namespace, registry host and owner, Kafka, OAuth2, OTLP, Ingress host, first image tag) once the training server exists.
 
-=== Langkah 8: Menjalankan _pipeline_ di laptop terhadap k3d
+=== Langkah 8: Menjalankan _pipeline_ di laptop dengan tujuan k3d
 
 Langkah ini menjalankan tahapan _pipeline_ yang sama dengan runner CI, tetapi di laptop: _test_, _image_ dengan _tag_ = _commit_, _import_ ke k3d sebagai pengganti `push`, lalu _deploy_ dengan `kubectl set image` dan `rollout status`.
 
@@ -583,7 +602,7 @@ make k8s-apply
 ```
 ]
 
-_Commit_ hasil Langkah 1 hingga 7 terlebih dahulu, karena `pipeline-k3d` menolak berjalan bila `studi-kasus/` masih berisi perubahan yang belum di-_commit_:
+_Commit_ hasil Langkah 1 hingga 7 terlebih dahulu, karena `pipeline-k3d` berhenti dengan pesan error bila `studi-kasus/` masih berisi perubahan yang belum di-_commit_:
 
 #perintah[
 ```bash
@@ -619,9 +638,9 @@ deployment "transfer" successfully rolled out
 ```
 ]
 
-`k3d.local` hanya nama registry fiktif untuk _tag_ lokal. _Image_ tidak pernah dikirim ke registry; `k3d image import` menyalinnya langsung ke _containerd_ di dalam _cluster_, dan `imagePullPolicy: IfNotPresent` di Deployment menggunakan salinan itu.
+`k3d.local` hanya nama registry fiktif untuk _tag_ lokal. _Image_ tidak pernah dikirim ke registry; `k3d image import` menyalinnya langsung ke _containerd_ di dalam _cluster_. Karena Deployment menggunakan `imagePullPolicy: IfNotPresent`, _kubelet_ menjalankan salinan itu tanpa menarik _image_ dari registry.
 
-=== Langkah 9: Menelusuri versi yang berjalan, dan _drift_
+=== Langkah 9: Menelusuri versi yang berjalan dan mengamati _drift_
 
 Lihat riwayat _rollout_:
 
@@ -707,6 +726,8 @@ Di server pelatihan, sama seperti di k3d, Prometheus tidak mengambil _metric_ da
 
 == Verifikasi
 
+Jalankan ulang `make pipeline-k3d SERVICE=transfer` setelah Langkah 9, karena `make k8s-apply` di Langkah 9 mengembalikan _image_ ke `1.0.0`.
+
 #table(
   columns: (1.3fr, 1.4fr),
   [Perintah], [Hasil yang Diharapkan],
@@ -764,4 +785,4 @@ git checkout lab-10
 ```
 ]
 
-Perbedaan yang wajar dengan _tag_ `lab-10`: perubahan pesan log di `transfer/main.go` dari Langkah 8, yang tidak termasuk di _tag_.
+Perbedaan yang wajar dengan _tag_ `lab-10`: perubahan pesan log di `transfer/main.go` dari Langkah 8, yang tidak termasuk di _tag_. Komentar di `account.yaml` dan `notification.yaml` yang ditulis ulang dengan kata-kata sendiri juga wajar berbeda.
