@@ -1,0 +1,20 @@
+# Every participant's Ingress routes /transfers; on a shared ingress
+# controller only the host name tells them apart: <participant>.app.<domain>
+# of the training server. No tls section: the server's ingress controller
+# answers HTTPS for every host with its wildcard certificate.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: transfer
+spec:
+  rules:
+    - host: replace-me.app.replace-me.invalid
+      http:
+        paths:
+          - path: /transfers
+            pathType: Prefix
+            backend:
+              service:
+                name: transfer
+                port:
+                  name: http

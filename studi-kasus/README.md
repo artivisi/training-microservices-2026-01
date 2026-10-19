@@ -548,6 +548,107 @@ Perubahan ConfigMap atau Secret tidak dibaca _pod_ yang sedang berjalan karena _
 
 Database dari Lab 8 tidak perlu di-_reset_. `make infra-up` membuka port 19092 untuk _listener_ Kafka `K3D`.
 
+## CI/CD (Lab 10)
+
+Setiap service punya _pipeline_ sendiri. _Commit_ yang mengubah `account` hanya menjalankan _pipeline_ `account`.
+
+| File | Fungsi |
+|---|---|
+| `../.forgejo/workflows/<service>.yaml` | _Workflow_ untuk git server dan runner CI di server pelatihan |
+| `<service>/Jenkinsfile` | _Declarative pipeline_ Jenkins dengan _stage_ dan _make target_ yang sama, untuk pemetaan ke Bitbucket + Jenkins |
+| `pipeline.mk` | _Target_ `image`, `push`, `apply`, `deploy`, di-_include_ oleh `Makefile` setiap service |
+| `k8s/overlays/server/` | _Overlay_ untuk server pelatihan: satu _namespace_ per peserta, infrastruktur bersama |
+
+### Tahapan
+
+| _Step_ _workflow_ | _Stage_ Jenkins | Perintah |
+|---|---|---|
+| Checkout | (SCM bawaan Jenkins) | `git fetch` _commit_ yang memicu _pipeline_ dengan _token_ dari runner |
+| Test | Test | `make -C studi-kasus/<service> test` |
+| Build image | Build Image | `make -C studi-kasus/<service> image` |
+| Push | Push | `make -C studi-kasus/<service> push` |
+| Deploy | Deploy | `make -C studi-kasus/<service> deploy` |
+
+_Workflow_ hanya berisi _step_ `run:` tanpa `uses:`, sehingga setiap _step_ setara satu _stage_ Jenkins dan perintah yang sama bisa dijalankan di laptop.
+
+_Trigger_: _push_ ke `main` yang mengubah direktori service, `proto/` (khusus `account` dan `transfer`), `go.work`, `pipeline.mk`, atau file _workflow_ itu sendiri.
+
+Satu service hanya menjalankan satu _pipeline_ dalam satu waktu. _Workflow_ menggunakan `concurrency` dengan `cancel-in-progress: false`: _push_ berikutnya menunggu _pipeline_ yang sedang berjalan selesai. Di Jenkins padanannya `disableConcurrentBuilds()`.
+
+Job Jenkins harus bertipe _Multibranch Pipeline_. Kondisi `when { branch 'main' }` membaca `BRANCH_NAME`, dan variabel ini hanya diisi oleh job _Multibranch_. Stage Test berhenti lebih dulu bila `GIT_COMMIT` kosong, sehingga tidak ada _image_ dengan _tag_ `null`.
+
+### Variabel
+
+Tidak ada nilai _default_. Variabel yang kosong menghentikan `make` dengan pesan `missing required variables: ...`.
+
+| Variabel | Digunakan oleh | Sumber di _workflow_ | Sumber di Jenkins |
+|---|---|---|---|
+| `REGISTRY` | `image`, `push`, `apply`, `deploy` | _Variable_ repository `REGISTRY` | _Environment variable_ folder/global |
+| `IMAGE_OWNER` | `image`, `push`, `apply`, `deploy` | Pemilik repository | _Environment variable_ folder/global |
+| `VERSION` | `image`, `push`, `apply`, `deploy` | SHA _commit_ | `GIT_COMMIT` |
+| `NAMESPACE` | `apply`, `deploy` | _Variable_ repository `NAMESPACE` | _Environment variable_ folder/global |
+| `REGISTRY_USER`, `REGISTRY_PASSWORD` | `push` | _Secret_ repository | _Credential_ `registry` (_username with password_) |
+| `KUBECONFIG` | `apply`, `deploy` | _Secret_ `KUBE_CONFIG`, ditulis ke file sementara | _Credential_ `kubeconfig` (_secret file_) |
+
+Nama _image_: `<REGISTRY>/<IMAGE_OWNER>/<service>:<VERSION>`. Setiap _commit_ menghasilkan _tag_ baru, sehingga _tag_ lama tidak pernah tertimpa dan _image_ yang berjalan bisa ditelusuri ke _commit_-nya (_label_ `org.opencontainers.image.revision`).
+
+`push` menjalankan `docker login` dengan `DOCKER_CONFIG` sementara yang dihapus di akhir _step_, sehingga _token_ registry tidak tertinggal di `~/.docker/config.json` milik runner setelah job selesai. Langkah ini tidak mengisolasi peserta satu sama lain. Runner digunakan bersama dan memercayai semua peserta: siapa pun yang bisa mengubah _workflow_ bisa menjalankan perintah apa saja di host runner. Setelah _push_ berhasil, _image_ lokal dihapus agar disk runner tidak penuh oleh satu _image_ per _commit_ per peserta.
+
+`deploy` menjalankan `kubectl set image` lalu `kubectl rollout status`, sama seperti latihan _rolling update_ di Lab 9. Anotasi `kubernetes.io/change-cause` dipasang setelah `set image` dan mencatat versi di `kubectl rollout history`. _Rollout_ yang gagal menggagalkan _pipeline_; _pod_ lama tetap melayani (`maxUnavailable: 0`). _Rollback_ dilakukan manual dengan `kubectl rollout undo`.
+
+Bila Deployment service belum ada di _namespace_, `deploy` lebih dulu menjalankan target `apply`: _overlay_ `k8s/overlays/server` di-_apply_ dengan _namespace_ `NAMESPACE` dan _image_ `<REGISTRY>/<IMAGE_OWNER>/<service>:<VERSION>`, hanya untuk objek service itu (`kubectl apply -l app.kubernetes.io/name=<service>`). _Pipeline_ pertama setiap service membuat ConfigMap, Service, Deployment, dan Ingress-nya sendiri dari _namespace_ kosong.
+
+### Server pelatihan
+
+| Hal | Isi |
+|---|---|
+| _Cluster_ | Satu _node_, satu _namespace_ per peserta, _kubeconfig_ dengan RBAC terbatas pada _namespace_ itu |
+| _Image_ | Ditarik dari _container registry_ git server dengan Secret `registry-credentials` (`imagePullSecrets`) |
+| PostgreSQL | Bersama, database per peserta per service. `DATABASE_URL` ada di Secret yang dibuat instruktur, tidak di repository |
+| Kafka | Bersama, _topic_ dan _consumer group_ diberi awalan nama peserta |
+| OAuth2, OTLP | Bersama |
+| Ingress | _Host_ per peserta |
+
+`k8s/overlays/server` tidak berisi _namespace_ dan _tag image_. Keduanya berasal dari variabel _pipeline_, sehingga tidak perlu _apply_ manual sebelum _pipeline_ pertama. Instruktur menyiapkan _namespace_, _kubeconfig_, Secret service, dan Secret `registry-credentials`. Nilai `replace-me` di `config.yaml` dan `ingress.yaml` diisi peserta dengan alamat dari instruktur; `deploy` dan `k8s-apply-server` menolak berjalan selama masih ada `replace-me`.
+
+Setelah Deployment ada, _pipeline_ hanya mengganti _image_. Perubahan `config.yaml` atau `ingress.yaml` dikirim ke _cluster_ dengan `k8s-apply-server`, satu service per perintah, dengan `VERSION` = _commit_ yang sedang berjalan:
+
+```
+kubectl -n <namespace> rollout history deployment/transfer     # versi yang sedang berjalan
+make k8s-apply-server SERVICE=transfer VERSION=<sha> REGISTRY=<registry> IMAGE_OWNER=<pemilik> NAMESPACE=<namespace>
+kubectl -n <namespace> rollout restart deployment/transfer     # pod membaca ConfigMap hanya saat start
+```
+
+Selisih antara isi repository dan isi _cluster_ ini yang dihilangkan GitOps: perubahan _cluster_ hanya lewat repository.
+
+### Mencoba di laptop
+
+`pipeline-k3d` menjalankan tahapan _pipeline_ untuk satu service terhadap k3d dari Lab 9. `push` diganti `k3d image import` karena laptop tidak punya registry.
+
+```
+make infra-up                                 # infrastruktur di Docker Compose
+k3d cluster get bank || make k3d-up           # cluster Lab 9 digunakan lagi bila sudah ada
+make images VERSION=1.0.0
+make k3d-import VERSION=1.0.0
+make k8s-apply                                # manifest Lab 9, image 1.0.0
+# ubah kode transfer, lalu commit
+make pipeline-k3d SERVICE=transfer            # test, image, import, deploy dengan tag = commit
+kubectl -n bank rollout history deployment/transfer
+kubectl -n bank get deploy transfer -o jsonpath='{.spec.template.spec.containers[0].image}'
+```
+
+Cluster yang dihentikan dengan `k3d cluster stop bank` dijalankan lagi dengan `k3d cluster start bank`. _Tag_ adalah _commit_ saat ini, sehingga `pipeline-k3d` menolak berjalan selama ada perubahan yang belum di-_commit_ di `studi-kasus/`. `make k8s-apply` setelahnya mengembalikan _image_ ke _tag_ di `overlays/k3d`.
+
+### Status
+
+| Bagian | Status |
+|---|---|
+| _Target_ `image`, `push`, `deploy` | Siap |
+| `pipeline-k3d` | Siap |
+| _Workflow_ dan `Jenkinsfile` | Ditulis, belum dijalankan |
+| `apply` (Deployment pertama dari _namespace_ kosong) | Diuji di k3d pada Docker Engine Linux: _namespace_ kosong, _kubeconfig_ dengan RBAC satu _namespace_, _image_ ditarik dari registry dengan _basic auth_ lewat `registry-credentials`, lalu _deploy_ kedua (hanya `set image`) dan `k8s-apply-server`. Di server pelatihan belum |
+| Runner CI pusat dan server pelatihan | Belum tersedia. Nilai `replace-me` di `k8s/overlays/server` diisi setelah server siap |
+
 ## Checkpoint
 
 Tag `lab-01` … `lab-10` berisi kondisi kode di akhir setiap lab. Peserta yang tertinggal melanjutkan dari tag lab sebelumnya:

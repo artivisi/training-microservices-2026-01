@@ -1,0 +1,46 @@
+# The shared training server (Lab 10): one single-node cluster, one namespace
+# per participant, PostgreSQL, Kafka, the OAuth2 server and the collector
+# shared by everyone, in the namespace "infra" (participants cannot see it).
+#
+# Every value spelled "replace-me" (in config.yaml and ingress.yaml) is a
+# placeholder for an address or name that the instructor hands out with the
+# server (~/lab10.txt there); make deploy and make k8s-apply-server refuse
+# to apply while one is left.
+#
+# No namespace and no image tag here: both come from the pipeline (NAMESPACE,
+# and REGISTRY/IMAGE_OWNER/<service>:VERSION). make deploy (pipeline.mk)
+# applies this overlay itself when the service's Deployment does not exist
+# yet, through a generated kustomization on top of it that sets the
+# namespace and the image of the commit being deployed, and only for the
+# objects of that service (kubectl apply -l app.kubernetes.io/name=<service>).
+# So the first pipeline run of each service creates its Deployment, from an
+# empty namespace. From then on the pipeline only changes the image
+# (kubectl set image); a change in config.yaml or ingress.yaml reaches the
+# cluster with make k8s-apply-server (see README). That gap between the
+# repository and the cluster is the drift that GitOps removes by making the
+# repository the only way to change the cluster.
+#   kubectl kustomize k8s/overlays/server    renders it (images unresolved)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# The participant's namespace is created by the instructor together with a
+# kubeconfig whose RBAC role covers only this namespace, so no Namespace
+# object anywhere (a participant may not create namespaces).
+resources:
+  - ../../base
+patches:
+  - path: config.yaml
+  - path: secrets.yaml
+  - path: ingress.yaml
+  # The server's cluster pulls from the git server's container registry,
+  # which needs credentials: a docker-registry Secret "registry-credentials"
+  # in the namespace, created by the instructor
+  # (kubectl create secret docker-registry). k3d in Lab 9 needed none
+  # because the images were imported. IfNotPresent (base) is safe with the
+  # pipeline's tags: a commit SHA never points to another image.
+  - target:
+      kind: Deployment
+    patch: |-
+      - op: add
+        path: /spec/template/spec/imagePullSecrets
+        value:
+          - name: registry-credentials

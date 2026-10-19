@@ -7,3 +7,5 @@ observability
 *.md
 compose.yaml
 Makefile
+**/Jenkinsfile
+pipeline.mk
