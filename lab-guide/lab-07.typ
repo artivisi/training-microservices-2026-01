@@ -342,10 +342,12 @@ _Interceptor_ membaca _token_ dari _metadata_ gRPC. _Metadata_ gRPC berjalan seb
 Urutan pemeriksaan di _interceptor_:
 
 + Metode publik (gRPC _health_ dan _reflection_) langsung diteruskan tanpa _token_.
-+ Metode yang tidak terdaftar di peta _scope_ ditolak dengan `PermissionDenied`. Dengan begitu, RPC baru yang ditambahkan tanpa _scope_ otomatis tertutup, bukan terbuka.
++ Metode yang tidak terdaftar di peta _scope_ ditolak dengan `PermissionDenied`. Dengan begitu, RPC _unary_ baru yang ditambahkan ke `AccountService` tanpa _scope_ otomatis tertutup, bukan terbuka.
 + _Token_ tidak ada atau tidak valid: `Unauthenticated`.
 + _Token_ valid tetapi _scope_ kurang: `PermissionDenied`.
 + Lolos semua pemeriksaan: _claim_ disimpan di `context` agar _handler_ dapat membaca `client_id` pemanggil.
+
+Sifat "otomatis tertutup" ini hanya berlaku untuk panggilan yang melewati _interceptor_ dan tidak termasuk metode publik. Ada dua celah yang perlu diingat. Pertama, _interceptor_ ini hanya untuk RPC _unary_. RPC _streaming_ tidak pernah melewatinya, dan service ini tidak memasang _stream interceptor_, sehingga metode _streaming_ akan terbuka. Kedua, `account/main.go` menganggap semua metode di luar `AccountService` sebagai metode publik. Service gRPC lain yang kelak didaftarkan di server yang sama otomatis terbuka. Sebelum menambah service seperti itu, persempit fungsi penentu metode publik agar hanya meloloskan _health_ dan _reflection_.
 
 Detail penolakan (kedaluwarsa, _issuer_ salah, tanda tangan tidak cocok) hanya ditulis ke log `grpc call rejected`. Pemanggil hanya menerima `invalid token`. Informasi seperti "_issuer_ yang diharapkan adalah X" membantu penyerang, bukan pemanggil yang sah.
 
@@ -378,8 +380,17 @@ func ClaimsFrom(ctx context.Context) (Claims, bool) {
 //   - no token or an invalid one: Unauthenticated ("who are you?")
 //   - valid token without the scope: PermissionDenied ("I know you, but no")
 //
-// public names full methods that need no token, e.g. the health service. Every
-// other method must be in scopes; one that is missing is denied.
+// public names full methods that need no token, e.g. the health service, which
+// probes call without credentials. Every other method must be in scopes; one
+// that is missing is denied, so a new unary RPC added to a protected service
+// without a scope is closed, not open.
+//
+// Fail closed covers only what reaches this interceptor and is not public:
+//   - It is a unary interceptor. A streaming RPC never passes through it, and
+//     no stream interceptor is installed, so a streaming method would be open.
+//   - The account service passes "not AccountService" as public, so any other
+//     service registered on the same server later is open by default. Narrow
+//     public to the health and reflection services before adding one.
 func UnaryServerInterceptor(v *Verifier, scopes map[string]string, public func(fullMethod string) bool, log *slog.Logger) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		if public(info.FullMethod) {
@@ -398,7 +409,8 @@ func UnaryServerInterceptor(v *Verifier, scopes map[string]string, public func(f
 		}
 		claims, err := v.Verify(token)
 		if err != nil {
-			// The detail goes to our log only.
+			// The detail (expired, wrong issuer, bad signature) goes to our log only;
+			// the caller learns that the token was not accepted.
 			log.Warn("grpc call rejected", "method", info.FullMethod, "error", err)
 			return nil, status.Error(codes.Unauthenticated, ErrInvalidToken.Error())
 		}
@@ -452,7 +464,7 @@ Tambahkan juga _import_ paket `auth` di _file_ yang sama:
 	"github.com/artivisi/training-microservices-2026-01/studi-kasus/account/internal/auth"
 ```
 
-Sekarang setiap mutasi saldo dapat dicatat beserta _client_ yang memintanya. Di fungsi `mutate`, tepat setelah blok `if err != nil { return Account{}, s.toStatus(err) }`, ambil _claim_ dan tambahkan `client_id` ke kedua baris log:
+Sekarang setiap mutasi saldo dapat dicatat beserta _client_ yang memintanya. Di fungsi `mutate`, tepat setelah pemanggilan `s.store.Mutate` beserta blok `if err != nil` miliknya, ambil _claim_ dan tambahkan `client_id` ke kedua baris log:
 
 ```go
 	// client_id from the verified token (Lab 7): who moved the money, for the audit trail.
@@ -473,12 +485,18 @@ Tambahkan _import_ `.../account/internal/auth`, lalu buat `Verifier` sebelum `gr
 
 ```go
 	// Lab 7: every AccountService call needs a JWT from the authorization
-	// server. The account REST API on HTTP_ADDR stays open in this lab.
+	// server. The account REST API on HTTP_ADDR stays open in this lab to keep
+	// the setup steps (creating accounts) short; in production it gets the same
+	// kind of middleware as the transfer REST API.
 	verifier, err := auth.NewVerifier(ctx, cfg.OAuthIssuer, cfg.OAuthJWKSURL, log)
 	if err != nil {
 		return err
 	}
-	// Health and reflection are not AccountService: no token, no faults.
+	// Health and reflection are not AccountService: no token, no faults, like
+	// the HTTP probes. Note the predicate opens every non-AccountService method,
+	// not only those two, and auth is a unary interceptor only: see
+	// auth.UnaryServerInterceptor before registering another service or a
+	// streaming RPC.
 	notAccountService := func(method string) bool {
 		return !strings.HasPrefix(method, "/"+accountv1.AccountService_ServiceDesc.ServiceName+"/")
 	}
@@ -681,8 +699,8 @@ grpc-go sudah menyediakan implementasi siap pakai di paket `credentials/oauth`. 
 Tiga keputusan desain di dalam `tokenCredentials`:
 
 - *_Token_ disimpan dan digunakan ulang* hingga 10 detik sebelum kedaluwarsa (`oauth2.Token.Valid()`). Hydra menerima satu permintaan per masa berlaku _token_, bukan satu permintaan per transfer.
-- *Gagal mengambil _token_ menghasilkan `Unauthenticated`*, bukan `Unavailable`. Kebijakan _retry_ dari Lab 4 hanya mengulang `Unavailable` (dan `DeadlineExceeded` sejak Lab 5), dan _circuit breaker_ hanya menghitung error infrastruktur. Hydra yang mati tidak berarti `account` bermasalah, jadi _circuit breaker_ ke `account` tidak boleh terbuka karenanya.
-- *_Token_ yang ditolak `account` diganti sekali.* _Token_ bisa ditolak sebelum kedaluwarsa, misalnya karena Hydra merotasi _signing key_. Hydra di lab mendapat _key_ baru setiap kali di-_restart_. Tanpa mekanisme ini, setiap panggilan gagal hingga _token_ lama kedaluwarsa, paling lama satu jam. Mengulang `Debit` atau `Credit` aman karena keduanya sudah _idempotent_ berdasarkan `reference` sejak Lab 5.
+- *Gagal mengambil _token_ menghasilkan `Unauthenticated`*, bukan `Unavailable`. Kebijakan _retry_ dari Lab 4 hanya mengulang `Unavailable` (dan `DeadlineExceeded` sejak Lab 5), dan _circuit breaker_ hanya menghitung error infrastruktur. Hydra yang mati tidak berarti `account` bermasalah, jadi _circuit breaker_ ke `account` tidak boleh terbuka karenanya. Error ini dibuat sebagai tipe tersendiri, `tokenFetchError`, agar dapat dibedakan dari `Unauthenticated` yang dikirim oleh `account`. Panggilan tersebut tidak pernah keluar dari `transfer`, dan transfer berakhir `FAILED` dengan kode HTTP 502.
+- *_Token_ yang ditolak `account` diganti sekali.* _Token_ bisa ditolak sebelum kedaluwarsa, misalnya karena Hydra merotasi _signing key_. Hydra di lab mendapat _key_ baru setiap kali di-_restart_. Tanpa mekanisme ini, setiap panggilan gagal hingga _token_ lama kedaluwarsa, paling lama satu jam. Penggantian hanya dilakukan bila penolakan datang dari `account`. Bila yang gagal adalah pengambilan _token_ itu sendiri, percobaan kedua hanya akan menghubungi Hydra lagi dalam panggilan yang sama. Mengulang `Debit` atau `Credit` aman karena keduanya sudah _idempotent_ berdasarkan `reference` sejak Lab 5.
 
 Buat _file_ `transfer/internal/accountclient/credentials.go`:
 
@@ -691,6 +709,7 @@ package accountclient
 
 import (
 	"context"
+	"errors"
 	"sync"
 
 	"golang.org/x/oauth2"
@@ -705,7 +724,9 @@ import (
 type FetchToken func(ctx context.Context) (*oauth2.Token, error)
 
 // tokenCredentials attaches "authorization: Bearer <token>" to every call
-// (Lab 7). It reuses a token until shortly before it expires.
+// (Lab 7). It reuses a token until shortly before it expires, so the
+// authorization server sees one request per token lifetime, not one per gRPC
+// call.
 //
 // grpc-go ships credentials/oauth for this, but it refuses to send a token
 // over a connection without TLS, and the lab runs plaintext. Production runs
@@ -722,18 +743,31 @@ var _ credentials.PerRPCCredentials = (*tokenCredentials)(nil)
 func (c *tokenCredentials) GetRequestMetadata(ctx context.Context, _ ...string) (map[string]string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	// Valid() is false for a token that expires within the next 10 s.
+	// Valid() is false for a token that expires within the next 10 s, so a
+	// token never runs out while the call is on its way.
 	if !c.tok.Valid() {
 		tok, err := c.fetch(ctx)
 		if err != nil {
-			// Unauthenticated, not Unavailable: the account service is fine, our
-			// side has no token. The resiliency policies neither retry this nor
-			// count it against the account breaker.
-			return nil, status.Errorf(codes.Unauthenticated, "get access token: %v", err)
+			return nil, &tokenFetchError{err: err}
 		}
 		c.tok = tok
 	}
 	return map[string]string{"authorization": c.tok.Type() + " " + c.tok.AccessToken}, nil
+}
+
+// tokenFetchError: no token, so the call never left the transfer service.
+//
+// Its gRPC code is Unauthenticated, not Unavailable: the account service is
+// fine, our side has no token. The resiliency policies neither retry this nor
+// count it against the account breaker. grpc-go passes an error with a
+// GRPCStatus method through unchanged, so refreshOnUnauthenticated can tell it
+// apart from an Unauthenticated sent by the account service.
+type tokenFetchError struct{ err error }
+
+func (e *tokenFetchError) Error() string { return "get access token: " + e.err.Error() }
+func (e *tokenFetchError) Unwrap() error { return e.err }
+func (e *tokenFetchError) GRPCStatus() *status.Status {
+	return status.New(codes.Unauthenticated, e.Error())
 }
 
 // RequireTransportSecurity is false only because the lab has no TLS; see above.
@@ -742,12 +776,18 @@ func (*tokenCredentials) RequireTransportSecurity() bool { return false }
 // refreshOnUnauthenticated drops the cached token when the account service
 // rejects it, and repeats the call once with a new one. A token can stop being
 // accepted before it expires: the authorization server rotated its signing keys
-// or the token was revoked. Repeating Debit/Credit is safe: they are idempotent
-// by reference (Lab 5).
+// (the lab's Hydra gets new keys on every restart) or the token was revoked.
+// Without this, every call fails until the old token expires, up to an hour.
+// Repeating Debit/Credit is safe: they are idempotent by reference (Lab 5).
+//
+// Only a rejection by the account service counts. When the token fetch itself
+// failed, a second try would only hit the authorization server again within
+// the same call.
 func (c *tokenCredentials) refreshOnUnauthenticated(ctx context.Context, method string, req, reply any,
 	cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
 	err := invoker(ctx, method, req, reply, cc, opts...)
-	if status.Code(err) != codes.Unauthenticated {
+	var fetchErr *tokenFetchError
+	if status.Code(err) != codes.Unauthenticated || errors.As(err, &fetchErr) {
 		return err
 	}
 	c.mu.Lock()
@@ -759,6 +799,8 @@ func (c *tokenCredentials) refreshOnUnauthenticated(ctx context.Context, method 
 
 `c.tok.Valid()` aman dipanggil walaupun `c.tok` masih `nil`: method `Valid` pada `*oauth2.Token` memeriksa `nil` terlebih dahulu dan mengembalikan `false`.
 
+grpc-go meneruskan error yang memiliki method `GRPCStatus` apa adanya ke pemanggil. Karena itu, `refreshOnUnauthenticated` dapat memeriksa dua hal sekaligus: `status.Code(err)` tetap `Unauthenticated` bagi kebijakan _retry_ dan _circuit breaker_, sedangkan `errors.As` mengenali bahwa error tersebut berasal dari `tokenFetchError`, bukan dari `account`.
+
 ==== Memasang _Credentials_ di `accountclient.New`
 
 Di `transfer/internal/accountclient/client.go`, tambahkan parameter `fetch` ke `New`:
@@ -767,11 +809,27 @@ Di `transfer/internal/accountclient/client.go`, tambahkan parameter `fetch` ke `
 func New(target string, s Settings, fetch FetchToken, log *slog.Logger, opts ...grpc.DialOption) (*Client, error) {
 ```
 
-Lalu, ganti awal blok `opts = append([]grpc.DialOption{` sampai baris `grpc.WithUnaryInterceptor(resilience),` dengan potongan berikut. Baris sesudahnya (pengaturan _backoff_ koneksi dari Lab 4) tidak berubah:
+Sejak Lab 5, `New` membuka dua koneksi melalui fungsi `dial`: koneksi utama dengan kebijakan `resilience` dan koneksi _reversal_ dengan kebijakan `reversalResilience`. Kedua koneksi memanggil service yang sama dengan identitas _client_ yang sama, sehingga cukup satu _cache_ _token_ untuk keduanya. Di `New`, ganti dua pemanggilan `dial` menjadi:
 
 ```go
+	// One token cache for both connections: they talk to the same service with
+	// the same client identity.
 	tokens := &tokenCredentials{fetch: fetch}
-	opts = append([]grpc.DialOption{
+
+	// An interceptor belongs to a connection, so the reversal gets a connection of
+	// its own. The cost is one more TCP connection to the account service.
+	conn, err := dial(target, tokens, resilience, opts)
+	if err != nil {
+		return nil, err
+	}
+	reversalConn, err := dial(target, tokens, reversalResilience, opts)
+```
+
+Lalu ubah _signature_ `dial`, dan ganti baris `grpc.WithUnaryInterceptor(interceptor),` di dalamnya dengan dua opsi baru. Opsi lain (koneksi tanpa TLS dan pengaturan _backoff_ koneksi) tidak berubah:
+
+```go
+func dial(target string, tokens *tokenCredentials, resilience grpc.UnaryClientInterceptor, extra []grpc.DialOption) (*grpc.ClientConn, error) {
+	opts := append([]grpc.DialOption{
 		// Plaintext: fine on a laptop, not in production. Service-to-service calls
 		// there go over TLS (or mTLS through a service mesh).
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
@@ -783,7 +841,11 @@ Lalu, ganti awal blok `opts = append([]grpc.DialOption{` sampai baris `grpc.With
 		grpc.WithChainUnaryInterceptor(tokens.refreshOnUnauthenticated, resilience),
 ```
 
-Urutannya penting. `refreshOnUnauthenticated` berada di luar `resilience`, sehingga panggilan yang diulang dengan _token_ baru kembali melewati _timeout_, _retry_, dan _circuit breaker_.
+Urutannya penting. `refreshOnUnauthenticated` berada di luar kebijakan _resiliency_, sehingga panggilan yang diulang dengan _token_ baru kembali melewati _timeout_, _retry_, dan _circuit breaker_ (atau _retry_ khusus _reversal_ di koneksi kedua).
+
+#note[
+  *Batasan yang belum ditangani.* Kebijakan _retry_ _reversal_ dari Lab 5 hanya mengulang error infrastruktur (`Unavailable`, `DeadlineExceeded`, `Internal`, `Unknown`). Kegagalan mengambil _token_ bernilai `Unauthenticated`, jadi tidak diulang. Bila Hydra mati tepat saat _reversal_ berjalan dan _token_ di _cache_ sudah kedaluwarsa, transfer langsung berakhir `COMPENSATION_FAILED` (HTTP 500) dan perlu koreksi manual.
+]
 
 ==== Memasang _Verifier_ dan _Client_ OAuth2 di `transfer/main.go`
 
@@ -800,7 +862,8 @@ Ganti pembuatan `accounts` dan `mux` menjadi:
 ```go
 	// Lab 7: the transfer service is an OAuth2 client of its own. It asks only
 	// for account:write (Debit, Credit), not everything its client registration
-	// allows: least privilege per token.
+	// allows: least privilege per token. accountclient caches the token and
+	// fetches a new one shortly before expiry.
 	tokenCfg := clientcredentials.Config{
 		ClientID:     cfg.OAuthClientID,
 		ClientSecret: cfg.OAuthClientSecret,
@@ -846,8 +909,10 @@ Tambahkan fungsi berikut di `transfer/internal/transfer/service.go`, misalnya te
 ```go
 // publicReason is the failure text stored in failure_reason, returned by the
 // API and carried in the events (Lab 7). Business outcomes are named; any other
-// error becomes one generic phrase. The full error is in the log next to the
-// transfer ID.
+// error becomes one generic phrase, because its text can hold internal
+// addresses, ports and library messages (e.g. "dial tcp 10.0.3.7:9091:
+// connection refused") that the caller cannot act on and an attacker can
+// use. The full error is in the log next to the transfer ID.
 func publicReason(err error) string {
 	switch {
 	case errors.Is(err, ErrInsufficientFunds):
@@ -874,6 +939,10 @@ reason := "credit failed: " + publicReason(cause)
 // di compensate(), cabang reversal gagal
 reason = reason + "; reversal failed: " + publicReason(err)
 ```
+
+Cabang _reversal_ gagal tetap mengembalikan error yang membungkus `ErrReversalFailed` dari Lab 5, sehingga transfer `COMPENSATION_FAILED` tetap dijawab 500. Yang berubah hanya teks `reason`.
+
+`publicReason` menaruh pesan _sentinel_ (misalnya `insufficient funds`) di akhir teks. Fungsi `replayOutcome` dari Lab 6 bergantung pada sifat ini: kode HTTP untuk _replay_ ditentukan dari akhiran `failure_reason`. Teks lama sebelum Lab 7 (`debit failed: debit 1111111111: insufficient funds`) juga berakhir dengan pesan yang sama, jadi _replay_ untuk transfer lama tetap menghasilkan kode yang sama. Perbarui komentar di atas `replayOutcome` agar menyebut kedua format tersebut.
 
 Agar detail error tidak hilang, tambahkan `"error", cause` ke log `transfer not completed` di fungsi `finish`:
 
@@ -904,7 +973,13 @@ Baca `account/internal/auth/grpc_test.go`. _File_ ini menunjukkan cara menguji v
 + _Table-driven test_ mencakup _token_ valid, _scheme_ huruf kecil, tanpa _token_, _token_ Basic, _token_ sampah, kedaluwarsa, tanpa `exp`, _issuer_ lain, ditandatangani _key_ lain, _scope_ kurang, metode tanpa _scope_, dan metode publik.
 + `TestSigningAlgorithmIsPinned` membuktikan _token_ HS256 tidak lolos sebagai RS256.
 
-_Test_ di `accountclient` mencakup tiga perilaku baru: _token_ terkirim di _metadata_ `authorization`; gagal mengambil _token_ tidak di-_retry_ dan tidak membuka _circuit breaker_; _token_ yang ditolak diganti dan panggilan diulang sekali. `TestFailureReasonIsGeneric` di `service_test.go` memastikan alamat internal tidak muncul di `failure_reason`.
+_Test_ di `accountclient` mencakup perilaku baru berikut. Fungsi bantu `serve` kini menerima parameter `fetch`, sehingga setiap _test_ dapat memasang sumber _token_ sendiri.
+
+- `TestSendsBearerToken`: _token_ terkirim di _metadata_ `authorization`.
+- `TestTokenFailureIsNotAnAccountFailure`: gagal mengambil _token_ tidak di-_retry_, tidak membuka _circuit breaker_, dan tidak memicu pengambilan _token_ kedua. Sepuluh panggilan menghasilkan tepat sepuluh kali pengambilan _token_.
+- `TestRejectedTokenIsReplaced`: _token_ yang ditolak `account` diganti, lalu panggilan diulang dan berhasil.
+- `TestRejectedTokenIsReplacedOnlyOnce`: bila _token_ pengganti juga ditolak, panggilan gagal dengan `Unauthenticated` setelah dua kali sampai di server dan dua kali pengambilan _token_, tanpa berulang terus.
+ `TestFailureReasonIsGeneric` di `service_test.go` memastikan alamat internal tidak muncul di `failure_reason`.
 
 == Verifikasi
 
@@ -1008,11 +1083,13 @@ time=... level=INFO msg="account mutated" number=2222222222 type=CREDIT amount=1
 Matikan `account` (Ctrl+C di terminalnya), lalu buat transfer:
 
 #perintah[```bash
-curl -s -X POST localhost:28082/transfers -H "Authorization: Bearer $TOKEN" \
+curl -i -X POST localhost:28082/transfers -H "Authorization: Bearer $TOKEN" \
   -d '{"from_account":"1111111111","to_account":"2222222222","amount":"100000"}'
 ```]
 
-Respons berisi `"status":"FAILED"` dan `"failure_reason":"debit failed: account service error"`, tanpa alamat `127.0.0.1:29091`. Alamat tersebut tetap ada di log `transfer not completed` pada _field_ `error`. Bila percobaan diulang hingga _circuit breaker_ terbuka, `failure_reason` berubah menjadi `debit failed: account service unavailable`. Jalankan lagi `make -C account run` setelah selesai.
+Respons berstatus `502 Bad Gateway` dan berisi `"status":"FAILED"` serta `"failure_reason":"debit failed: account service error"`, tanpa alamat `127.0.0.1:29091`. Alamat tersebut tetap ada di log `transfer not completed` pada _field_ `error`. Bila percobaan diulang hingga _circuit breaker_ terbuka, respons berubah menjadi `503 Service Unavailable` dengan `failure_reason` `debit failed: account service unavailable`: tidak ada uang yang berpindah dan permintaan aman diulang. Jalankan lagi `make -C account run` setelah selesai.
+
+Format baru hanya berlaku untuk transfer yang dibuat setelah kode Lab 7 berjalan. Transfer yang tersimpan sebelumnya tetap menampilkan `failure_reason` lama yang memuat pesan asli, misalnya `debit failed: debit 1111111111: rpc error: ...`. Untuk melihat format baru, selalu periksa transfer gagal yang baru dibuat. _Replay_ dengan `Idempotency-Key` milik transfer lama tetap menghasilkan kode HTTP yang sama seperti permintaan aslinya.
 
 == Masalah Umum
 
@@ -1020,13 +1097,13 @@ Respons berisi `"status":"FAILED"` dan `"failure_reason":"debit failed: account 
 
 *`make -s token` gagal dengan `invalid_client`.* Hydra menyimpan _client_ di memori. Setelah _container_ Hydra di-_restart_ (termasuk setelah Docker atau laptop di-_restart_), _client_ hilang. Jalankan `make infra-up` lagi; target ini menjalankan `hydra-init` yang menghapus lalu membuat ulang kedua _client_.
 
-*_Token_ di variabel `TOKEN` tiba-tiba ditolak dengan `invalid token`.* Ada dua kemungkinan: _token_ sudah lebih dari satu jam (kedaluwarsa), atau Hydra sudah di-_restart_ sehingga _signing key_-nya berganti. Ambil _token_ baru dengan `TOKEN=$(make -s token)`. Log `request rejected` menyebut penyebab persisnya.
+*_Token_ di variabel `TOKEN` tiba-tiba ditolak dengan `invalid token`.* Ada dua kemungkinan: _token_ sudah lebih dari satu jam (kedaluwarsa), atau Hydra sudah di-_restart_ sehingga _signing key_-nya berganti dan `transfer` sudah mengunduh JWKS yang baru. Ambil _token_ baru dengan `TOKEN=$(make -s token)`. Log `request rejected` menyebut penyebab persisnya.
 
 *Permintaan pertama setelah Hydra di-_restart_ lambat, sekitar setengah detik.* Hydra yang baru menyala membuat _signing key_ baru saat permintaan _token_ pertama. Service yang sudah berjalan mengunduh ulang JWKS saat bertemu `kid` yang belum dikenal. Unduh ulang dibatasi sekali per 5 detik, dan permintaan yang menunggu batas tersebut paling lama menunggu 5 detik sebelum dijawab 401.
 
 *Log `fetching signing keys failed` saat _startup_.* Hydra belum berjalan ketika service menyala. Service tetap berjalan, tetapi semua pemeriksaan _token_ gagal hingga Hydra tersedia. Jalankan `make infra-up`, lalu ulangi permintaan.
 
-*Transfer `FAILED` dengan alasan `account service error` padahal `account` berjalan.* Lihat log `transfer not completed` di `transfer`. Bila isinya `get access token`, `transfer` gagal mengambil _token_ dari Hydra: periksa `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET`, `OAUTH_TOKEN_URL`, dan pastikan `hydra-init` sudah berjalan. Kegagalan ini tidak membuka _circuit breaker_ ke `account`; `make breaker` tetap menunjukkan `closed`.
+*Transfer dijawab 502, `FAILED` dengan alasan `debit failed: account service error`, padahal `account` berjalan.* Lihat log `transfer not completed` di `transfer`. Bila isinya `get access token`, `transfer` gagal mengambil _token_ dari Hydra: periksa `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET`, `OAUTH_TOKEN_URL`, dan pastikan `hydra-init` sudah berjalan. Panggilan ini tidak pernah sampai ke `account`, tidak diulang, dan tidak membuka _circuit breaker_ ke `account`; `make breaker` tetap menunjukkan `closed`.
 
 *Kompilasi gagal di _test_ dengan pesan `cannot use log (variable of type *slog.Logger) as FetchToken value in argument to New` atau `not enough arguments in call to ....Routes`.* _Test_ lama belum diganti. Jalankan perintah `git checkout lab-07 -- ...` di langkah Memperbarui _Unit Test_.
 
@@ -1034,7 +1111,7 @@ Respons berisi `"status":"FAILED"` dan `"failure_reason":"debit failed: account 
 
 == Eksplorasi Mandiri
 
-+ *Rotasi _signing key_.* Dengan ketiga service tetap berjalan, jalankan `docker compose restart hydra` lalu `docker compose run --rm hydra-init`. Hydra kini memiliki _signing key_ baru. Buat transfer dengan _token_ baru dari `make -s token`. Amati log `account`: muncul `grpc call rejected` dengan error `key not found` dan `grpc request` dengan `code=Unauthenticated`, lalu panggilan berikutnya berhasil. Jelaskan komponen mana yang mengganti _token_ dan komponen mana yang mengunduh ulang JWKS. Mengapa mengulang `Debit` setelah `Unauthenticated` aman?
++ *Rotasi _signing key_.* Pastikan sudah ada satu transfer berhasil sejak `transfer` dijalankan, agar `transfer` menyimpan _token_ `transfer-service` di _cache_. Jalankan `docker compose restart hydra` lalu `docker compose run --rm hydra-init`; Hydra kini memiliki _signing key_ baru. Me-_restart_ Hydra saja belum memicu penolakan: `account` masih menyimpan _key_ lama di JWKS yang sudah diunduh (diperbarui setiap jam), sehingga _token_ lama di `transfer` tetap diterima. Karena itu, jalankan ulang `account` (Ctrl+C, lalu `make -C account run`) agar `account` hanya mengenal _key_ baru. Buat transfer dengan _token_ `channel-app` baru dari `make -s token`. Amati log `account`: muncul `grpc call rejected` dengan error `key not found` dan `grpc request` dengan `code=Unauthenticated`, lalu `Debit` yang diulang berhasil. Jelaskan komponen mana yang mengganti _token_ dan komponen mana yang mengunduh ulang JWKS. Mengapa mengulang `Debit` setelah `Unauthenticated` aman?
 + *_Issuer_ yang salah.* Hapus garis miring di akhir `OAUTH_ISSUER` pada `transfer/Makefile`, jalankan ulang `transfer`, lalu kirim permintaan dengan _token_ valid. Temukan baris log yang menjelaskan penolakan. Kembalikan dengan `git checkout -- transfer/Makefile` atau perbaiki secara manual.
 + *Hak minimal.* Ubah `Scopes` di `tokenCfg` menjadi `account:read` saja, jalankan ulang `transfer`, lalu buat transfer. Kode gRPC apa yang diterima `transfer`, apakah dihitung _circuit breaker_, dan apa isi `failure_reason`? Kembalikan ke `account:write` setelah selesai.
 + *Hydra mati.* Hentikan Hydra dengan `docker compose stop hydra`, jalankan ulang `transfer`, lalu periksa `/readyz` dan buat transfer dengan _token_ lama yang belum kedaluwarsa. Bandingkan perilaku `transfer` sebagai _resource server_ (JWKS sudah tersimpan atau belum) dengan perilakunya sebagai _client_ (perlu _token_ baru). Nyalakan kembali dengan `make infra-up`.
