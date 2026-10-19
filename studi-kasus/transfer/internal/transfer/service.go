@@ -74,9 +74,10 @@ func (s *Service) Execute(ctx context.Context, req CreateRequest, idempotencyKey
 // request ended with: nil for COMPLETED, ErrReversalFailed for
 // COMPENSATION_FAILED, ErrInProgress for PENDING and DEBITED. For FAILED and
 // COMPENSATED the cause is only kept as text in failure_reason ("debit failed:
-// debit 1111111111: insufficient funds"); the account client wraps the
-// sentinels last, so the reason ends with the sentinel's message. Anything else
-// was a dependency failure, the 502 of the original request.
+// insufficient funds"); publicReason puts the sentinel's message last. Rows
+// written before Lab 7 hold the raw error ("debit failed: debit 1111111111:
+// insufficient funds"), which ends the same way. Anything else was a dependency
+// failure, the 502 of the original request.
 func replayOutcome(t Transfer) error {
 	switch t.Status {
 	case Completed:
@@ -104,7 +105,7 @@ func (s *Service) run(ctx context.Context, t Transfer) (Transfer, error) {
 		// production answer is a reconciliation job that repeats the debit with
 		// the same reference (idempotent) until it gets a definite answer, then
 		// continues or reverses. Here it stays FAILED and is logged.
-		return s.finish(ctx, t, Pending, Failed, fmt.Sprintf("debit failed: %v", err), EventFailed, err)
+		return s.finish(ctx, t, Pending, Failed, "debit failed: "+publicReason(err), EventFailed, err)
 	}
 
 	debited, err := s.store.Transition(ctx, t.ID, Pending, Debited, "", "")
@@ -135,7 +136,7 @@ func (s *Service) run(ctx context.Context, t Transfer) (Transfer, error) {
 // and source). Business rejections (destination not found) and an open breaker
 // are certain not to have been applied; the reconciliation job resolves the rest.
 func (s *Service) compensate(ctx context.Context, t Transfer, cause error) (Transfer, error) {
-	reason := fmt.Sprintf("credit failed: %v", cause)
+	reason := "credit failed: " + publicReason(cause)
 	s.log.Warn("credit failed after debit, reversing the debit", "transfer_id", t.ID, "error", cause)
 
 	if err := s.accounts.Reverse(ctx, t.FromAccount, t.Amount, t.ID+ReversalSuffix); err != nil {
@@ -144,7 +145,7 @@ func (s *Service) compensate(ctx context.Context, t Transfer, cause error) (Tran
 		// Here a person repeats it. No event: the customer outcome is not final yet.
 		s.log.Error("compensation failed, source account needs manual reversal",
 			"transfer_id", t.ID, "from_account", t.FromAccount, "amount", t.Amount, "error", err)
-		reason = fmt.Sprintf("%s; reversal failed: %v", reason, err)
+		reason = reason + "; reversal failed: " + publicReason(err)
 		return s.finish(ctx, t, Debited, CompensationFailed, reason, "", fmt.Errorf("%w: %w", ErrReversalFailed, errors.Join(cause, err)))
 	}
 	return s.finish(ctx, t, Debited, Compensated, reason, EventCompensated, cause)
@@ -164,9 +165,28 @@ func (s *Service) finish(ctx context.Context, t Transfer, from, to Status, reaso
 	case CompensationFailed:
 		// logged in compensate
 	default:
-		s.log.Warn("transfer not completed", "transfer_id", t.ID, "status", to, "reason", reason)
+		s.log.Warn("transfer not completed", "transfer_id", t.ID, "status", to, "reason", reason, "error", cause)
 	}
 	return done, cause
+}
+
+// publicReason is the failure text stored in failure_reason, returned by the
+// API and carried in the events (Lab 7). Business outcomes are named; any other
+// error becomes one generic phrase, because its text can hold internal
+// addresses, ports and library messages (e.g. "dial tcp 10.0.3.7:9091:
+// connection refused") that the caller cannot act on and an attacker can
+// use. The full error is in the log next to the transfer ID.
+func publicReason(err error) string {
+	switch {
+	case errors.Is(err, ErrInsufficientFunds):
+		return ErrInsufficientFunds.Error()
+	case errors.Is(err, ErrAccountNotFound):
+		return ErrAccountNotFound.Error()
+	case errors.Is(err, ErrAccountUnavailable):
+		return ErrAccountUnavailable.Error()
+	default:
+		return "account service error"
+	}
 }
 
 func (s *Service) Get(ctx context.Context, id string) (Transfer, error) {

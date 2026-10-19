@@ -13,7 +13,7 @@ Port database dimulai dari 15432 agar tidak bentrok dengan PostgreSQL yang terpa
 ## Menjalankan
 
 ```
-make infra-up            # PostgreSQL dan Kafka via Docker Compose, termasuk pembuatan topic
+make infra-up            # PostgreSQL, Kafka, dan Hydra via Docker Compose, termasuk pembuatan topic dan client OAuth2
 make -C account run      # account service di http://localhost:28081
 make -C transfer run     # transfer service di http://localhost:28082
 make -C notification run # notification service di http://localhost:28083 (Lab 5)
@@ -218,6 +218,84 @@ curl -i -X POST localhost:28082/transfers -H 'Idempotency-Key: 7f9c2b1e-0d4a-4c1
 Lingkup _key_ di lab ini global untuk semua klien dan tidak kedaluwarsa. Di _production_, _key_ biasanya dibatasi per klien dan dihapus setelah periode tertentu, misalnya 24 jam.
 
 Database dari Lab 5 tidak perlu di-_reset_: tabel `processed_event` dan kolom `idempotency_key` dibuat otomatis saat service dijalankan.
+
+## OAuth2 dan JWT (Lab 7)
+
+Hydra (_authorization server_) dijalankan dari `compose.yaml` dengan konfigurasi siap pakai. Peserta tidak mengonfigurasi Hydra, cukup menulis verifikasi _token_ di `account` dan `transfer`.
+
+| Endpoint Hydra | Alamat |
+|---|---|
+| _Token endpoint_ | `http://localhost:14444/oauth2/token` |
+| JWKS (_public key_) | `http://localhost:14444/.well-known/jwks.json` |
+| _Issuer_ (`iss`) | `http://localhost:14444/` (dengan garis miring di akhir) |
+| Admin | `http://localhost:14445`, hanya digunakan oleh `hydra-init` |
+
+`make infra-up` menjalankan `hydra-init` yang membuat dua _client_ dengan _grant_ `client_credentials`:
+
+| _Client ID_ | _Secret_ | _Scope_ yang boleh diminta | Pengguna |
+|---|---|---|---|
+| `transfer-service` | `transfer-service-secret` | `account:read`, `account:write` | `transfer` saat memanggil gRPC `account` |
+| `channel-app` | `channel-app-secret` | `transfer:read`, `transfer:write` | Aplikasi _channel_ (di lab: `curl`) |
+
+Hydra menyimpan data di memori (`DSN=memory`): setelah Hydra di-_restart_, _client_ dan _signing key_ hilang. `make infra-up` membuat ulang _client_. `account` dan `transfer` mengambil JWKS baru saat menerima _token_ dengan `kid` yang belum dikenal (maksimal sekali per 5 detik). `transfer` meminta _token_ baru bila `account` menolak _token_ lama dengan `UNAUTHENTICATED`, lalu mengulang panggilan sekali.
+
+### Aturan akses
+
+| Service | Operasi | _Scope_ |
+|---|---|---|
+| `account` gRPC | `GetAccount` | `account:read` |
+| `account` gRPC | `Debit`, `Credit` | `account:write` |
+| `transfer` REST | `POST /transfers` | `transfer:write` |
+| `transfer` REST | `GET /transfers/{id}` | `transfer:read` |
+
+Tanpa _token_: `/healthz`, `/readyz`, `/debug/circuit-breaker`, gRPC _health_ dan _reflection_, `/admin/fault`, serta REST `account` (`/accounts`).
+
+Pemeriksaan _token_: _signature_ RS256 dengan _key_ dari JWKS, `iss` sama persis dengan `OAUTH_ISSUER`, `exp` wajib ada dan belum lewat, _scope_ dari _claim_ `scp`. `aud` tidak diperiksa karena _token_ `client_credentials` dari Hydra tidak membawa `aud` kecuali diminta.
+
+| Kondisi | REST `transfer` | gRPC `account` |
+|---|---|---|
+| Tanpa _token_ | 401, `WWW-Authenticate: Bearer` | `UNAUTHENTICATED` |
+| _Token_ rusak, kedaluwarsa, _issuer_ lain, _signature_ salah | 401, `WWW-Authenticate: Bearer error="invalid_token"` | `UNAUTHENTICATED` |
+| _Token_ valid, _scope_ kurang | 403, `WWW-Authenticate: Bearer error="insufficient_scope"` | `PERMISSION_DENIED` |
+
+Detail penolakan (misalnya `token is expired`) hanya ada di log `request rejected` / `grpc call rejected`; respons hanya berisi `missing bearer token`, `invalid token`, atau `scope ... required`.
+
+`transfer` mengambil _token_ `transfer-service` hanya dengan _scope_ `account:write`, menyimpannya hingga 10 detik sebelum kedaluwarsa (masa berlaku 1 jam), dan mengirimnya di _metadata_ `authorization`. Bila `transfer` gagal mengambil _token_, panggilan berakhir `UNAUTHENTICATED` tanpa _retry_ dan tanpa pengambilan _token_ kedua, serta tidak dihitung _circuit breaker_ karena `account` tidak bermasalah. Transfer berakhir `FAILED` dengan kode 502. Koneksi gRPC di lab tidak menggunakan TLS, sedangkan di _production_ pengiriman _bearer token_ wajib lewat TLS.
+
+### Konfigurasi
+
+| Variabel | `account` | `transfer` |
+|---|---|---|
+| `OAUTH_ISSUER` | Ya | Ya |
+| `OAUTH_JWKS_URL` | Ya | Ya |
+| `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET`, `OAUTH_TOKEN_URL` | – | Ya |
+
+Semua wajib; nilai untuk laptop ada di `Makefile` masing-masing service.
+
+### `failure_reason`
+
+Mulai Lab 7, `failure_reason` di respons API dan di _event_ Kafka hanya berisi alasan umum: `insufficient funds`, `account not found`, `account service unavailable` (_circuit breaker_ terbuka), atau `account service error` (penyebab lain). Contoh: `debit failed: account service error`. Pesan aslinya, misalnya alamat `dial tcp 127.0.0.1:29091`, hanya ada di log `transfer` bersama `transfer_id`.
+
+Perubahan ini hanya berlaku untuk transfer baru. Transfer yang tersimpan sebelum Lab 7 tetap menampilkan `failure_reason` lama yang memuat pesan asli, misalnya `debit failed: debit 1111111111: rpc error: ...`. Untuk melihat format baru, buat transfer baru yang gagal. _Replay_ dengan `Idempotency-Key` lama tetap menghasilkan kode HTTP yang sama, karena kedua format diakhiri dengan pesan penyebab yang sama.
+
+### Mencoba
+
+```
+TOKEN=$(make -s token)                       # token channel-app, scope transfer:read transfer:write
+RO=$(make -s token SCOPE=transfer:read)      # token hanya-baca
+
+curl -i -X POST localhost:28082/transfers \
+  -d '{"from_account":"1111111111","to_account":"2222222222","amount":"100000"}'          # 401
+curl -i -X POST localhost:28082/transfers -H "Authorization: Bearer $RO" \
+  -d '{"from_account":"1111111111","to_account":"2222222222","amount":"100000"}'          # 403
+curl -i -X POST localhost:28082/transfers -H "Authorization: Bearer $TOKEN" \
+  -d '{"from_account":"1111111111","to_account":"2222222222","amount":"100000"}'          # 201
+curl -H "Authorization: Bearer $RO" localhost:28082/transfers/<id>                         # 200
+```
+
+Isi _token_ dapat dibaca di https://jwt.io atau dengan `cut -d. -f2 <<<"$TOKEN" | base64 -d`. Log `account mutated` di `account` mencatat `client_id` pemanggil.
+
+Database dari Lab 6 tidak perlu di-_reset_.
 
 ## Checkpoint
 

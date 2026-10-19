@@ -13,8 +13,18 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/artivisi/training-microservices-2026-01/studi-kasus/account/internal/auth"
 	accountv1 "github.com/artivisi/training-microservices-2026-01/studi-kasus/proto/gen/account/v1"
 )
+
+// GRPCScopes is the OAuth2 scope each RPC requires (Lab 7). Reading and moving
+// money are separate scopes, so a client that only displays balances cannot
+// debit. The auth interceptor denies any AccountService method missing here.
+var GRPCScopes = map[string]string{
+	accountv1.AccountService_GetAccount_FullMethodName: "account:read",
+	accountv1.AccountService_Debit_FullMethodName:      "account:write",
+	accountv1.AccountService_Credit_FullMethodName:     "account:write",
+}
 
 // GRPCServer is the internal API for other services. It uses the same Store as
 // the REST handler; only the transport and the error vocabulary differ.
@@ -65,13 +75,17 @@ func (s *GRPCServer) mutate(ctx context.Context, t MutationType, number, amount,
 	if err != nil {
 		return Account{}, s.toStatus(err)
 	}
+	// client_id from the verified token (Lab 7): who moved the money, for the audit trail.
+	caller, _ := auth.ClaimsFrom(ctx)
 	if !applied {
 		// Not an error: the caller retried after losing our first answer. It gets
 		// a success with the current balance, and the money moved only once.
-		s.log.Info("mutation already applied, not repeated", "number", a.Number, "type", t, "reference", req.Reference)
+		s.log.Info("mutation already applied, not repeated", "number", a.Number, "type", t, "reference", req.Reference,
+			"client_id", caller.ClientID)
 		return a, nil
 	}
-	s.log.Info("account mutated", "number", a.Number, "type", t, "amount", req.Amount, "reference", req.Reference)
+	s.log.Info("account mutated", "number", a.Number, "type", t, "amount", req.Amount, "reference", req.Reference,
+		"client_id", caller.ClientID)
 	return a, nil
 }
 

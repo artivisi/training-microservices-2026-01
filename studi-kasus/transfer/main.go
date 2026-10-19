@@ -10,7 +10,10 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/oauth2/clientcredentials"
+
 	"github.com/artivisi/training-microservices-2026-01/studi-kasus/transfer/internal/accountclient"
+	"github.com/artivisi/training-microservices-2026-01/studi-kasus/transfer/internal/auth"
 	"github.com/artivisi/training-microservices-2026-01/studi-kasus/transfer/internal/outbox"
 	"github.com/artivisi/training-microservices-2026-01/studi-kasus/transfer/internal/transfer"
 )
@@ -53,13 +56,31 @@ func run(log *slog.Logger) error {
 	}
 	defer store.Close()
 
-	accounts, err := accountclient.New(cfg.AccountGRPCAddr, accountclient.ProductionSettings, log)
+	// Lab 7: the transfer service is an OAuth2 client of its own. It asks only
+	// for account:write (Debit, Credit), not everything its client registration
+	// allows: least privilege per token. accountclient caches the token and
+	// fetches a new one shortly before expiry.
+	tokenCfg := clientcredentials.Config{
+		ClientID:     cfg.OAuthClientID,
+		ClientSecret: cfg.OAuthClientSecret,
+		TokenURL:     cfg.OAuthTokenURL,
+		Scopes:       []string{"account:write"},
+	}
+	// The fetch runs inside a gRPC attempt and is bounded by its 2 s timeout.
+	accounts, err := accountclient.New(cfg.AccountGRPCAddr, accountclient.ProductionSettings, tokenCfg.Token, log)
 	if err != nil {
 		return err
 	}
 	defer accounts.Close()
+
+	verifier, err := auth.NewVerifier(ctx, cfg.OAuthIssuer, cfg.OAuthJWKSURL, log)
+	if err != nil {
+		return err
+	}
 	svc := transfer.NewService(store, accounts, log)
-	mux := transfer.NewHandler(svc, log).Routes()
+	mux := transfer.NewHandler(svc, log).Routes(auth.NewMiddleware(verifier, log).Require)
+	// Open on purpose, like the probes: an operator reads it during an incident.
+	// Production keeps /debug on an internal port or behind the gateway.
 	mux.HandleFunc("GET /debug/circuit-breaker", accounts.ServeCircuitBreaker)
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
@@ -86,7 +107,7 @@ func run(log *slog.Logger) error {
 	errCh := make(chan error, 1)
 	go func() {
 		log.Info("transfer service listening", "addr", cfg.HTTPAddr, "account_grpc", cfg.AccountGRPCAddr,
-			"kafka_brokers", cfg.KafkaBrokers, "kafka_topic", cfg.KafkaTopic)
+			"kafka_brokers", cfg.KafkaBrokers, "kafka_topic", cfg.KafkaTopic, "oauth_issuer", cfg.OAuthIssuer)
 		errCh <- srv.ListenAndServe()
 	}()
 

@@ -9,6 +9,11 @@ run:
 	ACCOUNT_GRPC_ADDR=localhost:29091 \
 	KAFKA_BROKERS=localhost:19092 \
 	KAFKA_TOPIC=transfer-events \
+	OAUTH_ISSUER=http://localhost:14444/ \
+	OAUTH_JWKS_URL=http://localhost:14444/.well-known/jwks.json \
+	OAUTH_CLIENT_ID=transfer-service \
+	OAUTH_CLIENT_SECRET=transfer-service-secret \
+	OAUTH_TOKEN_URL=http://localhost:14444/oauth2/token \
 	go run .
 
 test:

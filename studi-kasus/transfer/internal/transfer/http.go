@@ -18,10 +18,24 @@ func NewHandler(svc *Service, log *slog.Logger) *Handler {
 	return &Handler{svc: svc, log: log}
 }
 
-func (h *Handler) Routes() *http.ServeMux {
+// OAuth2 scopes of the transfer REST API (Lab 7). The channel app that only
+// shows transfer status gets read; moving money needs write.
+const (
+	ScopeRead  = "transfer:read"
+	ScopeWrite = "transfer:write"
+)
+
+// RequireScope wraps next so it runs only for a caller whose token carries
+// scope. The transfer package defines the shape; main plugs in the JWT
+// middleware, tests plug in a pass-through.
+type RequireScope func(scope string, next http.Handler) http.Handler
+
+// Routes registers the API behind requireScope. Probes stay open: the kubelet
+// and load balancers call them without a token.
+func (h *Handler) Routes(requireScope RequireScope) *http.ServeMux {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /transfers", h.create)
-	mux.HandleFunc("GET /transfers/{id}", h.get)
+	mux.Handle("POST /transfers", requireScope(ScopeWrite, http.HandlerFunc(h.create)))
+	mux.Handle("GET /transfers/{id}", requireScope(ScopeRead, http.HandlerFunc(h.get)))
 	mux.HandleFunc("GET /healthz", h.healthz)
 	mux.HandleFunc("GET /readyz", h.readyz)
 	return mux

@@ -13,6 +13,11 @@ type Config struct {
 	HTTPAddr    string
 	GRPCAddr    string
 	DatabaseURL string
+	// OAuthIssuer must equal the "iss" claim of the tokens, character for
+	// character (Hydra: http://localhost:14444/, trailing slash included).
+	OAuthIssuer string
+	// OAuthJWKSURL is where the authorization server publishes its public keys.
+	OAuthJWKSURL string
 }
 
 func LoadConfig() (Config, error) {
@@ -25,9 +30,11 @@ func LoadConfig() (Config, error) {
 		return v
 	}
 	cfg := Config{
-		HTTPAddr:    get("HTTP_ADDR"),
-		GRPCAddr:    get("GRPC_ADDR"),
-		DatabaseURL: get("DATABASE_URL"),
+		HTTPAddr:     get("HTTP_ADDR"),
+		GRPCAddr:     get("GRPC_ADDR"),
+		DatabaseURL:  get("DATABASE_URL"),
+		OAuthIssuer:  get("OAUTH_ISSUER"),
+		OAuthJWKSURL: get("OAUTH_JWKS_URL"),
 	}
 	if len(missing) > 0 {
 		return Config{}, fmt.Errorf("missing required environment variables: %s", strings.Join(missing, ", "))

@@ -12,6 +12,29 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+// allowAll stands in for the JWT middleware, which has its own tests (internal/auth).
+func allowAll(_ string, next http.Handler) http.Handler { return next }
+
+func TestRoutesRequireScopes(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	var asked []string
+	record := func(scope string, _ http.Handler) http.Handler {
+		asked = append(asked, scope)
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusForbidden) })
+	}
+	h := NewHandler(NewService(newFakeStore(), &fakeAccounts{}, log), log).Routes(record)
+	if got := strings.Join(asked, ","); got != ScopeWrite+","+ScopeRead {
+		t.Fatalf("scopes = %s, want POST write, GET read", got)
+	}
+	for _, path := range []string{"/healthz", "/readyz"} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s = %d, want 200 without a token", path, rec.Code)
+		}
+	}
+}
+
 // TestCreateStatus checks the HTTP status for each outcome. 503 is reserved for
 // "no money moved, safe to retry": the breaker refused the debit, or refused the
 // credit and the debit was reversed. A failed reversal is a 500 whatever the
@@ -41,7 +64,7 @@ func TestCreateStatus(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			log := slog.New(slog.NewTextHandler(io.Discard, nil))
 			svc := NewService(newFakeStore(), tc.accounts, log)
-			srv := httptest.NewServer(NewHandler(svc, log).Routes())
+			srv := httptest.NewServer(NewHandler(svc, log).Routes(allowAll))
 			defer srv.Close()
 
 			first := post(t, srv.URL, "k-1")
@@ -83,7 +106,7 @@ func post(t *testing.T, url, key string) *http.Response {
 func TestCreateIdempotencyKeyHTTP(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	store := newFakeStore()
-	h := NewHandler(NewService(store, &fakeAccounts{}, log), log).Routes()
+	h := NewHandler(NewService(store, &fakeAccounts{}, log), log).Routes(allowAll)
 	body := `{"from_account":"1111111111","to_account":"2222222222","amount":"100000"}`
 
 	// A transfer whose first request is still running (or was cut off by a crash).

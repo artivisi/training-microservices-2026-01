@@ -19,6 +19,7 @@ import (
 	"google.golang.org/grpc/reflection"
 
 	"github.com/artivisi/training-microservices-2026-01/studi-kasus/account/internal/account"
+	"github.com/artivisi/training-microservices-2026-01/studi-kasus/account/internal/auth"
 	"github.com/artivisi/training-microservices-2026-01/studi-kasus/account/internal/fault"
 	"github.com/artivisi/training-microservices-2026-01/studi-kasus/account/internal/interceptor"
 	accountv1 "github.com/artivisi/training-microservices-2026-01/studi-kasus/proto/gen/account/v1"
@@ -63,15 +64,32 @@ func run(log *slog.Logger) error {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
+	// Lab 7: every AccountService call needs a JWT from the authorization
+	// server. The account REST API on HTTP_ADDR stays open in this lab to keep
+	// the setup steps (creating accounts) short; in production it gets the same
+	// kind of middleware as the transfer REST API.
+	verifier, err := auth.NewVerifier(ctx, cfg.OAuthIssuer, cfg.OAuthJWKSURL, log)
+	if err != nil {
+		return err
+	}
+	// Health and reflection are not AccountService: no token, no faults, like
+	// the HTTP probes. Note the predicate opens every non-AccountService method,
+	// not only those two, and auth is a unary interceptor only: see
+	// auth.UnaryServerInterceptor before registering another service or a
+	// streaming RPC.
+	notAccountService := func(method string) bool {
+		return !strings.HasPrefix(method, "/"+accountv1.AccountService_ServiceDesc.ServiceName+"/")
+	}
+
 	// gRPC: the internal API (GetAccount, Debit, Credit) for other services.
-	// Interceptors run in the order given: logging sees the code that the fault
-	// injector produced, so injected failures show up in the log like real ones.
-	// Health and reflection are excluded from faults, like the HTTP probes.
+	// Interceptors run in the order given: logging sees the code that auth or the
+	// fault injector produced, so rejections and injected failures show up in
+	// the log like real ones. Auth comes before faults: a caller without a valid
+	// token is turned away before any work, simulated or real, is done.
 	grpcSrv := grpc.NewServer(grpc.ChainUnaryInterceptor(
 		interceptor.Logging(log),
-		faults.UnaryServerInterceptor(func(method string) bool {
-			return !strings.HasPrefix(method, "/"+accountv1.AccountService_ServiceDesc.ServiceName+"/")
-		}),
+		auth.UnaryServerInterceptor(verifier, account.GRPCScopes, notAccountService, log),
+		faults.UnaryServerInterceptor(notAccountService),
 	))
 	accountv1.RegisterAccountServiceServer(grpcSrv, account.NewGRPCServer(store, log))
 	// Standard health protocol (grpc.health.v1): grpcurl and grpc-health-probe
