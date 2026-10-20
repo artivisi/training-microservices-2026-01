@@ -727,7 +727,22 @@ k3d-up:
 # registry is needed (Lab 10 pushes to one).
 k3d-import:
 	@test -n "$(VERSION)" || { echo "VERSION is required, e.g. make k3d-import VERSION=1.0.0" >&2; exit 1; }
-	k3d image import -c $(CLUSTER) $(IMAGES)
+	$(call k3d-load,$(IMAGES))
+
+# $(call k3d-load,IMAGE ...) imports images into the cluster and checks that
+# the node's containerd really has each one (crictl resolves the name the way
+# the kubelet does). k3d image import can report success while an image never
+# arrives; the pod then tries to pull it from the network (ImagePullBackOff).
+# A missing image is imported once more, directly into the node.
+K3D_NODE = k3d-$(CLUSTER)-server-0
+k3d-load = k3d image import -c $(CLUSTER) $(1) && \
+	for img in $(1); do \
+		docker exec $(K3D_NODE) crictl inspecti -q $$img >/dev/null 2>&1 && continue; \
+		echo "$$img not found in the cluster after import, importing again" >&2; \
+		k3d image import --mode direct -c $(CLUSTER) $$img && \
+		docker exec $(K3D_NODE) crictl inspecti -q $$img >/dev/null 2>&1 || \
+		{ echo "$$img is not in cluster $(CLUSTER) after two imports" >&2; exit 1; }; \
+	done
 
 # Applies the k3d overlay, then waits until every Deployment is rolled out
 # (readiness probes pass) or reports which one is not.
@@ -742,6 +757,8 @@ k3d-down:
 _Image_ k3s di-_pin_ ke `rancher/k3s:v1.36.5-k3s1`. k3d me-_pull_ sendiri _image_ pendukungnya (`k3d-proxy` untuk _load balancer_ dan `k3d-tools` untuk `image import`) dengan versi yang sama dengan _binary_ k3d.
 
 Bagian kedua `k3d-up` menunggu DNS _cluster_. k3d menulis nama `host.k3d.internal` ke ConfigMap CoreDNS, tetapi CoreDNS baru menjawab nama tersebut setelah perubahan ConfigMap dimuat oleh _pod_ CoreDNS, hingga sekitar satu menit kemudian. _Pod_ yang dijalankan sebelum itu berhenti dengan pesan `lookup host.k3d.internal ... no such host` dan di-_restart_ berulang kali. Perulangan di atas menanyakan nama tersebut ke DNS _cluster_ (alamat _default_ k3s `10.43.0.10`) dari _container node_ k3d setiap 2 detik, dan berhenti dengan pesan _error_ jika nama tersebut belum dapat di-_resolve_ setelah 180 detik.
+
+`k3d-import` tidak berhenti pada pesan sukses `k3d image import`. Fungsi `k3d-load` memeriksa setiap _image_ di _containerd_ milik _node_ k3d dengan `crictl inspecti`, yaitu pencarian nama yang sama dengan yang dilakukan kubelet. Pemeriksaan ini diperlukan karena `k3d image import` pernah melaporkan sukses, padahal _image_ tidak sampai ke _node_. Akibatnya _pod_ mencoba mengambil _image_ dari jaringan dan berakhir di `ImagePullBackOff`. _Image_ yang tidak ditemukan di-_import_ ulang satu kali langsung ke _node_ (`--mode direct`). Bila _image_ tetap tidak ada, _target_ berhenti dengan pesan yang menyebut nama _image_ tersebut.
 
 === Menjalankan Sistem di k3d
 
