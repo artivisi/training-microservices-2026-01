@@ -982,6 +982,21 @@ pipeline {
   )
 ]
 
+#slide(kicker: "Tiga runner", title: [Satu _pipeline_, tiga runner CI])[
+  #table(
+    columns: (0.8fr, 1fr, 1fr, 1.2fr),
+    [Tahap], [Runner git server], [Jenkins], [GitHub Actions],
+    [_Checkout_], [`git fetch`, _token_ _job_], [_Checkout_ SCM bawaan], [`git fetch`, `GITHUB_TOKEN`],
+    [_Tools_], [Terpasang di host], [Terpasang di _agent_], [`install-tools.sh`, versi dan SHA-256 tetap],
+    [Test], [`run: make test`], [`stage('Test')`], [`run: make test`],
+    [Build image], [`run: make image`], [`stage('Build Image')`], [`run: make image`],
+    [Push], [Registry git server], [`stage('Push')`], [`ghcr.io`, `GITHUB_TOKEN`],
+    [Deploy], [`run: make deploy`], [`stage('Deploy')`], [`e2e-k3d.yaml`: `make pipeline-k3d` ke k3d di _runner_],
+  )
+  #v(8pt)
+  #note[_Run_ GitHub Actions dapat dibuka publik di `github.com/artivisi/training-microservices-2026-01/actions`. `e2e-k3d` gagal bila ada respons selain 2xx selama _rolling update_ transfer.]
+]
+
 #slide(kicker: "GitOps", title: [GitOps menyamakan _state_ _cluster_ dengan isi repositori])[
   #two-col(
     card([Model _push_ (Lab 10)])[
