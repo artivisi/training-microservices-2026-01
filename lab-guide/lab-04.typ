@@ -67,6 +67,18 @@ studi-kasus/
         └── transfer/transfer.go      # + batas 2 digit desimal dan 10^17 untuk amount
 ```
 
+=== Alasan Memilih gRPC untuk Panggilan Internal
+
+#table(
+  columns: (1fr, 3.6fr),
+  table.header([Pertimbangan], [Keterangan]),
+  [Kebutuhan], [`transfer` memanggil `account` untuk mengubah saldo. Kontrak panggilan ini harus tegas dan diperiksa saat kompilasi, tidak boleh terbuka untuk aplikasi _channel_, dan batas waktu dari pemanggil perlu diketahui oleh `account`],
+  [Opsi yang dipertimbangkan], [REST dengan JSON dan dokumentasi OpenAPI (seperti Lab 2 dan 3). gRPC dengan kontrak _protobuf_. _Messaging_ tidak termasuk, karena `transfer` membutuhkan hasil _debit_ saat itu juga],
+  [Pilihan di studi kasus], [gRPC untuk panggilan antar-_service_ internal. REST tetap digunakan untuk API yang dipanggil aplikasi _channel_],
+  [Yang diperoleh], [Kode _client_ dan server dihasilkan dari file `.proto`, sehingga ketidakcocokan kontrak terdeteksi saat kompilasi. HTTP/2 menjalankan banyak panggilan sekaligus di satu koneksi (_multiplexing_). _Deadline_ pemanggil ikut terkirim, sehingga _context_ di server dibatalkan saat batas waktu terlewati, dan _query_ database yang menggunakan _context_ tersebut ikut dihentikan. _Payload_ biner lebih kecil dan lebih cepat diproses dibandingkan JSON. _Interceptor_ menjadi satu tempat untuk _logging_, _resiliency_, dan autentikasi],
+  [Yang dikorbankan], [Panggilan tidak dapat dicoba langsung dengan `curl` atau _browser_, sehingga diperlukan _client_ gRPC seperti `grpcurl`, dibantu _reflection_. Koneksi HTTP/2 bersifat persisten, sehingga Service Kubernetes tidak menyebar panggilan ke semua _pod_ tanpa _load balancing_ di sisi klien atau _proxy_ L7 (Lab 9). Perubahan kontrak wajib kompatibel dengan versi lama, dan nomor _field_ tidak boleh digunakan ulang. `protoc` dan kode hasil _generate_ harus dikelola. Tim memelihara dua gaya API: REST dan gRPC],
+)
+
 == Titik Awal
 
 Lab ini melanjutkan kondisi kode di akhir Lab 3. Peserta yang menyelesaikan Lab 3 sendiri dapat langsung melanjutkan dari kode miliknya. Peserta yang tertinggal memulai dari _checkpoint_ `lab-03`:

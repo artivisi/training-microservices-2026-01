@@ -14,7 +14,7 @@ Setelah menyelesaikan lab ini, peserta mampu:
 
 == Gambaran
 
-Hingga akhir Lab 1, sistem hanya berisi account service dengan database `account`. Lab 2 menambahkan transfer service. Transfer memindahkan sejumlah uang dari rekening sumber ke rekening tujuan. Data rekening dan saldo tetap dimiliki account service, sehingga transfer service tidak boleh membaca atau mengubah tabel `account` secara langsung. Transfer service hanya dapat mengakses data tersebut dengan memanggil API milik account service.
+Hingga akhir Lab 1, sistem hanya berisi account service dengan database `account`. Lab 2 menambahkan transfer service. Transfer memindahkan sejumlah uang dari rekening sumber ke rekening tujuan. Data rekening dan saldo menjadi milik account service, sehingga transfer service tidak boleh membaca atau mengubah tabel `account` secara langsung. Transfer service hanya dapat mengakses data tersebut dengan memanggil API milik account service.
 
 ```
                  POST /transfers

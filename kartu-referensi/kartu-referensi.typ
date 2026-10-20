@@ -34,6 +34,29 @@
   )
 }
 
+= Peta _Concern_ Microservices
+
+Setiap sistem microservices harus menjawab sepuluh _concern_ berikut. Setiap _concern_ ditangani di kode, yaitu _library_ yang dipasang di setiap service, atau oleh platform (Kubernetes dan infrastruktur pendukung). Generasi microservices Java sebelumnya (Spring Cloud Netflix dan Spring Cloud Config) menangani banyak _concern_ di _library_: Eureka untuk _service discovery_, Ribbon untuk _load balancing_ di sisi klien, Hystrix untuk _circuit breaker_, dan Config Server untuk konfigurasi. Pada generasi Kubernetes, _service discovery_, _load balancing_, konfigurasi, _restart_, dan _rollout_ berpindah ke platform. Kebijakan _resiliency_, konsistensi data, pemeriksaan _security_, dan instrumentasi tetap ditulis di kode. Service Go di studi kasus mengandalkan platform dan beberapa _library_ kecil, tanpa _framework_ microservices.
+
+#{
+  set text(size: 8pt)
+  table(
+    columns: (0.25fr, 1.35fr, 1.5fr, 1.9fr, 1.5fr, 1.7fr, 0.55fr),
+    inset: 4pt,
+    table.header([], [_Concern_], [Pertanyaan yang Dijawab], [Pola dan Teknik di Studi Kasus], [Di Kode (_Library_)], [Di Platform atau Infrastruktur], [Lab]),
+    [1], [_Decomposition_ dan kepemilikan data], [Batas service dan pemilik data], [Service per domain bisnis, _database per service_, data milik service lain diambil melalui API atau _event_], [—], [_Database per service_], [1, 2],
+    [2], [Komunikasi sinkron dan asinkron], [REST, gRPC, _messaging_], [REST untuk _channel_, gRPC untuk panggilan internal, Kafka untuk _event_], [`net/http`, grpc-go, kafka-go], [Kafka], [2, 4, 5],
+    [3], [_Resiliency_], [Tetap berfungsi saat dependensi lambat atau mati], [_Timeout_, _retry_ dengan _backoff_, _circuit breaker_], [failsafe-go], [_Probe_, _restart_, _rolling update_], [3, 4, 9],
+    [4], [Konsistensi data], [Perubahan data lintas database], [_Saga_ dengan kompensasi, _transactional outbox_, _idempotency key_, _idempotent consumer_], [Kode service (pgx, kafka-go)], [—], [5, 6],
+    [5], [_Security_], [Siapa boleh memanggil apa], [OAuth2 _client credentials_, validasi JWT], [JWT _middleware_ (REST) dan _interceptor_ (gRPC)], [Hydra (_authorization server_), API _gateway_], [7],
+    [6], [_Observability_], [Apa yang terjadi dan di mana lambatnya], [_Log_ terstruktur dengan _correlation ID_, metrik, _distributed tracing_], [`slog`, Prometheus _client_, OTel SDK], [Grafana, Loki, Tempo, Prometheus], [8],
+    [7], [_Configuration_ (termasuk _centralized config_ dan _secret_)], [Nilai yang berbeda per _environment_], [_Environment variable_ wajib tanpa nilai _default_ (12-factor)], [`LoadConfig`], [ConfigMap, Secret, _secret manager_], [1, 9],
+    [8], [_Service discovery_ dan _load balancing_], [Alamat service tujuan], [Alamat service dibaca dari konfigurasi], [— (alamat dari konfigurasi)], [Kubernetes Service (DNS), Ingress], [9],
+    [9], [_Packaging_ dan _deployment_], [Cara service dijalankan dan diperbarui], [_Multi-stage_ Dockerfile, _image_ statis _non-root_, _rolling update_], [Dockerfile], [Kubernetes Deployment, _probe_, _rolling update_], [9],
+    [10], [_Automation_ (CI/CD)], [Dari _commit_ ke _production_], [_Pipeline_ per service: _test_, _build image_, _deploy_], [Target `Makefile`], [_Pipeline_ (git server dan runner CI, Jenkins)], [10],
+  )
+}
+
 = Cara Membaca
 
 Setiap baris memuat satu pola. Kolom *Layak Digunakan Bila* dan *Tidak Perlu Bila* menjadi dasar keputusan. Kolom *Beban dan Risiko* mencatat pekerjaan tambahan yang muncul setelah pola diterapkan. Kolom *Lab* menunjuk lab studi kasus yang menerapkan pola tersebut. _Checkpoint_ setiap lab tersedia sebagai _tag_ `lab-NN` di repositori studi kasus.

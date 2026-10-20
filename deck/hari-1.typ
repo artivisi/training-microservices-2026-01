@@ -25,15 +25,19 @@
 // ── Pembuka ────────────────────────────────────────────────────────────────
 
 #slide(kicker: "Hari 1", title: "Agenda Hari 1")[
+  #set table(inset: 5pt)
   #table(
     columns: (auto, 1fr, auto),
     [Waktu], [Topik], [Format],
-    [09:00–09:45], [Monolith dan microservices: _trade-off_, kondisi yang membuat microservices merugikan, gejala _distributed monolith_], [Presentasi],
-    [09:45–10:30], [_Service decomposition_: kapabilitas bisnis, _bounded context_, dekomposisi studi kasus perbankan], [Presentasi dan diskusi],
+    [08:00–08:15], [Registrasi dan pembukaan], [—],
+    [08:15–09:15], [Peta _concern_ microservices; monolith dan microservices: _trade-off_, kondisi yang membuat microservices merugikan, gejala _distributed monolith_], [Presentasi],
+    [09:15–10:00], [_Service decomposition_: kapabilitas bisnis, _bounded context_, dekomposisi studi kasus perbankan], [Presentasi dan diskusi],
+    [10:15–10:45], [Ekosistem Go dibandingkan Java, Node.js, dan PHP; alasan memilih Go], [Presentasi],
     [10:45–12:00], [Go _essentials_ untuk service: _module_, _struct_, _interface_, _error handling_, _goroutine_ dan _channel_, `net/http`], [Presentasi dan demo],
-    [12:00–12:30], [Anatomi service Go: struktur _project_, _routing_, validasi, konfigurasi, _health check_], [Demo],
-    [13:30–15:00], [*Lab 1*: account service dengan REST, PostgreSQL, dan _health check_], [_Hands-on_],
-    [15:15–16:30], [*Lab 2*: transfer service sebagai service kedua, komunikasi REST pertama], [_Hands-on_],
+    [12:00–12:45], [Anatomi service Go: struktur _project_, _routing_, validasi, _12-factor_, konfigurasi, _liveness_ dan _readiness_], [Demo],
+    [13:45–15:15], [*Lab 1*: account service dengan REST, PostgreSQL, dan _health check_], [_Hands-on_],
+    [15:30–16:45], [*Lab 2*: transfer service sebagai service kedua, komunikasi REST pertama], [_Hands-on_],
+    [16:45–17:00], [Ringkasan Hari 1 pada peta _concern_], [Diskusi],
   )
 ]
 
@@ -90,6 +94,45 @@
   )
   #v(6pt)
   #text(size: 12.5pt)[Setiap kondisi akhir lab tersedia sebagai _git tag_ (`lab-01` … `lab-10`). Peserta yang tertinggal melanjutkan dari _tag_ lab sebelumnya dengan `git checkout lab-NN`.]
+]
+
+#slide(kicker: "Peta training", title: [Peta _concern_ microservices])[
+  #concern-map(size: 11pt, inset: (x: 5pt, y: 4.5pt))
+  #v(2pt)
+  #text(size: 11pt, fill: slate)[H1–H4 = Hari 1–4. Setiap hari dibuka dengan peta ini: baris yang disorot adalah _concern_ yang dibahas hari itu.]
+]
+
+#slide(kicker: "Peta training", title: [_Concern_ ditangani di kode atau di platform])[
+  #set table(inset: 5pt)
+  #table(
+    columns: (auto, 1fr, 1fr),
+    [_Concern_], [Generasi Spring Cloud Netflix: _library_ di setiap service], [Generasi Kubernetes: platform],
+    [_Service discovery_], [Eureka: _registry server_ dan _client_ di setiap service], [Kubernetes Service dan DNS],
+    [_Load balancing_], [Ribbon di sisi pemanggil], [Kubernetes Service (kube-proxy)],
+    [_Configuration_], [Spring Cloud Config Server dan _client_-nya], [ConfigMap dan Secret],
+    [_Restart_ dan _rollout_], [Di luar _framework_: skrip dan prosedur operasional], [Deployment: _probe_, _restart_ otomatis, _rolling update_],
+    [_Circuit breaker_], [Hystrix], [Tetap di kode: failsafe-go (Go), Resilience4j (Java)],
+    [Konsistensi, pemeriksaan token, instrumentasi], [_Library_ di setiap service], [Tetap di kode],
+  )
+  #v(8pt)
+  #note[Studi kasus mengikuti generasi Kubernetes. Alamat service, konfigurasi, _restart_, dan _rollout_ diserahkan ke platform. Kode Go hanya memuat kebijakan _resiliency_, konsistensi data, pemeriksaan token, dan instrumentasi, sehingga service tidak bergantung pada _framework_ tertentu. Sejak Desember 2018, Spring Cloud menetapkan modul Hystrix dan Ribbon sebagai _maintenance mode_, dengan pengganti Resilience4j dan Spring Cloud LoadBalancer.]
+]
+
+#slide(kicker: "Peta training", title: [_Concern_ yang dibahas Hari 1])[
+  #let day1 = (
+    [Lab 1–2: batas service dari kapabilitas bisnis, satu database per service],
+    [Lab 2: panggilan REST pertama dari transfer ke account],
+    [Lab 2: celah _client_ tanpa _timeout_ dicatat, ditangani Hari 2],
+    [Lab 2: celah credit gagal setelah debit dicatat, ditangani Hari 2–3],
+    [Hari 3],
+    [Hari 3–4],
+    [Lab 1: konfigurasi wajib dari _environment variable_ (faktor III)],
+    [Hari 4],
+    [Konsep _liveness_, _readiness_, dan _graceful shutdown_; YAML di Hari 4],
+    [Target `Makefile` per service sudah disiapkan; _pipeline_ di Hari 4],
+  )
+  #concern-map(highlight: (1, 2, 7, 9), cols: ("concern",), size: 12pt, inset: (x: 6pt, y: 6pt),
+    extra: ((header: [Cakupan di Hari 1], cells: day1, width: 1.8fr),))
 ]
 
 // ── 01 Monolith dan microservices ─────────────────────────────────────────
@@ -236,10 +279,27 @@
     [notification], [Memberi tahu hasil transfer (Hari 3)], [Tabel `notification`], [Tidak dipanggil langsung, tetapi membaca _event_ dari Kafka],
   )
   #v(10pt)
-  #note[Transfer dipisahkan dari account karena aturan transfer (status, kompensasi, _idempotency_) dan aturan pengelolaan rekening berubah dengan alasan dan jadwal yang berbeda. Saldo tetap hanya diubah oleh account service.]
+  #note[Transfer dipisahkan dari account karena aturan transfer (status, kompensasi, _idempotency_) dan aturan pengelolaan rekening berubah dengan alasan dan jadwal yang berbeda. Walaupun transfer menjadi service sendiri, saldo rekening hanya boleh diubah oleh account service.]
 ]
 
-#slide(kicker: "Studi kasus", title: [_Database per service_])[
+#decision(title: [_Database per service_],
+  [Setiap service dapat mengubah skema dan dirilis tanpa koordinasi dengan pemilik service lain (acuan pertama dan kedua penentuan batas service).],
+  [
+    - Satu database bersama untuk semua service
+    - Satu server database, dengan _schema_ dan kredensial terpisah per service
+    - Satu server database per service
+  ],
+  [Setiap service memiliki _container_ PostgreSQL sendiri. Service lain hanya mengakses datanya melalui API atau _event_.
+
+  Server bersama dengan database dan kredensial terpisah per service juga memenuhi prinsip ini, asalkan service tidak dapat membaca data milik service lain.],
+  [
+    - _Join_ lintas service tidak tersedia, sehingga data milik service lain diambil melalui API
+    - Debit dan credit tidak dapat dibungkus satu transaksi database (saga, Hari 2–3)
+    - Jumlah database yang harus di-_backup_ dan dipantau bertambah
+  ],
+)
+
+#slide(kicker: "Studi kasus", title: [_Database per service_ di studi kasus])[
   #two-col(ratio: (1fr, 1fr),
     [
       #diagram(height: 260pt,
@@ -256,7 +316,7 @@
       #bullets(size: 13.5pt,
         [Setiap service memiliki _container_ PostgreSQL sendiri di `compose.yaml`.],
         [Transfer service tidak memiliki koneksi ke `db-account`, sehingga data rekening hanya dapat diperoleh melalui API account.],
-        [Konsekuensinya, _join_ lintas service tidak tersedia, dan debit serta credit tidak dapat dibungkus satu transaksi database.],
+        [Port PostgreSQL dimulai dari 15432 agar tidak bentrok dengan PostgreSQL lokal di port 5432.],
       )
     ],
   )
@@ -290,9 +350,56 @@ transfer -> account  POST /accounts/1000000002/credit
 ```
 ]
 
-// ── 03 Go essentials ───────────────────────────────────────────────────────
+// ── 03 Ekosistem Go ────────────────────────────────────────────────────────
 
-#section-slide(number: "03", title: "Go Essentials untuk Service", subtitle: [Fitur bahasa Go yang cukup untuk menulis dan membaca kode service di lab])
+#section-slide(number: "03", title: "Ekosistem Go dibandingkan Java, Node.js, dan PHP", subtitle: [Ketersediaan _library_ per _concern_, karakter _runtime_, dan alasan memilih Go])
+
+#slide(kicker: "Ekosistem", title: [_Library_ per _concern_ di empat ekosistem])[
+  #set table(inset: (x: 5pt, y: 6pt))
+  #show table.cell: set text(size: 12pt)
+  #table(
+    columns: (auto, 1fr, 1fr, 1fr, 1fr),
+    [_Concern_], [Go], [Java], [Node.js], [PHP],
+    [HTTP dan REST], [`net/http` (stdlib), chi, gin], [Spring Boot (Spring MVC, WebFlux)], [Express, Fastify, NestJS], [Laravel, Symfony],
+    [gRPC], [grpc-go], [grpc-java], [`@grpc/grpc-js`], [_Client_: ekstensi `grpc`; _server_: RoadRunner],
+    [Kafka], [kafka-go, franz-go, confluent-kafka-go], [Kafka _client_ dari Apache, Spring Kafka], [KafkaJS, `@confluentinc/kafka-javascript`], [php-rdkafka (ekstensi)],
+    [_Resiliency_], [failsafe-go, sony/gobreaker], [Resilience4j], [opossum], [Ganesha (_circuit breaker_)],
+    [OAuth2 dan JWT], [golang-jwt, `x/oauth2`], [Spring Security (OAuth2 _resource server_)], [jose, Passport (passport-jwt)], [firebase/php-jwt, lcobucci/jwt],
+    [OpenTelemetry], [OTel Go SDK], [OTel Java agent, Micrometer], [OTel JS SDK], [OTel PHP],
+    [Akses database], [pgx, `database/sql`], [JDBC, Spring Data JPA (Hibernate)], [node-postgres (`pg`), Prisma, TypeORM], [PDO, Doctrine, Eloquent],
+  )
+  #v(6pt)
+  #note[Keempat ekosistem memiliki _library_ untuk setiap _concern_. Perbedaannya ada pada bentuk paket: Java menyediakan integrasi siap pakai melalui Spring, sedangkan Go merangkai _library_ kecil per _concern_. KafkaJS belum merilis versi baru sejak 2.2.4 (Februari 2023); Confluent menerbitkan `@confluentinc/kafka-javascript` dengan API yang kompatibel dengan KafkaJS.]
+]
+
+#slide(kicker: "Ekosistem", title: [Karakter _runtime_ yang berpengaruh pada microservices])[
+  #set table(inset: (x: 5pt, y: 7pt))
+  #show table.cell: set text(size: 12.5pt)
+  #table(
+    columns: (auto, 1fr, 1fr, 1fr, 1fr),
+    [Aspek], [Go], [Java], [Node.js], [PHP],
+    [Artefak _deployment_], [Satu _binary_ statis; _image_ dapat berbasis `scratch`], [JVM dan file `jar`], [_Runtime_ Node dan direktori `node_modules`], [PHP-FPM dan _web server_, atau _worker_ persisten (RoadRunner, Swoole)],
+    [Model konkurensi], [_Goroutine_ yang dijadwalkan _runtime_ Go], [_Thread_ JVM; _virtual thread_ sejak Java 21], [Satu _event loop_; komputasi berat menahan seluruh _request_], [Setiap _worker_ FPM melayani satu _request_ pada satu waktu; _state_ tidak bertahan antar-_request_],
+    [_Startup_ dan memori], [_Startup_ cepat, memori kecil], [_Startup_ lebih lama karena JVM dan inisialisasi _framework_; dapat dipersingkat dengan GraalVM _native image_], [_Startup_ cepat], [_Bootstrap framework_ di setiap _request_, kecuali dengan _worker_ persisten],
+  )
+  #v(8pt)
+  #note[Angka dari studi kasus: _image_ account service sekitar 8 MB terkompresi dan _startup_ di bawah 1 detik (diukur di Lab 9). Dalam praktik, pilihan bahasa paling sering ditentukan oleh bahasa yang sudah dikuasai tim dan sanggup dirawat tim selama bertahun-tahun.]
+]
+
+#decision(title: "Go untuk service di studi kasus",
+  [Banyak service kecil yang berjalan di _container_ dan Kubernetes: _image_ kecil, _startup_ cepat, berjalan sebagai _non-root_, dan mudah dibaca peserta dari berbagai latar belakang bahasa.],
+  [Java dengan Spring Boot dan Spring Cloud, Node.js, PHP, dan Go.],
+  [Go dengan _standard library_ dan _library_ kecil per _concern_ (lihat tabel _library_). Service pendukung (_registry_, SSO, _log server_, _monitoring_) dan analisis _build_, _reuse_, _buy_ dibahas di Hari 4.],
+  [
+    - _Binary_ statis, _image_ `scratch`, dan konkurensi dengan _goroutine_
+    - Go tidak memiliki _framework_ tunggal setara Spring Boot, sehingga konfigurasi, _middleware_, dan telemetri dirangkai sendiri dengan kode yang ringkas
+    - Tim yang terbiasa dengan Java atau PHP perlu waktu belajar
+  ],
+)
+
+// ── 04 Go essentials ───────────────────────────────────────────────────────
+
+#section-slide(number: "04", title: "Go Essentials untuk Service", subtitle: [Fitur bahasa Go yang cukup untuk menulis dan membaca kode service di lab])
 
 #code-slide(kicker: "Go essentials", title: [_Module_ dan _workspace_],
   side: [
@@ -478,9 +585,9 @@ func logging(log *slog.Logger, next http.Handler) http.Handler {
 ```
 ]
 
-// ── 04 Anatomi service Go ──────────────────────────────────────────────────
+// ── 05 Anatomi service Go ──────────────────────────────────────────────────
 
-#section-slide(number: "04", title: "Anatomi Service Go", subtitle: [Struktur _project_, _routing_, validasi, konfigurasi, dan _health check_])
+#section-slide(number: "05", title: "Anatomi Service Go", subtitle: [Struktur _project_, _routing_, validasi, _12-factor_, konfigurasi, dan _health check_])
 
 #code-slide(kicker: "Anatomi service", title: [Struktur _project_],
   side: [
@@ -539,6 +646,21 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 ```
 ]
 
+#decision(title: [_Routing_ dengan `ServeMux` dari _standard library_],
+  [_Routing_ REST berdasarkan _method_ dan _path_, dengan parameter di _path_ (`/accounts/{number}`), serta _middleware_ untuk _logging_, JWT, dan metrik.],
+  [
+    - `http.ServeMux`: pola _method_ dan _path_ sejak Go 1.22
+    - chi: _router_ yang kompatibel dengan `http.Handler`
+    - gin, echo: _framework_ dengan _binding_ dan validasi
+  ],
+  [`http.ServeMux` tanpa _router_ pihak ketiga. _Middleware_ ditulis sebagai fungsi yang menerima dan mengembalikan `http.Handler`.],
+  [
+    - Tidak ada dependensi tambahan. _Handler_ tetap berupa `http.Handler` biasa, sehingga dapat dipasang di chi bila kelak dibutuhkan
+    - Tidak tersedia pengelompokan _route_ dengan _middleware_ per grup, maupun _binding_ dan validasi otomatis seperti di gin
+    - Validasi ditulis sendiri (slide berikutnya)
+  ],
+)
+
 #code-slide(kicker: "Anatomi service", title: "Validasi input",
   side: [
     - Validasi dijalankan sebelum data disimpan ke database.
@@ -573,9 +695,32 @@ HTTP 400
 ```
 ]
 
+#slide(kicker: "Anatomi service", title: [_12-factor app_])[
+  #set table(inset: (x: 6pt, y: 4.5pt))
+  #show table.cell: set text(size: 12pt)
+  #text(size: 12.5pt)[Dua belas prinsip untuk aplikasi yang dijalankan di _cloud_ (12factor.net). Prinsip ini menjadi acuan sepanjang training.]
+  #v(2pt)
+  #table(
+    columns: (auto, auto, 1fr, auto),
+    [Faktor], [Nama], [Penerapan di studi kasus], [Dibahas di],
+    [I], [_Codebase_], [Satu _module_ dan satu _pipeline_ per service; tidak dibahas khusus], [—],
+    [II], [_Dependencies_], [Dependensi dideklarasikan di `go.mod` dan `go.sum`], [Lab 1],
+    [III], [_Config_], [Konfigurasi hanya dari _environment variable_], [Lab 1, 9],
+    [IV], [_Backing services_], [Database, account service, Kafka, Hydra, dan _collector_ diakses melalui alamat dari konfigurasi], [Lab 1–2, 5, 7, 8],
+    [V], [_Build, release, run_], [_Image_ dibangun sekali, lalu dirilis dengan konfigurasi per _environment_], [Lab 9–10],
+    [VI], [_Processes_], [Service tidak menyimpan _state_ di memori; semua data ada di database], [Lab 1, 9],
+    [VII], [_Port binding_], [Service membuka port HTTP dan gRPC sendiri (`HTTP_ADDR`, `GRPC_ADDR`)], [Lab 1, 4],
+    [VIII], [_Concurrency_], [Kapasitas ditambah dengan memperbanyak replika], [Lab 9],
+    [IX], [_Disposability_], [_Startup_ cepat dan _graceful shutdown_], [Lab 1, 9–10],
+    [X], [_Dev/prod parity_], [_Image_ dan _manifest_ _base_ yang sama di k3d dan di _server_ pelatihan], [Lab 9–10],
+    [XI], [_Logs_], [_Log_ ditulis ke `stdout` sebagai aliran _event_; format JSON sejak Lab 8], [Lab 1, 8],
+    [XII], [_Admin processes_], [Skema database diterapkan saat _startup_ service, tanpa proses admin terpisah; tidak dibahas khusus], [—],
+  )
+]
+
 #code-slide(kicker: "Anatomi service", title: [Konfigurasi dari _environment variable_],
   side: [
-    - Konfigurasi hanya dibaca dari _environment variable_ (prinsip _12-factor_), sehingga _image_ yang sama berjalan di laptop, CI, dan Kubernetes.
+    - Konfigurasi hanya dibaca dari _environment variable_ (faktor III, _Config_), sehingga _image_ yang sama berjalan di laptop, CI, dan Kubernetes.
     - Semua variabel wajib diisi dan tidak ada nilai _default_.
     - Bila ada variabel yang kosong, service berhenti saat _startup_ dengan _error_ yang menyebut nama variabel tersebut.
   ],
@@ -608,17 +753,45 @@ level=ERROR msg="account service stopped"
 ```
 ]
 
-#slide(kicker: "Anatomi service", title: [_Health check_: _liveness_ dan _readiness_])[
-  #table(
-    columns: (auto, 1fr, 1fr, 1fr),
-    [_Endpoint_], [Pertanyaan yang dijawab], [Yang diperiksa], [Akibat bila gagal di Kubernetes],
-    [`GET /healthz`], [Apakah proses masih hidup dan melayani HTTP?], [Tidak ada dependensi yang diperiksa], [_Pod_ di-_restart_],
-    [`GET /readyz`], [Apakah service siap mengerjakan _request_?], [Database milik service sendiri menjawab _ping_ dalam 2 detik], [_Pod_ dikeluarkan sementara dari daftar tujuan _traffic_],
+#slide(kicker: "Anatomi service", title: [_Liveness_ dan _readiness_ menjawab pertanyaan yang berbeda])[
+  #two-col(
+    card([_Liveness_: `GET /healthz`])[
+      *Pertanyaan:* apakah proses ini macet dan perlu di-_restart_?
+
+      *Yang bertindak:* kubelet di _node_ tempat _pod_ berjalan.
+
+      *Tindakan bila gagal:* _container_ di-_restart_.
+
+      *Yang diperiksa di studi kasus:* tidak ada dependensi. _Endpoint_ menjawab `200` selama server HTTP masih melayani _request_.
+    ],
+    card([_Readiness_: `GET /readyz`], accent: gold.darken(15%))[
+      *Pertanyaan:* apakah _pod_ ini boleh menerima _traffic_ sekarang?
+
+      *Yang bertindak:* kubelet melaporkan hasilnya, lalu _pod_ dikeluarkan dari daftar _endpoint_ Service.
+
+      *Tindakan bila gagal:* _pod_ tidak menerima _request_ baru, tetapi _container_ tidak di-_restart_. Begitu kembali `200`, _pod_ menerima _traffic_ lagi.
+
+      *Yang diperiksa di studi kasus:* _ping_ ke database milik service sendiri dengan batas 2 detik, `503` bila gagal.
+    ],
   )
-  #v(10pt)
-  #note(kind: "warn")[Database tidak diperiksa di _liveness_. Bila database mati dan _liveness_ ikut gagal, Kubernetes me-_restart_ semua _pod_ yang sebenarnya sehat, padahal _restart_ tidak memperbaiki database.]
-  #v(4pt)
-  #note[_Readiness_ transfer service hanya memeriksa database transfer. Gangguan di account service ditangani dengan _resiliency_ (Hari 2) dan tidak mengeluarkan transfer service dari daftar tujuan _traffic_.]
+  #v(8pt)
+  #note[Untuk service yang _startup_-nya lama, Kubernetes menyediakan _startupProbe_: _liveness_ dan _readiness_ baru dijalankan setelah _startupProbe_ berhasil, sehingga _startup_ yang lama tidak dianggap macet. Studi kasus tidak memerlukannya. YAML ketiga _probe_ dibahas di Lab 9.]
+]
+
+#slide(kicker: "Anatomi service", title: [Skenario _liveness_ dan _readiness_])[
+  #set table(inset: (x: 5pt, y: 5pt))
+  #show table.cell: set text(size: 11.5pt)
+  #table(
+    columns: (1fr, auto, auto, 1.15fr, 1.35fr),
+    [Skenario], [`/healthz`], [`/readyz`], [Tindakan Kubernetes], [Alasan],
+    [_Startup_, service sedang menghubungi database], [Belum menjawab], [Belum menjawab], [_Pod_ belum menerima _traffic_. Bila koneksi gagal, proses berhenti dengan _error_ dan _container_ di-_restart_], [Server HTTP baru dibuka setelah _ping_ ke database berhasil. Bila tahap ini lebih lama dari batas _liveness_, gunakan _startupProbe_],
+    [Database mati sementara], [`200`], [`503`], [_Pod_ dikeluarkan dari Service, tanpa _restart_], [_Restart_ tidak memperbaiki database. Bila _liveness_ ikut memeriksa database, semua _pod_ di-_restart_ bersamaan],
+    [Proses macet, server HTTP tidak menjawab], [_Timeout_], [_Timeout_], [_Container_ di-_restart_], [Hanya _restart_ yang mengembalikan proses yang macet],
+    [_Overload_], [Lambat], [Lambat atau `503`], [_Pod_ dikeluarkan sementara dari Service], [Beban beralih ke replika lain. Batas _liveness_ dibuat longgar agar beban sesaat tidak memicu _restart_ yang menambah beban],
+    [Account service lambat, dilihat dari transfer service], [`200`], [`200`], [Tidak ada], [_Readiness_ transfer hanya memeriksa database transfer. Gangguan account ditangani _timeout_ dan _circuit breaker_ (Hari 2)],
+  )
+  #v(6pt)
+  #note[_Liveness_ gagal berarti _container_ di-_restart_. _Readiness_ gagal berarti _pod_ tidak menerima _traffic_, tanpa _restart_.]
 ]
 
 #code-slide(kicker: "Anatomi service", title: [_Graceful shutdown_],
@@ -626,7 +799,7 @@ level=ERROR msg="account service stopped"
     - Saat menerima `SIGTERM`, server berhenti menerima koneksi baru.
     - `srv.Shutdown` menunggu _request_ yang sedang berjalan selesai, dengan batas 10 detik.
     - Batas ini berbeda per service. Sejak Lab 5, transfer menunggu hingga 60 detik agar saga tidak terpotong di antara debit dan credit.
-    - _Rolling update_ di Kubernetes (Hari 4) mengandalkan perilaku ini agar tidak ada transfer yang terputus di tengah proses.
+    - _Rolling update_ di Kubernetes (Hari 4) mengandalkan perilaku ini agar tidak ada transfer yang terputus di tengah proses (faktor IX, _Disposability_).
   ],
 )[
 ```go
@@ -665,9 +838,9 @@ case <-ctx.Done():
   #note[Untuk status `500`, klien hanya menerima `"internal error"`. Detail _error_ seperti alamat database atau isi _query_ hanya ditulis ke _log_.]
 ]
 
-// ── 05 Lab 1 ───────────────────────────────────────────────────────────────
+// ── 06 Lab 1 ───────────────────────────────────────────────────────────────
 
-#section-slide(number: "05", title: "Lab 1: Account Service", subtitle: [REST, PostgreSQL, validasi, dan _health check_])
+#section-slide(number: "06", title: "Lab 1: Account Service", subtitle: [REST, PostgreSQL, validasi, dan _health check_])
 
 #slide(kicker: "Lab 1", title: "Mengembangkan account service dari nol")[
   #two-col(ratio: (1.2fr, 1fr),
@@ -716,6 +889,22 @@ curl -s localhost:28081/readyz
 ```
 ]
 
+#decision(title: "pgx tanpa ORM",
+  [Akses PostgreSQL dengan SQL yang terlihat jelas, kendali penuh atas transaksi, dan kondisi saldo yang diperiksa di klausa `where` (slide berikutnya).],
+  [
+    - pgx langsung (`pgxpool`)
+    - `database/sql` dengan _driver_ PostgreSQL
+    - sqlc: kode Go dibangkitkan dari SQL
+    - ORM: GORM, ent
+  ],
+  [pgx v5 dengan `pgxpool`. SQL ditulis langsung dengan `pgx.NamedArgs`, dan hasil _query_ dipetakan ke _struct_ dengan `pgx.RowToStructByPos`.],
+  [
+    - Setiap _query_ terbaca apa adanya, termasuk fitur khusus PostgreSQL
+    - Urutan kolom di `returning` dan `select` harus sama dengan urutan _field_ di _struct_
+    - Perubahan skema diikuti perubahan _query_ secara manual, dan kode terikat ke PostgreSQL
+  ],
+)
+
 #code-slide(kicker: "Lab 1", title: "Mencegah saldo negatif saat dua debit bersamaan",
   side: [
     - Pemeriksaan saldo berada di klausa `where`. Dua debit yang datang bersamaan tidak dapat sama-sama lolos: debit kedua menunggu _row lock_, lalu kondisinya dievaluasi ulang dengan saldo terbaru.
@@ -742,9 +931,9 @@ return a, tx.Commit(ctx)
 ```
 ]
 
-// ── 06 Lab 2 ───────────────────────────────────────────────────────────────
+// ── 07 Lab 2 ───────────────────────────────────────────────────────────────
 
-#section-slide(number: "06", title: "Lab 2: Transfer Service", subtitle: [Dua service, dua database, dan komunikasi REST pertama])
+#section-slide(number: "07", title: "Lab 2: Transfer Service", subtitle: [Dua service, dua database, dan komunikasi REST pertama])
 
 #slide(kicker: "Lab 2", title: "Mengembangkan transfer service sebagai service kedua")[
   #two-col(ratio: (1.2fr, 1fr),
@@ -757,7 +946,7 @@ return a, tx.Commit(ctx)
         - `POST /transfers` dan `GET /transfers/{id}`
         - Tabel `transfer` dengan status `PENDING`, `COMPLETED`, `FAILED`
         - _Package_ `accountclient`: client REST ke account service
-        - Variabel wajib baru: `ACCOUNT_SERVICE_URL`
+        - Variabel wajib baru: `ACCOUNT_SERVICE_URL` (faktor IV: account service diakses melalui alamat dari konfigurasi)
       ]
     ],
     [
@@ -847,17 +1036,18 @@ func (s *Service) Execute(ctx context.Context,
 
 #slide(kicker: "Penutup Hari 1", title: "Ringkasan dan persiapan Hari 2")[
   #two-col(
-    card("Hasil Hari 1")[
-      - Batas service ditentukan dari kapabilitas bisnis dan kepemilikan data
-      - Account service dan transfer service berjalan dengan database masing-masing
-      - Konfigurasi wajib dari _environment variable_, tanpa nilai _default_
-      - _Liveness_ dan _readiness_ dipisahkan sejak awal
-      - Transfer memanggil account melalui REST dan masih memiliki dua celah yang sudah dicatat
+    card([Hasil Hari 1 pada peta _concern_])[
+      - *\#1 _Decomposition_:* batas service dari kapabilitas bisnis, satu database per service
+      - *\#2 Komunikasi:* transfer memanggil account melalui REST
+      - *\#7 _Configuration_:* variabel wajib dari _environment variable_, tanpa nilai _default_ (faktor III)
+      - *\#9 _Deployment_ (konsep):* _liveness_ dan _readiness_ dipisahkan sejak awal, _graceful shutdown_ (faktor IX)
+      - Dua celah dicatat untuk \#3 _Resiliency_ dan \#4 Konsistensi data
+      - Keputusan desain: Go, `ServeMux`, pgx tanpa ORM, _database per service_
     ],
     card("Persiapan Hari 2", accent: gold.darken(15%))[
       - Pastikan `make test` lulus dan kode sesuai _tag_ `lab-02`
       - Pastikan `protoc`, `protoc-gen-go`, dan `protoc-gen-go-grpc` terpasang (Lab 4)
-      - Topik Hari 2: service lambat dan service mati, _timeout_, _retry_, _circuit breaker_, gRPC, serta konsistensi data lintas service
+      - _Concern_ Hari 2: \#3 _Resiliency_ (_timeout_, _retry_, _circuit breaker_), \#2 gRPC untuk panggilan internal, dan \#4 konsistensi data lintas service
     ],
   )
 ]

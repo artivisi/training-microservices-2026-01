@@ -195,7 +195,21 @@ Kolom `STATUS` untuk `db-account` harus menampilkan `healthy`.
 
 === Konfigurasi dari Environment Variable
 
-_Service_ membutuhkan dua nilai konfigurasi: alamat _listen_ HTTP _server_ dan URL koneksi database. Nilai tersebut berbeda di setiap tempat _service_ dijalankan (laptop, _container_, Kubernetes), sehingga dibaca dari _environment variable_ sesuai prinsip _twelve-factor app_.
+_Service_ membutuhkan dua nilai konfigurasi: alamat _listen_ HTTP _server_ dan URL koneksi database. Nilai tersebut berbeda di setiap tempat _service_ dijalankan (laptop, _container_, Kubernetes), sehingga dibaca dari _environment variable_.
+
+Cara ini mengikuti _twelve-factor app_ (12-factor), yaitu dua belas prinsip untuk aplikasi yang dijalankan sebagai _service_ di _cloud_. Faktor III (_Config_) menetapkan bahwa nilai yang berbeda per _environment_ disimpan di _environment variable_, terpisah dari kode. Dengan cara tersebut, _image_ yang sama dapat dijalankan di laptop, di server _testing_, dan di _production_ hanya dengan mengganti nilai variabelnya. Tabel berikut memuat faktor yang diterapkan di studi kasus beserta lab tempat penerapannya. Daftar lengkap kedua belas faktor ada di materi presentasi Hari 1.
+
+#table(
+  columns: (1.2fr, 2.6fr, 0.6fr),
+  table.header([Faktor], [Penerapan di Studi Kasus], [Lab]),
+  [III. _Config_], [Seluruh konfigurasi dibaca dari _environment variable_, tanpa nilai _default_. Di Kubernetes, nilainya berasal dari ConfigMap dan Secret], [1, 9],
+  [IV. _Backing services_], [Database, account service, Kafka, Hydra, dan _collector_ OpenTelemetry dijangkau melalui alamat dari konfigurasi, sehingga dapat diganti tanpa mengubah kode], [1, 2, 5, 7, 8],
+  [V. _Build, release, run_], [Satu _image_ hasil _build_ digabungkan dengan konfigurasi per _environment_ saat _deploy_], [9, 10],
+  [VI. _Processes_], [_Service_ tidak menyimpan _state_ di memori. Seluruh data disimpan di database], [1, 9],
+  [VII. _Port binding_], [_Service_ membuka port HTTP sendiri (`HTTP_ADDR`), tanpa _web server_ terpisah. Port gRPC (`GRPC_ADDR`) menyusul di Lab 4], [1, 4],
+  [IX. _Disposability_], [_Startup_ cepat dan _graceful shutdown_ saat menerima `SIGTERM`], [1, 9, 10],
+  [XI. _Logs_], [_Service_ menulis _log_ sebagai aliran _event_ ke `stdout` (dan ke OTLP di Lab 8), tanpa mengelola _file log_. Penyimpanan dan pencarian _log_ menjadi tugas platform], [1, 8],
+)
 
 Setiap variabel bersifat wajib. Bila salah satu kosong, _service_ berhenti saat _startup_ dengan pesan error yang menyebutkan nama variabelnya. Nilai _default_ seperti `localhost:5432` sengaja tidak disediakan. Bila _service_ menggunakan nilai _default_ tanpa pesan apa pun dan terhubung ke database yang salah, penyebab masalahnya sulit ditemukan. _Service_ yang langsung berhenti dengan pesan error jauh lebih mudah diperbaiki.
 
@@ -447,10 +461,7 @@ Penjelasan bagian penting:
 
 Sejak Go 1.22, `http.ServeMux` bawaan Go mendukung pola yang memuat _method_ dan _path_ sekaligus, misalnya `"GET /accounts/{number}"`. Nilai `{number}` dibaca dengan `r.PathValue("number")`. Fitur ini sudah mencukupi untuk API pada studi kasus, sehingga _router_ pihak ketiga seperti chi atau gin tidak diperlukan. `ServeMux` juga otomatis mengembalikan status `405 Method Not Allowed` bila _path_ cocok tetapi _method_-nya tidak terdaftar.
 
-Bagian ini juga menyediakan dua _endpoint_ _health check_ yang nanti digunakan Kubernetes pada Lab 9:
-
-- `/healthz` (_liveness_) memastikan proses masih hidup dan dapat melayani HTTP. _Endpoint_ ini tidak memeriksa database. Bila database ikut diperiksa, gangguan database membuat Kubernetes me-_restart_ seluruh _pod_ yang sebenarnya sehat, padahal _restart_ tidak memperbaiki database.
-- `/readyz` (_readiness_) memastikan _service_ siap menerima _request_, yaitu database dapat dihubungi. Bila gagal, Kubernetes berhenti mengirim _traffic_ ke _pod_ tersebut tanpa me-_restart_-nya.
+Bagian ini juga menyediakan dua _endpoint_ _health check_, `/healthz` (_liveness_) dan `/readyz` (_readiness_). Perbedaan keduanya dibahas di bagian berikutnya, setelah kode _handler_.
 
 *File `studi-kasus/account/internal/account/http.go`*
 
@@ -574,6 +585,60 @@ Alur `create` mengikuti urutan yang umum pada _handler_ REST:
 + *Menjawab.* _Handler_ mengirim rekening baru dengan status 201 dan _header_ `Location` yang menunjuk ke alamat rekening tersebut.
 
 Error yang tidak terduga ditangani `internalError`, yang menulis detail error ke _log_ dan hanya mengirim `"internal error"` ke klien. Detail seperti nama tabel atau alamat database tidak boleh terkirim ke klien. Prinsip yang sama berlaku pada `readyz`.
+
+=== _Liveness_ dan _Readiness_ <lab01-liveness-readiness>
+
+Kedua _endpoint_ sama-sama mengembalikan 200 saat _service_ sehat, tetapi menjawab pertanyaan yang berbeda, dan hasilnya memicu tindakan yang berbeda pula. Tindakan tersebut dijalankan oleh platform. Di lab ini belum ada platform yang membaca hasilnya, sehingga keduanya diperiksa manual dengan `curl` (bagian Verifikasi). Kubernetes mulai menggunakannya di Lab 9.
+
+#table(
+  columns: (1fr, 1.9fr, 1.9fr),
+  table.header([Aspek], [`/healthz` (_liveness_)], [`/readyz` (_readiness_)]),
+  [Pertanyaan], [Apakah proses ini masih berjalan normal, atau macet sehingga perlu dijalankan ulang?], [Apakah _instance_ ini boleh menerima _request_ saat ini?],
+  [Yang diperiksa di studi kasus], [Tidak ada dependensi. Selama proses dapat menjawab HTTP, hasilnya 200], [`Ping` ke database milik _service_ itu sendiri dengan _timeout_ 2 detik. Hasilnya 503 bila database tidak menjawab],
+  [Tindakan Kubernetes saat gagal], [kubelet me-_restart_ _container_ setelah beberapa kegagalan berturut-turut], [_Pod_ dikeluarkan dari daftar _endpoint_ Service sehingga tidak menerima _request_ baru. _Container_ tidak di-_restart_, dan _pod_ kembali menerima _request_ begitu `/readyz` kembali 200],
+  [Kesalahan desain yang umum], [Ikut memeriksa database: saat database terganggu, semua _pod_ di-_restart_ bersamaan, padahal _restart_ tidak memperbaiki database], [Ikut memeriksa _service_ lain: gangguan di satu _service_ membuat semua pemanggilnya ikut keluar dari Service (kegagalan berantai)],
+)
+
+Tabel berikut menunjukkan hasil kedua _endpoint_ pada beberapa kondisi, beserta tindakan Kubernetes di Lab 9:
+
+#{
+  set text(size: 9pt)
+  table(
+    columns: (1.15fr, 1.05fr, 1.05fr, 1.45fr, 1.6fr),
+    table.header([Kondisi], [`/healthz`], [`/readyz`], [Tindakan Kubernetes], [Alasan]),
+    [_Startup_, _service_ sedang membuka koneksi ke database],
+    [Belum menjawab, karena HTTP _server_ baru dibuka setelah koneksi database berhasil],
+    [Belum menjawab],
+    [_Pod_ belum _ready_ dan belum menerima _request_. Bila database tidak dapat dihubungi, _service_ berhenti dengan error, lalu kubelet menjalankan ulang _container_],
+    [_Request_ tidak boleh sampai ke _instance_ yang belum siap],
+
+    [Database mati sementara],
+    [200],
+    [503],
+    [_Pod_ dikeluarkan dari Service, tidak di-_restart_],
+    [_Restart_ tidak memperbaiki database. _Connection pool_ membuka koneksi baru setelah database kembali berjalan],
+
+    [Proses macet dan tidak lagi menjawab HTTP],
+    [Tidak menjawab dalam batas waktu _probe_],
+    [Tidak menjawab],
+    [kubelet me-_restart_ _container_],
+    [Proses yang macet hanya dapat dipulihkan dengan menjalankannya ulang],
+
+    [_Overload_, _request_ menumpuk],
+    [200, tetapi bisa melewati batas waktu _probe_],
+    [Lambat, atau 503 bila _ping_ ke database melewati 2 detik],
+    [_Readiness_ yang gagal mengeluarkan _pod_ sementara dari Service. _Liveness_ baru memicu _restart_ setelah 3 kegagalan berturut-turut],
+    [Ambang _liveness_ dibuat longgar. _Restart_ saat beban tinggi memindahkan beban ke _pod_ lain dan memperparah keadaan. _Overload_ diatasi dengan menambah _replica_ (Hari 4)],
+
+    [`account` lambat atau mati, dilihat dari `transfer`],
+    [200],
+    [200, karena `/readyz` milik `transfer` tidak memeriksa `account`],
+    [Tidak ada. _Pod_ `transfer` tetap menerima _request_],
+    [Gangguan `account` ditangani _circuit breaker_ (Lab 3). _Request_ yang tidak membutuhkan `account`, misalnya membaca status transfer, tetap dilayani],
+  )
+}
+
+Kubernetes juga menyediakan _startup probe_ untuk _service_ yang membutuhkan waktu lama saat _startup_, misalnya karena memuat data dalam jumlah besar. Selama _startup probe_ belum berhasil, _liveness_ dan _readiness probe_ belum dijalankan, sehingga _service_ tersebut tidak di-_restart_ sebelum selesai _startup_. _Service_ di studi kasus selesai _startup_ dalam waktu kurang dari satu detik, sehingga tidak memerlukan _startup probe_.
 
 === Program Utama dan Graceful Shutdown
 

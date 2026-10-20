@@ -26,14 +26,20 @@
   #table(
     columns: (auto, 1fr, auto),
     [Waktu], [Sesi], [Format],
-    [09:00 – 09:45], [Kegagalan komunikasi sinkron: _timeout_, _retry_ dengan _backoff_, dan _circuit breaker_], [Presentasi],
+    [08:45 – 09:45], [Peta _concern_ Hari 2. Kegagalan komunikasi sinkron: _timeout_, _retry_ dengan _backoff_, _circuit breaker_, dan alasan memilih failsafe-go], [Presentasi],
     [09:45 – 10:45], [*Lab 3*: failsafe-go pada panggilan transfer ke account, simulasi service lambat dan mati], [_Hands-on_],
     [11:00 – 12:30], [gRPC untuk komunikasi internal: kontrak protobuf, _code generation_, _unary call_, _error handling_, _interceptor_], [Presentasi + demo],
     [13:30 – 15:00], [*Lab 4*: memindahkan panggilan transfer ke account dari REST ke gRPC], [_Hands-on_],
-    [15:15 – 16:30], [Konsistensi data terdistribusi: alasan 2PC dihindari, saga, _idempotency key_], [Presentasi + demo],
+    [15:15 – 16:45], [Konsistensi data terdistribusi: alasan 2PC dihindari, saga, _idempotency key_. Ringkasan Hari 2 pada peta _concern_], [Presentasi + demo],
   )
   #v(8pt)
   #note[Hari 2 dimulai dari _checkpoint_ `lab-02`. Peserta yang belum menyelesaikan Lab 2 menjalankan `git checkout lab-02` sebelum Lab 3.]
+]
+
+#slide(kicker: "Peta concern microservices", title: [_Concern_ yang dibahas di Hari 2])[
+  #concern-map(highlight: (2, 3, 4))
+  #v(6pt)
+  #note[Baris yang disorot menjadi fokus hari ini: gRPC untuk komunikasi internal, _resiliency_ di sisi kode, dan pengantar konsistensi data. Setiap _concern_ ditangani di kode (library di dalam setiap service) atau oleh platform (Kubernetes dan infrastruktur). Semua yang dibangun di Hari 2 berada di kode.]
 ]
 
 #slide(kicker: "Titik awal", title: "Kondisi studi kasus di akhir Lab 2")[
@@ -129,6 +135,49 @@
   #v(10pt)
   #note[Ketiga pola saling melengkapi. _Timeout_ tanpa _circuit breaker_ tetap membuang dua detik untuk setiap _request_ ke service yang sudah jelas tidak menjawab. _Retry_ tanpa _timeout_ dapat menunggu selamanya pada percobaan pertama.]
 ]
+
+#slide(kicker: "Peta concern microservices", title: [_Resiliency_ di kode dan di platform])[
+  #two-col(
+    card([Di kode: failsafe-go di transfer (Hari 2)])[
+      - _Timeout_ membatasi waktu tunggu setiap panggilan ke account
+      - _Retry_ mengulang panggilan yang terbukti belum diproses
+      - _Circuit breaker_ menghentikan sementara panggilan ke account yang terus gagal
+      - Keputusan diambil per panggilan, berdasarkan arti setiap _error_ bagi proses bisnis
+    ],
+    card([Di platform: Kubernetes (Hari 4)], accent: gold.darken(15%))[
+      - _Readiness probe_ gagal: _pod_ dikeluarkan dari Service dan tidak menerima _request_ baru
+      - _Liveness probe_ gagal: kubelet me-_restart_ _container_ yang macet
+      - _Rolling update_ mengganti _pod_ secara bertahap. _Pod_ lama tetap melayani sampai _pod_ baru siap
+      - Keputusan diambil per _pod_, tanpa mengetahui isi _request_
+    ],
+  )
+  #v(10pt)
+  #note[Keduanya saling melengkapi. Selama account di-_restart_ oleh Kubernetes, transfer tetap membutuhkan _timeout_ dan _circuit breaker_ agar tidak ikut lambat. Pada generasi Spring Cloud Netflix, _circuit breaker_ dipasang sebagai library (Hystrix). Pada generasi Kubernetes, _restart_ dan _rollout_ berpindah ke platform, sedangkan _policy_ per panggilan tetap ditulis di kode karena hanya kode yang tahu panggilan mana yang aman diulang.]
+]
+
+#decision(title: [failsafe-go untuk _timeout_, _retry_, dan _circuit breaker_],
+  [
+    - Ketiga pola untuk panggilan transfer ke account
+    - Urutan _policy_ dapat diatur, karena urutan menentukan perilaku
+    - Parameter yang sama berlaku untuk HTTP (Lab 3) dan gRPC (Lab 4)
+  ],
+  [
+    - Menulis sendiri _retry loop_ dan _state machine_ _circuit breaker_ beserta _test_-nya
+    - sony/gobreaker: hanya _circuit breaker_, _retry_ dan _timeout_ ditulis terpisah
+    - hystrix-go: tidak ada _commit_ sejak 2018 dan tanpa rilis bertag
+    - failsafe-go
+  ],
+  [
+    - failsafe-go: ketiga _policy_ dalam satu library, disusun berurutan dalam satu pemanggilan
+    - Adaptor `failsafehttp` (`http.RoundTripper`) dan `failsafegrpc` (_unary client interceptor_), sehingga _policy_ Lab 3 digunakan kembali di Lab 4
+    - Klasifikasi kegagalan ditulis sebagai fungsi biasa yang dapat diuji
+  ],
+  [
+    - Dependensi tambahan dengan API _generic_ yang perlu dipelajari tim
+    - _Policy_ berada di kode setiap service. Service dalam bahasa lain membutuhkan library lain dengan perilaku yang diselaraskan secara manual
+    - Parameter disimpan di kode, sehingga perubahan nilainya membutuhkan _build_ dan rilis ulang
+  ],
+)
 
 #slide(kicker: "Pola 1", title: [_Timeout_ pada setiap panggilan keluar])[
   #two-col(ratio: (1.1fr, 1fr),
@@ -405,24 +454,30 @@ func countsAsFailure(resp *http.Response, err error) bool {
 #section-slide(number: "02", title: "gRPC untuk Komunikasi Internal",
   subtitle: [Kontrak protobuf, _code generation_, _unary call_, _error handling_, dan _interceptor_])
 
-#slide(kicker: "Konsep", title: "Kebutuhan panggilan internal berbeda dengan API channel")[
-  #two-col(
-    card("API untuk channel")[
-      - Dikonsumsi aplikasi _mobile_, web, dan pihak eksternal
-      - Client beragam dan tidak dikendalikan tim yang sama
-      - Butuh format yang mudah dibaca dan diuji: JSON melalui REST
-      - Dokumentasi dan versi API dikelola untuk pihak luar
-    ],
-    card("Panggilan internal antarservice", accent: gold.darken(15%))[
-      - Volume tinggi, karena satu _request_ channel memicu beberapa panggilan internal
-      - Kedua sisi dikembangkan oleh tim internal
-      - Kontrak harus tetap cocok setiap kali salah satu sisi berubah
-      - Butuh satu titik terpusat untuk autentikasi, log, dan resiliency
-    ],
-  )
-  #v(10pt)
-  #note[Pola penempatan di studi kasus mengikuti praktik umum industri: gRPC antarservice internal, REST untuk API yang dikonsumsi channel dan pihak eksternal.]
-]
+#decision(title: "gRPC untuk panggilan internal",
+  [
+    - Panggilan internal bervolume tinggi: satu _request_ channel memicu beberapa panggilan ke account
+    - Kedua sisi dikembangkan tim internal, dan kontrak harus tetap cocok setiap kali salah satu sisi berubah
+    - Server perlu tahu batas waktu tunggu pemanggil
+    - Satu titik untuk log, autentikasi, dan _resiliency_
+  ],
+  [
+    - REST + JSON seperti Lab 2, dengan kontrak OpenAPI sebagai dokumen terpisah
+    - gRPC dengan kontrak protobuf
+    - _Messaging_: tidak cocok untuk debit, karena transfer membutuhkan hasilnya saat itu juga
+  ],
+  [
+    - gRPC untuk transfer ke account. API channel tetap REST + JSON karena client-nya beragam dan berada di luar kendali tim
+    - Kontrak protobuf dan _code generation_: ketidakcocokan tertangkap saat kompilasi
+    - _Deadline_ ikut terkirim ke server, HTTP/2 _multiplexing_, _payload_ biner
+    - _Interceptor_ untuk log, _fault injection_, _resiliency_, dan JWT
+  ],
+  [
+    - Tidak dapat dicoba langsung dengan curl atau browser. Perlu client gRPC seperti grpcurl, dibantu _reflection_
+    - Koneksi HTTP/2 persisten: Kubernetes Service membagi koneksi, tidak membagi panggilan. Pembagian per panggilan membutuhkan _client-side load balancing_ atau L7 _proxy_
+    - Perubahan kontrak harus kompatibel, dan tim memelihara dua gaya API
+  ],
+)
 
 #slide(kicker: "Studi kasus", title: "Penempatan REST dan gRPC setelah Lab 4")[
   #diagram(height: 230pt,
@@ -832,7 +887,7 @@ c, err := New("passthrough:///bufnet", s, log,
   #flow(
     box(width: 130pt),
     arr(label: "2. Credit B: gagal", length: 150pt, color: red, dash: "dashed"),
-    node("account B", sub: "saldo tetap", kind: "ext", width: 140pt),
+    node("account B", sub: "saldo tidak berubah", kind: "ext", width: 140pt),
   )
   #v(8pt)
   #bullets(size: 13.5pt,
@@ -944,6 +999,19 @@ c, err := New("passthrough:///bufnet", s, log,
     [Saga], [Transaksi lintas database tanpa 2PC], [Satu proses bisnis mengubah data di lebih dari satu service],
     [_Idempotency key_], [_Retry_ dan pengiriman ulang menggandakan mutasi], [Setiap operasi yang mengubah saldo],
   )
+]
+
+#slide(kicker: "Peta concern microservices", title: [Posisi Hari 2 pada peta _concern_])[
+  #table(
+    columns: (1fr, 1.4fr, 1.4fr),
+    [_Concern_], [Yang Dibangun di Hari 2 (di Kode)], [Dilanjutkan di],
+    [Komunikasi sinkron dan asinkron], [REST untuk channel, gRPC untuk transfer ke account (Lab 4)], [_Messaging_ Kafka untuk notification (Hari 3), Service DNS di Kubernetes (Hari 4)],
+    [_Resiliency_], [_Timeout_, _retry_, dan _circuit breaker_ dengan failsafe-go (Lab 3–4)], [Metrik _circuit breaker_ di Grafana (Lab 8). _Probe_, _restart_, dan _rolling update_ di Kubernetes (Lab 9)],
+    [Konsistensi data], [Konsep saga, kompensasi, dan _idempotency key_], [Saga, _transactional outbox_, dan _idempotent consumer_ (Lab 5–6)],
+    [_Security_ dan _observability_], [_Interceptor_ gRPC sebagai tempat pemeriksaan bersama untuk semua method], [Validasi JWT (Lab 7), _span_ untuk setiap percobaan panggilan (Lab 8)],
+  )
+  #v(10pt)
+  #note[Hari 2 hanya mengisi kolom "di kode" pada peta. Bagian platform dibahas di Hari 4: Kubernetes me-_restart_ account yang macet, sedangkan failsafe-go di transfer tetap melindungi pemanggil selama _restart_ berlangsung.]
 ]
 
 #slide(kicker: "Berikutnya", title: [Materi Hari 3])[
