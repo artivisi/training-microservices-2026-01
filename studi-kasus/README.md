@@ -575,7 +575,7 @@ _Trigger_: _push_ ke `main` yang mengubah direktori service, `proto/` (khusus `a
 
 _Pipeline_ setiap service berjalan satu per satu. _Workflow_ menggunakan `concurrency` dengan `cancel-in-progress: false`: _push_ berikutnya menunggu _pipeline_ yang sedang berjalan selesai. Di Jenkins padanannya `disableConcurrentBuilds()`.
 
-Job Jenkins harus bertipe _Multibranch Pipeline_. Kondisi `when { branch 'main' }` membaca `BRANCH_NAME`, dan variabel ini hanya diisi oleh job _Multibranch_. _Stage_ Test berhenti lebih awal bila `GIT_COMMIT` kosong, sehingga tidak ada _image_ dengan _tag_ `null`.
+Job Jenkins harus bertipe _Multibranch Pipeline_. Kondisi `when { branch 'main' }` membaca `BRANCH_NAME`, dan variabel ini hanya diisi oleh job _Multibranch_. _Stage_ Test berhenti lebih awal bila `GIT_COMMIT` kosong, sehingga tidak ada _image_ dengan _tag_ `null`. Kondisi `changeset` membandingkan _build_ dengan _build_ sebelumnya, termasuk yang gagal: _build_ pertama sebuah _branch_ dan _build_ ulang setelah kegagalan melewati semua _stage_. _Build Now_ (`triggeredBy 'UserIdCause'`) menjalankan semua _stage_ untuk _commit_ terakhir.
 
 ### Variabel
 
@@ -645,7 +645,8 @@ _Cluster_ yang dihentikan dengan `k3d cluster stop bank` dijalankan lagi dengan 
 |---|---|
 | _Target_ `image`, `push`, `deploy` | Siap |
 | `pipeline-k3d` | Siap |
-| _Workflow_ dan `Jenkinsfile` | Ditulis, belum dijalankan |
+| _Workflow_ | Ditulis, belum dijalankan |
+| `Jenkinsfile` | Diuji di Jenkins LTS 2.580.1 (_Multibranch Pipeline_, sumber Git) dengan _deploy_ ke k3d: filter _path_ per service, _deploy_ pertama dari _namespace_ kosong, _rolling update_, `disableConcurrentBuilds()`, variabel kosong menghentikan `make` |
 | `apply` (Deployment pertama dari _namespace_ kosong) | Diuji di k3d pada Docker Engine Linux: _namespace_ kosong, _kubeconfig_ dengan RBAC satu _namespace_, _image_ di-_pull_ dari registry dengan _basic auth_ lewat `registry-credentials`, lalu _deploy_ kedua (hanya `set image`) dan `k8s-apply-server`. Di server pelatihan belum |
 | Runner CI pusat dan server pelatihan | Belum tersedia. Nilai `replace-me` di `k8s/overlays/server` diisi setelah server siap |
 

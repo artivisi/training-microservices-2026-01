@@ -959,7 +959,8 @@ pipeline {
   environment { VERSION = "${env.GIT_COMMIT}" }
   stages { stage('transfer') {
     when { allOf { branch 'main'
-      anyOf { changeset 'studi-kasus/transfer/**'
+      anyOf { triggeredBy 'UserIdCause'
+              changeset 'studi-kasus/transfer/**'
               changeset 'studi-kasus/proto/**' } } }
     stages {
       stage('Test') { steps {
