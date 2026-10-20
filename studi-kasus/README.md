@@ -664,11 +664,11 @@ Ketiga _target_ ini juga bisa dijalankan di laptop setelah `make k8s-apply`. Sep
 |---|---|
 | _Target_ `image`, `push`, `deploy` | Siap |
 | `pipeline-k3d` | Siap |
-| _Workflow_ | Ditulis, belum dijalankan |
+| _Workflow_ | Berjalan di runner CI pusat server pelatihan: Test, Build image, Push ke registry git server, dan _deploy_ ke _namespace_ peserta, termasuk _rolling update_ |
 | `Jenkinsfile` | Diuji di Jenkins LTS 2.580.1 (_Multibranch Pipeline_, sumber Git) dengan _deploy_ ke k3d: filter _path_ per service, _deploy_ pertama dari _namespace_ kosong, _rolling update_, `disableConcurrentBuilds()`, variabel kosong menghentikan `make` |
-| `apply` (Deployment pertama dari _namespace_ kosong) | Diuji di k3d pada Docker Engine Linux: _namespace_ kosong, _kubeconfig_ dengan RBAC satu _namespace_, _image_ di-_pull_ dari registry dengan _basic auth_ lewat `registry-credentials`, lalu _deploy_ kedua (hanya `set image`) dan `k8s-apply-server`. Di server pelatihan belum |
+| `apply` (Deployment pertama dari _namespace_ kosong) | Diuji di k3d pada Docker Engine Linux: _namespace_ kosong, _kubeconfig_ dengan RBAC satu _namespace_, _image_ di-_pull_ dari registry dengan _basic auth_ lewat `registry-credentials`, lalu _deploy_ kedua (hanya `set image`) dan `k8s-apply-server`. Juga diuji di server pelatihan |
 | _Workflow_ GitHub Actions dan `e2e-k3d` | Berjalan di GitHub Actions: Test, Build image, Push ke `ghcr.io`, dan _rolling update_ `transfer` di k3d tanpa respons selain 2xx |
-| Runner CI pusat dan server pelatihan | Belum tersedia. Nilai `replace-me` di `k8s/overlays/server` diisi setelah server siap |
+| Runner CI pusat dan server pelatihan | Diuji _end-to-end_: _push_ hingga _rolling update_, isolasi antarpeserta, dan dua peserta melakukan _push_ bersamaan. Nilai `replace-me` di `k8s/overlays/server` dibagikan di `~/lab10.txt` pada server pelatihan |
 
 ## Checkpoint
 
