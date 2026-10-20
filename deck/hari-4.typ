@@ -929,9 +929,6 @@ deploy:
     edge((215pt, 218pt), (130pt, 218pt), label: "pull", dash: "dashed"),
     edge((365pt, 230pt), (740pt, 86pt), label: "pull", dash: "dashed", label-dx: 50pt, label-dy: 10pt),
   )
-  // TODO: runner pusat dan server pelatihan belum diuji end-to-end (push hingga deploy).
-  // Sebelum delivery: bila pipeline belum berjalan, ganti catatan di bawah dengan
-  // pernyataan tanpa tanggal tentang bagian yang hanya didemonstrasikan.
   #note[Alamat server dan akses setiap peserta dibagikan saat lab.]
 ]
 
