@@ -29,6 +29,7 @@
   #table(
     columns: (auto, 1fr, auto),
     [Waktu], [Topik], [Format],
+    [08:00 – 08:30], [Rekap Hari 3 dan penyamaan posisi dari _checkpoint_ `lab-07` bagi peserta yang tertinggal], [Diskusi],
     [08:30 – 09:30], [Peta _concern_ microservices. Lanskap _cloud_ untuk perbankan: model _deployment_, _managed_ vs _self-managed_, service pendukung, analisis _build_/_reuse_/_buy_, regulasi, posisi Kubernetes], [Presentasi + diskusi],
     [09:30 – 10:30], [*Lab 8*: melacak satu transfer lintas tiga service di Grafana], [_Hands-on_],
     [10:45 – 12:30], [_Containerization_, konfigurasi terpusat, dan *Lab 9*: seluruh sistem berjalan di k3d], [Demo + _hands-on_],
