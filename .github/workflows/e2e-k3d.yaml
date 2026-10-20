@@ -1,0 +1,76 @@
+# Lab 9 and Lab 10 end to end on a hosted runner: the whole system on k3d,
+# a transfer through the Ingress, then one commit becoming a rolling update
+# of transfer without a failed request.
+#
+#   Lab 9    infra-up, images 1.0.0, k3d-up, k3d-import, k8s-apply
+#   smoke    two accounts, POST /transfers -> 201 COMPLETED, notification row
+#   Lab 10   pipeline-k3d SERVICE=transfer (test, image tagged with this
+#            commit, k3d import, deploy = kubectl set image + rollout status)
+#            under a request loop through the Ingress: every answer 2xx
+#
+# The same make targets as on a laptop (studi-kasus/README.md). Only run:
+# steps, no marketplace actions (uses:).
+name: e2e-k3d
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - studi-kasus/**
+      - .github/install-tools.sh
+      - .github/workflows/e2e-k3d.yaml
+  workflow_dispatch:
+
+concurrency:
+  group: e2e-k3d
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        env:
+          SERVER_URL: ${{ github.server_url }}
+          REPOSITORY: ${{ github.repository }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ github.sha }}
+        run: |
+          set -eu
+          auth=$(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')
+          git init -q .
+          git -c http.extraHeader="Authorization: basic $auth" fetch -q --depth 1 "$SERVER_URL/$REPOSITORY.git" "$VERSION"
+          git checkout -q -f FETCH_HEAD
+          git clean -q -ffdx
+
+      - name: Install tools
+        run: .github/install-tools.sh "$RUNNER_TEMP/tools" go k3d kubectl >> "$GITHUB_PATH"
+
+      - name: Infrastructure
+        run: make -C studi-kasus infra-up
+
+      - name: Images 1.0.0
+        run: make -C studi-kasus images VERSION=1.0.0
+
+      - name: k3d cluster
+        run: make -C studi-kasus k3d-up
+
+      - name: Import images
+        run: make -C studi-kasus k3d-import VERSION=1.0.0
+
+      - name: Apply manifests
+        run: make -C studi-kasus k8s-apply
+
+      - name: Smoke test
+        run: make -C studi-kasus e2e-smoke
+
+      - name: Rolling update of transfer
+        run: make -C studi-kasus e2e-rolling-update
+
+      - name: Diagnostics
+        if: failure()
+        run: make -C studi-kasus e2e-dump

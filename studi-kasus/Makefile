@@ -14,7 +14,7 @@ KAFKA_BIN := /opt/kafka/bin
 
 .PHONY: infra-up infra-down infra-reset test proto fault-slow fault-error fault-clear fault-status breaker \
 	events outbox replay duplicates token metrics apps-up apps-down images k3d-up k3d-import k8s-apply k3d-down \
-	pipeline-k3d k8s-apply-server
+	pipeline-k3d k8s-apply-server e2e-smoke e2e-rolling-update e2e-dump
 
 # kafka-init creates the topic (idempotent: --if-not-exists); hydra-init
 # (re)creates the OAuth2 clients, which Hydra's in-memory storage loses on every
@@ -222,3 +222,12 @@ pipeline-k3d:
 k8s-apply-server:
 	@test -n "$(SERVICE)" || { echo "SERVICE is required, e.g. make k8s-apply-server SERVICE=transfer VERSION=<sha>" >&2; exit 1; }
 	$(MAKE) -C $(SERVICE) apply
+
+# End-to-end check on k3d, used by .github/workflows/e2e-k3d.yaml after
+# infra-up, images, k3d-up, k3d-import and k8s-apply (e2e-k3d.sh has the
+# details). e2e-rolling-update runs pipeline-k3d SERVICE=transfer under a
+# request loop through the Ingress and fails on any non-2xx answer; commit
+# first, as for pipeline-k3d. e2e-dump prints pods, events and logs of a
+# failed run.
+e2e-smoke e2e-rolling-update e2e-dump:
+	K3D_NAMESPACE=$(K3D_NAMESPACE) ./e2e-k3d.sh $(@:e2e-%=%)
