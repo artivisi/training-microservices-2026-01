@@ -335,7 +335,7 @@ pipeline-k3d:
 	@v=$$(git rev-parse --short=12 HEAD) && \
 	$(MAKE) -C $(SERVICE) test && \
 	$(MAKE) -C $(SERVICE) image REGISTRY=$(PIPELINE_REGISTRY) IMAGE_OWNER=$(IMAGE_REPO) VERSION=$$v && \
-	k3d image import -c $(CLUSTER) $(PIPELINE_REGISTRY)/$(IMAGE_REPO)/$(SERVICE):$$v && \
+	$(call k3d-load,$(PIPELINE_REGISTRY)/$(IMAGE_REPO)/$(SERVICE):$$v) && \
 	$(MAKE) -C $(SERVICE) deploy REGISTRY=$(PIPELINE_REGISTRY) IMAGE_OWNER=$(IMAGE_REPO) VERSION=$$v NAMESPACE=$(K3D_NAMESPACE)
 
 # The server overlay for one service, the same apply that the pipeline's
@@ -962,7 +962,7 @@ git diff --no-index studi-kasus/transfer/Jenkinsfile studi-kasus/account/Jenkins
 
 *`rollout status` berhenti setelah 180 detik.* _Pod_ baru tidak lolos _readiness probe_. Periksa `kubectl -n bank get pods` dan `kubectl -n bank logs <pod baru>`. Penyebab yang sering muncul: infrastruktur Docker Compose belum berjalan (`make infra-up`), atau kode baru gagal saat _startup_. _Pod_ lama tetap melayani; kembalikan dengan `kubectl -n bank rollout undo deployment/transfer` bila perlu. `rollout undo` bisa mencetak peringatan tentang anotasi `last-applied-configuration`; peringatan ini tidak berbahaya dan bukan error.
 
-*`ErrImageNeverPull` atau `ErrImagePull` untuk _tag_ `k3d.local/...`.* `k3d image import` gagal atau diarahkan ke _cluster_ lain. Pastikan _cluster_ bernama `bank` (`k3d cluster list`), lalu jalankan ulang `make pipeline-k3d`.
+*`ErrImageNeverPull` atau `ErrImagePull` untuk _tag_ `k3d.local/...`.* _Image_ tidak ada di _node_ k3d, sehingga kubelet mencoba mengambilnya dari jaringan. `k3d-load` sudah memeriksa setiap _image_ setelah _import_ dan mengulang _import_ satu kali, sehingga kondisi ini biasanya berarti _import_ diarahkan ke _cluster_ lain. Pastikan _cluster_ bernama `bank` (`k3d cluster list`), lalu jalankan ulang `make pipeline-k3d`.
 
 *Hasil _pipeline_ hilang.* `make k8s-apply` dijalankan setelah `pipeline-k3d` dan mengembalikan _image_ ke `1.0.0`. Ini perilaku yang diharapkan (Langkah 9).
 
