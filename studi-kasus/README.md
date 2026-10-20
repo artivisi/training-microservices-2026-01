@@ -639,6 +639,25 @@ kubectl -n bank get deploy transfer -o jsonpath='{.spec.template.spec.containers
 
 _Cluster_ yang dihentikan dengan `k3d cluster stop bank` dijalankan lagi dengan `k3d cluster start bank`. _Tag_ diambil dari _commit_ saat ini, sehingga `pipeline-k3d` tidak dapat dijalankan selama ada perubahan yang belum di-_commit_ di `studi-kasus/`. `make k8s-apply` setelahnya mengembalikan _image_ ke _tag_ di `overlays/k3d`.
 
+### GitHub Actions
+
+_Pipeline_ yang sama berjalan di GitHub Actions. Hasil setiap _run_ dapat dibuka publik di https://github.com/artivisi/training-microservices-2026-01/actions.
+
+| _Workflow_ | Isi |
+|---|---|
+| `../.github/workflows/<service>.yaml` | _Step_ Checkout, Install tools, Test, Build image, Push dengan _target_ `make` yang sama. _Image_ dikirim ke `ghcr.io/<pemilik repository>/<service>:<sha>` dengan `GITHUB_TOKEN`. Tanpa _step_ Deploy karena _runner_ GitHub tidak memiliki _cluster_ |
+| `../.github/workflows/e2e-k3d.yaml` | Lab 9 di k3d pada _runner_ (`infra-up`, `images`, `k3d-up`, `k3d-import`, `k8s-apply`), lalu `make e2e-smoke` dan `make e2e-rolling-update` |
+
+`Install tools` (`../.github/install-tools.sh`) memasang Go, k3d, dan kubectl dengan versi dari panduan persiapan dan memeriksa SHA-256 setiap unduhan. Runner git server dan Jenkins tidak memerlukan _step_ ini karena _tools_ tersebut sudah terpasang di host.
+
+| _Target_ | Isi |
+|---|---|
+| `e2e-smoke` | Dua rekening baru, `POST /transfers` lewat Ingress (`localhost:8080`) harus 201 `COMPLETED`, lalu baris notifikasinya harus muncul di `db-notification` |
+| `e2e-rolling-update` | `make pipeline-k3d SERVICE=transfer` sambil mengirim transfer lewat Ingress setiap 0,2 detik. Gagal bila ada respons selain 2xx. Mencetak `kubectl rollout history` |
+| `e2e-dump` | Pod, _event_, log ketiga service, dan `docker compose logs`, dijalankan saat _workflow_ gagal |
+
+Ketiga _target_ ini juga bisa dijalankan di laptop setelah `make k8s-apply`. Seperti `pipeline-k3d`, `e2e-rolling-update` tidak dapat dijalankan selama ada perubahan yang belum di-_commit_ di `studi-kasus/`.
+
 ### Status
 
 | Bagian | Status |
@@ -648,6 +667,7 @@ _Cluster_ yang dihentikan dengan `k3d cluster stop bank` dijalankan lagi dengan 
 | _Workflow_ | Ditulis, belum dijalankan |
 | `Jenkinsfile` | Diuji di Jenkins LTS 2.580.1 (_Multibranch Pipeline_, sumber Git) dengan _deploy_ ke k3d: filter _path_ per service, _deploy_ pertama dari _namespace_ kosong, _rolling update_, `disableConcurrentBuilds()`, variabel kosong menghentikan `make` |
 | `apply` (Deployment pertama dari _namespace_ kosong) | Diuji di k3d pada Docker Engine Linux: _namespace_ kosong, _kubeconfig_ dengan RBAC satu _namespace_, _image_ di-_pull_ dari registry dengan _basic auth_ lewat `registry-credentials`, lalu _deploy_ kedua (hanya `set image`) dan `k8s-apply-server`. Di server pelatihan belum |
+| _Workflow_ GitHub Actions dan `e2e-k3d` | Berjalan di GitHub Actions: Test, Build image, Push ke `ghcr.io`, dan _rolling update_ `transfer` di k3d tanpa respons selain 2xx |
 | Runner CI pusat dan server pelatihan | Belum tersedia. Nilai `replace-me` di `k8s/overlays/server` diisi setelah server siap |
 
 ## Checkpoint

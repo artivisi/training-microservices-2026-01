@@ -667,6 +667,25 @@ Ketiga `Jenkinsfile` ini sudah dijalankan di Jenkins LTS 2.580.1: _job_ _Multibr
 
 Di kelas, _file_ ini digunakan sebagai bahan perbandingan; peserta tidak menjalankan Jenkins.
 
+==== _Pipeline_ yang Sama di GitHub Actions
+
+Repository materi ini juga menjalankan _pipeline_ yang sama di GitHub Actions, dan hasil setiap _run_ dapat dibuka publik di #link("https://github.com/artivisi/training-microservices-2026-01/actions")[`github.com/artivisi/training-microservices-2026-01/actions`]. _Workflow_ `.github/workflows/<service>.yaml` menjalankan _target_ `make` yang sama dengan runner git server dan Jenkins, lalu mengirim _image_ ke `ghcr.io`. _Runner_ GitHub tidak memiliki _cluster_, sehingga _step_ Deploy diganti _workflow_ `e2e-k3d.yaml`. _Workflow_ ini membuat k3d di _runner_, menjalankan Lab 9, menguji satu transfer lewat Ingress, lalu menjalankan `make pipeline-k3d SERVICE=transfer` sambil mengirim transfer terus-menerus. _Run_ dinyatakan gagal bila ada satu saja respons yang bukan 2xx selama _rolling update_.
+
+#table(
+  columns: (0.8fr, 1fr, 1fr, 1.2fr),
+  [Tahap], [Runner git server], [Jenkins], [GitHub Actions],
+  [_Checkout_], [`git fetch` dengan _token_ _job_], [_Checkout_ SCM bawaan], [`git fetch` dengan `GITHUB_TOKEN`],
+  [_Tools_], [Terpasang di host runner], [Terpasang di _agent_], [_Step_ `Install tools`: `.github/install-tools.sh`, versi dan SHA-256 tetap],
+  [Test], [`make ... test`], [`stage('Test')`], [`make ... test`],
+  [Build image], [`make ... image`], [`stage('Build Image')`], [`make ... image`],
+  [Push], [`make ... push` ke registry git server], [`stage('Push')`], [`make ... push` ke `ghcr.io`],
+  [_Credential_ registry], [_Secret_ `REGISTRY_USER`, `REGISTRY_PASSWORD`], [_Credential_ `registry`], [`github.actor` dan `GITHUB_TOKEN` dengan `packages: write`],
+  [Deploy], [`make ... deploy`], [`stage('Deploy')`], [_Workflow_ `e2e-k3d.yaml`: `make pipeline-k3d` ke k3d di _runner_],
+  [Satu _run_ per service], [`concurrency`], [`disableConcurrentBuilds()`], [`concurrency`],
+)
+
+GitHub Actions hanya menambah satu _step_, yaitu `Install tools`. _Runner_ GitHub dimulai dari _image_ generik, sedangkan runner git server dan _agent_ Jenkins sudah dipasangi Go, Docker, dan kubectl.
+
 === Langkah 7: _Overlay_ server pelatihan
 
 Sama seperti _manifest_ Lab 9, _overlay_ server sudah disediakan sehingga peserta tidak perlu menulisnya dari awal. Ambil dari _tag_ `lab-10`:
