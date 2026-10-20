@@ -54,9 +54,25 @@ new_accounts() {
 	create_account "$TO" 0
 }
 
+# rollout status returns once the pods are Ready, but Traefik picks up the new
+# endpoints a moment later; a request in between gets an empty reply. Wait
+# until the transfer service itself answers through the Ingress: without a
+# token its JWT middleware answers 401, which Traefik never produces.
+wait_ingress() {
+	local code
+	for _ in $(seq 60); do
+		code=$(curl -s -o /dev/null -w '%{http_code}' "$INGRESS_URL/transfers/00000000-0000-0000-0000-000000000000" || true)
+		[ "$code" = 401 ] && return 0
+		sleep 1
+	done
+	echo "transfer not reachable through the Ingress after 60 s (last HTTP code: $code)" >&2
+	exit 1
+}
+
 # --no-print-directory: under make -C the outer make passes -w to every
 # nested make, whose "Entering directory" lines would end up in the token.
 smoke() {
+	wait_ingress
 	start_account_forward
 	new_accounts 1000000
 	local token resp code body id
