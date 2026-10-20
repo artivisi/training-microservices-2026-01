@@ -3,8 +3,8 @@
 #import "../_template/deck.typ": *
 
 #show: deck.with(
-  title: "Messaging, Konsistensi Data, dan Security",
-  subtitle: [Kafka, saga dengan kompensasi, _transactional outbox_, _idempotency_, serta OAuth2 dan JWT antar service],
+  title: "Messaging, Konsistensi Data, Security, dan Observability",
+  subtitle: [Kafka, _transactional outbox_, saga dengan kompensasi di Lab 5, _idempotency_, OAuth2 dan JWT antar service, serta _observability_ lintas service],
   day-label: "Hari 3",
   client: sys.inputs.at("client"),
   date: "28 Oktober 2026",
@@ -16,21 +16,21 @@
   #table(
     columns: (auto, 1fr, auto),
     [Waktu], [Topik], [Format],
-    [08:00 – 08:45], [Rekap Hari 2 dan penyamaan posisi dari _checkpoint_ `lab-04` bagi peserta yang tertinggal], [Diskusi],
-    [08:45 – 09:45], [Peta _concern_ Hari 3, komunikasi asinkron dengan Kafka, _at-least-once delivery_, _transactional outbox_], [Presentasi + demo],
-    [09:45 – 11:15], [*Lab 5*: transfer sebagai saga, event ke Kafka melalui outbox, notification sebagai _consumer_], [_Hands-on_],
+    [08:00 – 08:30], [Rekap Hari 2 dan penyamaan posisi dari _checkpoint_ `lab-04` bagi peserta yang tertinggal], [Diskusi],
+    [08:30 – 09:30], [Peta _concern_ Hari 3, komunikasi asinkron dengan Kafka, _at-least-once delivery_, _transactional outbox_], [Presentasi + demo],
+    [09:30 – 11:15], [*Lab 5*: transfer sebagai saga, event ke Kafka melalui outbox, notification sebagai _consumer_], [_Hands-on_],
     [11:30 – 12:30], [*Lab 6*: _idempotent consumer_ dan _Idempotency-Key_ pada API transfer], [_Hands-on_],
     [13:30 – 14:30], [OAuth2 _client credentials_, pemilihan _authorization server_, validasi JWT, posisi API _gateway_], [Presentasi + demo],
     [14:45 – 15:45], [*Lab 7*: _middleware_ JWT pada REST dan _interceptor_ JWT pada gRPC], [_Hands-on_],
-    [15:45 – 16:45], [Pengantar _observability_: log, metrik, _trace_, dan posisinya di kode dan platform], [Presentasi + demo],
-    [16:45 – 17:00], [Ringkasan hari ini pada peta _concern_, tanya jawab], [Diskusi],
+    [15:45 – 16:50], [_Observability_ lintas service: log, metrik, _trace_, posisinya di kode dan platform, persiapan Lab 8], [Presentasi + demo],
+    [16:50 – 17:00], [Ringkasan hari ini pada peta _concern_, tanya jawab], [Diskusi],
   )
 ]
 
 #slide(kicker: "Peta concern microservices", title: [_Concern_ yang dibahas di Hari 3])[
   #concern-map(highlight: (2, 4, 5, 6))
   #v(8pt)
-  #note[Baris berwarna dibahas hari ini. Sebagian besar jawabannya ada di kode setiap service: saga, outbox, _idempotency_, dan validasi JWT. Platform menyediakan Kafka, Hydra, dan _backend observability_. Untuk _observability_, hari ini hanya konsep, sedangkan implementasinya di Lab 8 (Hari 4).]
+  #note[Baris berwarna dibahas hari ini. Sebagian besar jawabannya ada di kode setiap service: saga, outbox, _idempotency_, dan validasi JWT. Platform menyediakan Kafka, Hydra, dan _backend observability_. Untuk _observability_, hari ini membahas konsep dan kode instrumentasi yang dipasang di Lab 8. Lab 8 dikerjakan di awal Hari 4.]
 ]
 
 #slide(kicker: "Posisi studi kasus", title: "Kondisi sistem di akhir Hari 2")[
@@ -59,6 +59,8 @@
       - Siapa pun di jaringan internal dapat memanggil Debit
     ],
   )
+  #v(8pt)
+  #note[Desain saga, kompensasi, dan mutasi _idempotent_ sudah dibahas di akhir Hari 2. Lab 5 hari ini mengimplementasikannya bersama outbox dan Kafka.]
 ]
 
 // ── 01 Kafka ───────────────────────────────────────────────────────────────
@@ -238,193 +240,9 @@ for {
 ```
 ]
 
-// ── 02 Saga ────────────────────────────────────────────────────────────────
+// ── 02 Outbox ──────────────────────────────────────────────────────────────
 
-#section-slide(number: "02", title: "Saga dengan kompensasi", subtitle: [Konsistensi data lintas database tanpa _two-phase commit_])
-
-#slide(kicker: "Masalah", title: "Transfer menyentuh dua database")[
-  #two-col(
-    [
-      #bullets(size: 14pt,
-        [Debit dan credit dijalankan oleh account, sedangkan status transfer tersimpan di db-transfer],
-        [Tidak ada satu transaksi database yang mencakup keduanya],
-        [_Two-phase commit_ (2PC) mengikat semua service, sehingga satu service yang lambat ikut menahan _lock_ di service lain],
-        [Sebagai pengganti 2PC, saga menjalankan rangkaian transaksi lokal yang masing-masing langsung di-_commit_],
-      )
-    ],
-    [
-      #card("Akibatnya", accent: amber)[
-        Bila langkah ke-2 gagal, langkah ke-1 sudah di-_commit_ dan tidak bisa di-_rollback_. Pembatalannya harus berupa transaksi baru yang membalik efek langkah ke-1, yaitu *transaksi kompensasi*.
-      ]
-    ],
-  )
-  #v(10pt)
-  #note[Hari 2 sudah membahas alasan tidak menggunakan 2PC. Hari ini membahas cara mengimplementasikan alternatifnya.]
-]
-
-#slide(kicker: "Saga", title: [_Orchestration_ dan _choreography_])[
-  #two-col(
-    card([_Orchestration_])[
-      - Satu service (_orchestrator_) menentukan langkah berikutnya
-      - Status saga tersimpan di satu tempat dan mudah ditelusuri
-      - _Orchestrator_ mengetahui semua service yang terlibat
-      - Studi kasus: *transfer* menjadi _orchestrator_
-    ],
-    card([_Choreography_], accent: amber)[
-      - Setiap service bereaksi terhadap event service lain
-      - Tidak ada koordinator pusat
-      - Alur hanya terlihat dengan menggabungkan log semua service
-      - Cocok untuk alur pendek dengan sedikit service yang terlibat
-    ],
-  )
-  #v(10pt)
-  #note(kind: "tip")[Transfer dana butuh status yang jelas setiap saat, misalnya untuk menjawab keluhan nasabah. Karena itu studi kasus memilih _orchestration_.]
-]
-
-#let state(label, width: 130pt) = node(label, kind: "infra", width: width, height: 46pt)
-
-#slide(kicker: "Saga", title: "Status transfer dalam saga")[
-  #diagram(height: 280pt,
-    at(0pt, 110pt, state("PENDING")),
-    at(270pt, 110pt, state("DEBITED")),
-    at(580pt, 10pt, state("COMPLETED")),
-    at(580pt, 110pt, state("COMPENSATED")),
-    at(580pt, 210pt, state("COMPENSATION_FAILED", width: 200pt)),
-    at(0pt, 230pt, state("FAILED")),
-    edge((130pt, 133pt), (270pt, 133pt), label: "debit berhasil"),
-    edge((65pt, 156pt), (65pt, 230pt), label: "debit gagal", label-dx: 70pt, label-dy: -6pt),
-    edge((400pt, 120pt), (580pt, 33pt), label: "credit berhasil", label-dx: -20pt),
-    edge((400pt, 133pt), (580pt, 133pt), label: "credit gagal, reversal OK", label-dy: -18pt),
-    edge((400pt, 146pt), (580pt, 233pt), label: "reversal gagal", label-dx: -20pt, label-dy: 14pt),
-  )
-  #note(kind: "warn")[`COMPENSATION_FAILED` dicatat sebagai log _error_ dan ditangani manual oleh petugas operasional. Status ini tidak boleh diperbaiki otomatis tanpa pemeriksaan.]
-]
-
-#slide(kicker: "Saga", title: [Kode HTTP `POST /transfers` sejak Lab 5])[
-  #table(
-    columns: (1.6fr, auto, 1.3fr),
-    [Hasil Saga], [HTTP], [Arti bagi Channel],
-    [`COMPLETED`], [`201`], [Selesai],
-    [Rekening tidak ada atau saldo kurang, termasuk `COMPENSATED` karena rekening tujuan tidak ada], [`422`], [Tidak ada uang yang berpindah. Mengirim ulang data yang sama tetap menghasilkan `422`],
-    [_Circuit breaker_ terbuka saat debit (`FAILED`), atau saat credit lalu debit dikembalikan (`COMPENSATED`)], [`503`], [Tidak ada uang yang berpindah, aman diulang setelah jeda],
-    [_Dependency_ gagal (`FAILED` atau `COMPENSATED`)], [`502`], [Periksa `GET /transfers/{id}`],
-    [`COMPENSATION_FAILED`], [`500`], [Dana tertahan di sisi transfer, ditangani petugas],
-  )
-  #v(8pt)
-  #note[Berbeda dengan Lab 3 dan Lab 4, _breaker_ yang terbuka di antara debit dan credit kini menghasilkan `503` karena debit sudah dikembalikan dan tidak ada uang yang berpindah.]
-]
-
-#slide(kicker: "Saga", title: "Kompensasi berupa transaksi baru")[
-  #flow(
-    node("Debit", sub: "ref = id transfer", kind: "infra", width: 150pt),
-    arr(label: "commit", length: 60pt),
-    node("Credit", sub: "gagal", kind: "infra", width: 120pt),
-    arr(label: "kompensasi", length: 90pt, color: amber),
-    node("Credit ke sumber", sub: "ref = id:reversal", kind: "infra", width: 170pt),
-  )
-  #v(14pt)
-  #bullets(size: 13.5pt,
-    [Kompensasi tidak menghapus mutasi debit. Account mencatat mutasi credit baru dengan _reference_ `<transfer_id>:reversal`, sehingga riwayat mutasi tetap lengkap untuk audit],
-    [Credit yang `DeadlineExceeded` diulang terlebih dahulu dengan _reference_ yang sama, karena credit sudah _idempotent_. Bila semua percobaan berakhir _timeout_, hasilnya tidak pasti. Lab tetap menjalankan kompensasi, sedangkan sistem _production_ menambahkan _reconciliation job_],
-    [Kompensasi juga bisa gagal atau _timeout_, jadi kompensasi wajib aman untuk diulang. Kompensasi yang gagal berakhir di `COMPENSATION_FAILED`],
-  )
-  #v(4pt)
-  #note[Kompensasi membalik efek bisnis tanpa membatalkan transaksi database yang sudah di-_commit_. Istilahnya _semantic undo_.]
-]
-
-#code-slide(kicker: "Saga", title: [_Reversal_ dengan _policy_ sendiri tanpa _circuit breaker_],
-  side: [
-    - Credit biasanya gagal karena account mati atau _breaker_ baru terbuka. Bila _reversal_ lewat _breaker_ yang sama, _reversal_ langsung ditolak dan transfer berakhir `COMPENSATION_FAILED`
-    - _Reversal_ berjalan di koneksi gRPC kedua dengan _retry_ dan _backoff_ 200 ms–5 detik, paling lama 30 detik
-    - Setiap percobaan membawa _reference_ yang sama, sehingga saldo tidak bertambah dua kali
-    - Log `retrying reversal` menandai setiap _retry_
-  ],
-)[
-```go
-// transfer.Service
-func (s *Service) compensate(ctx context.Context,
-    t Transfer, cause error) (Transfer, error) {
-    reason := fmt.Sprintf("credit failed: %v", cause)
-    err := s.accounts.Reverse(ctx, t.FromAccount,
-        t.Amount, t.ID+ReversalSuffix)
-    if err != nil {
-        reason = fmt.Sprintf("%s; reversal failed: %v",
-            reason, err)
-        return s.finish(ctx, t, Debited, CompensationFailed,
-            reason, "", fmt.Errorf("%w: %w",
-                ErrReversalFailed, errors.Join(cause, err)))
-    }
-    return s.finish(ctx, t, Debited, Compensated,
-        reason, EventCompensated, cause)
-}
-
-// accountclient.New: tanpa breaker, dibatasi durasi
-reversalRetry := retrypolicy.NewBuilder[any]().
-    HandleIf(countsAsFailure).
-    WithMaxRetries(-1). // dibatasi durasi, bukan jumlah
-    WithMaxDuration(s.ReversalMaxDuration). // 30 s
-    WithBackoff(s.ReversalBackoffMin, s.ReversalBackoffMax).
-    WithJitterFactor(jitterFactor).
-    Build()
-```
-]
-
-#slide(kicker: "Saga", title: [Saga dan _graceful shutdown_])[
-  #two-col(
-    card([Durasi terburuk satu saga])[
-      #table(
-        columns: (1fr, auto),
-        [Langkah], [Durasi],
-        [Debit: 4 percobaan × 2 detik + 3 _backoff_ × 1,25 detik], [11,75 detik],
-        [Credit, dengan perhitungan yang sama], [11,75 detik],
-        [_Reversal_: paling lama 30 detik + 1 percobaan terakhir], [32 detik],
-        [*Total*], [*55,5 detik*],
-      )
-    ],
-    card([Akibatnya], accent: gold.darken(15%))[
-      - `shutdownGrace` transfer = 60 detik. `TestShutdownGrace` gagal bila _policy_ bertambah panjang melewati angka ini
-      - Platform harus memberi waktu yang cukup sebelum `SIGKILL`, melalui `terminationGracePeriodSeconds` di Kubernetes (Hari 4) dan `stop_grace_period` di Docker Compose
-    ],
-  )
-  #v(10pt)
-  #note(kind: "warn")[Masih ada satu celah. Bila proses mati paksa (`SIGKILL`, _crash_) di antara dua langkah, baris `PENDING` atau `DEBITED` tertinggal tanpa ada yang melanjutkan. Sistem _production_ menambahkan _recovery job_ yang melanjutkan atau mengompensasi baris tersebut.]
-]
-
-#slide(kicker: "Saga", title: [Mutasi account dibuat _idempotent_])[
-  #two-col(
-    [
-      ```sql
-      create unique index if not exists
-        mutation_idempotency
-        on mutation (account_number, type, reference);
-
-      insert into mutation (...) values (...)
-      on conflict (account_number, type, reference)
-      do nothing;
-      ```
-      #v(6pt)
-      #bullets(size: 13pt,
-        [Bila tidak ada baris yang masuk, berarti mutasi dengan _reference_ tersebut sudah pernah dicatat. Account lalu membaca saldo dalam transaksi yang sama, menjawab sukses tanpa mutasi baru, dan mencatat log `mutation already applied, not repeated`],
-        [_Reference_ debit = `transfer_id`, _reference_ _reversal_ = `transfer_id:reversal`],
-      )
-    ],
-    [
-      #card("Dampak ke klien gRPC di transfer")[
-        Sejak Hari 2, _retry_ hanya dilakukan untuk `Unavailable`. Setelah mutasi dibuat _idempotent_, `DeadlineExceeded` juga boleh di-_retry_.
-
-        #v(4pt)
-        Debit yang ternyata sudah diproses sebelum _timeout_ tidak akan dijalankan dua kali.
-      ]
-    ],
-    ratio: (1.2fr, 1fr),
-  )
-  #v(8pt)
-  #note(kind: "warn")[Lab 5 dimulai dengan `make infra-reset` lalu `make infra-up`. Database dari Lab 1–4 dapat berisi _reference_ ganda, sehingga _unique index_ gagal dibuat dan account berhenti saat _startup_ dengan _error_ `apply schema`.]
-]
-
-// ── 03 Outbox ──────────────────────────────────────────────────────────────
-
-#section-slide(number: "03", title: [_Transactional outbox_], subtitle: [Status di database dan event di Kafka harus selalu sejalan])
+#section-slide(number: "02", title: [_Transactional outbox_], subtitle: [Status di database dan event di Kafka harus selalu sejalan])
 
 #slide(kicker: "Masalah", title: [_Dual write_ ke database dan Kafka])[
   #two-col(
@@ -603,9 +421,9 @@ _, err = tx.Exec(ctx, `update outbox
   #note(kind: "tip")[Langkah lengkap ada di Panduan Lab, bab Lab 5. Lab ini dimulai dari tag `lab-04` dan berakhir di tag `lab-05`.]
 ]
 
-// ── 04 Idempotency ─────────────────────────────────────────────────────────
+// ── 03 Idempotency ─────────────────────────────────────────────────────────
 
-#section-slide(number: "04", title: [_Idempotency_], subtitle: [Pemrosesan ulang tidak boleh menggandakan mutasi])
+#section-slide(number: "03", title: [_Idempotency_], subtitle: [Pemrosesan ulang tidak boleh menggandakan mutasi])
 
 #slide(kicker: "Masalah", title: "Sumber duplikat dalam studi kasus")[
   #table(
@@ -726,7 +544,7 @@ func (s *PostgresStore) Insert(ctx context.Context,
 
 // ── 05 Security ────────────────────────────────────────────────────────────
 
-#section-slide(number: "05", title: "Security antar service", subtitle: [OAuth2 _client credentials_, JWT, _middleware_ REST, dan _interceptor_ gRPC])
+#section-slide(number: "04", title: "Security antar service", subtitle: [OAuth2 _client credentials_, JWT, _middleware_ REST, dan _interceptor_ gRPC])
 
 #slide(kicker: "Masalah", title: "Jaringan internal tidak otomatis aman")[
   #two-col(
@@ -1051,7 +869,7 @@ grpc.WithChainUnaryInterceptor(
     ],
   )
   #v(10pt)
-  #note(kind: "tip")[Klien cukup tahu kategori kegagalan. Penyebabnya ditelusuri dari log, dan Hari 4 menambahkan _correlation ID_ serta _trace_ untuk mempercepat penelusuran tersebut.]
+  #note(kind: "tip")[Klien cukup tahu kategori kegagalan. Penyebabnya ditelusuri dari log, dan sesi _observability_ di akhir hari ini menambahkan _correlation ID_ serta _trace_ untuk mempercepat penelusuran tersebut.]
 ]
 
 #slide(kicker: "Lab 7", title: "Transfer dan account diamankan dengan JWT")[
@@ -1075,20 +893,24 @@ grpc.WithChainUnaryInterceptor(
   #note(kind: "tip")[Langkah lengkap ada di Panduan Lab, bab Lab 7. Lab ini dimulai dari tag `lab-06` dan berakhir di tag `lab-07`.]
 ]
 
-// ── 06 Observability ───────────────────────────────────────────────────────
+// ── 05 Observability ───────────────────────────────────────────────────────
 
-#section-slide(number: "06", title: [Pengantar _observability_], subtitle: [Log, metrik, dan _trace_ sebagai bekal Lab 8 di Hari 4])
+#section-slide(number: "05", title: [_Observability_ lintas service], subtitle: [Log, metrik, dan _trace_ di kode dan di platform sebagai bekal Lab 8 di awal Hari 4])
 
 #slide(kicker: "Konsep", title: [Tiga pilar _observability_])[
   #table(
-    columns: (auto, 1.2fr, 1fr, auto),
-    [Pilar], [Pertanyaan yang dijawab], [Contoh di studi kasus], [_Tools_],
-    [Log], [Apa yang terjadi pada satu _request_ tertentu?], [`notification sent`, `duplicate event skipped`], [slog],
-    [Metrik], [Seberapa sering, seberapa cepat, dan apa trennya?], [`transfers_total{status}`, _latency_ p95], [Prometheus],
-    [_Trace_], [Service mana yang menghabiskan waktu paling lama dalam satu transfer?], [_Span_ transfer, account, notification], [OpenTelemetry],
+    columns: (auto, 1fr, 1fr, auto),
+    [Pilar], [Pertanyaan yang dijawab], [Implementasi di studi kasus], [Disimpan di],
+    [Log], [Apa yang terjadi pada satu _request_ tertentu?], [`slog` format JSON, `correlation_id`, `trace_id`], [Loki],
+    [Metrik], [Seberapa sering, seberapa cepat, berapa yang gagal?], [`prometheus/client_golang`, _endpoint_ `/metrics`], [Prometheus],
+    [_Trace_], [Di service mana sebagian besar waktu satu transaksi terpakai?], [OpenTelemetry, `otelhttp`, `otelgrpc`, _header_ Kafka], [Tempo],
   )
   #v(12pt)
-  #note[Ketiganya ditampilkan di Grafana. Pada monolith satu _stack trace_ cukup untuk menjelaskan kegagalan, sedangkan pada microservices satu transfer melewati tiga service dan sebuah _broker_.]
+  #bullets(size: 13pt,
+    [Pada monolith, satu _stack trace_ cukup untuk menjelaskan kegagalan. Pada microservices, satu transfer melewati tiga service dan sebuah _broker_. Ketiga pilar ditampilkan di Grafana.],
+    [Metrik mendeteksi adanya masalah. _Trace_ menunjukkan service yang paling banyak menyita waktu, dan log berisi penyebabnya.],
+    [_Trace_ dan log dihubungkan oleh `trace_id`. Dari lonjakan di grafik metrik, _engineer_ mempersempit rentang waktu lalu membuka _trace_ pada rentang tersebut. Tautan langsung dari metrik ke _trace_ membutuhkan _exemplar_ Prometheus, dan fitur tersebut tidak dipasang di lab.],
+  )
 ]
 
 #slide(kicker: "Peta concern microservices", title: [_Observability_ di kode dan di platform])[
@@ -1110,31 +932,162 @@ grpc.WithChainUnaryInterceptor(
   #note[*12-factor, faktor XI (_logs_).* Service menulis log sebagai aliran event ke stdout, tanpa mengatur _file_ atau rotasi. Pengumpulan dan penyimpanan log menjadi tugas platform, misalnya `kubectl logs` dan _log collector_ di Kubernetes. Daftar 12-factor diperkenalkan di Hari 1, sesi Anatomi Service Go. Di Lab 8, catatan log yang sama juga dikirim melalui OTLP agar langsung tampil di Loki.]
 ]
 
-#slide(kicker: "Konsep", title: [_Correlation ID_ dan _trace context_ lintas service])[
+#slide(kicker: "Correlation ID", title: [_Correlation ID_ lintas tiga service])[
   #flow(
-    node("klien", kind: "ext", width: 90pt),
-    arr(label: "X-Correlation-ID", length: 110pt),
-    node("transfer", width: 110pt),
-    arr(label: "gRPC metadata", length: 110pt),
-    node("account", width: 110pt),
-  )
-  #v(4pt)
-  #flow(
-    node("transfer", sub: "outbox", width: 110pt),
-    arr(label: "header Kafka", length: 110pt, dash: "dashed"),
-    node("Kafka", kind: "broker", width: 110pt),
-    arr(label: "header Kafka", length: 110pt),
-    node("notification", width: 110pt),
+    node("klien", kind: "ext", width: 100pt),
+    arr(label: "X-Correlation-ID", length: 130pt),
+    node("transfer"),
+    arr(label: "metadata x-correlation-id", length: 170pt),
+    node("account"),
   )
   #v(10pt)
-  #bullets(size: 13.5pt,
-    [ID yang sama dibawa di setiap _hop_ melalui _header_ HTTP, _metadata_ gRPC, dan _header_ Kafka],
-    [Untuk jalur asinkron, _trace context_ disimpan di baris outbox saat ditulis, sehingga _relay_ dapat meneruskannya],
-    [Dengan begitu, satu transfer tampil sebagai satu _trace_ di Grafana, dari REST hingga notifikasi],
+  #flow(
+    node("transfer", sub: "baris outbox"),
+    arr(label: "relay", length: 90pt, dash: "dashed"),
+    node("Kafka", sub: "header", kind: "broker"),
+    arr(label: "consume", length: 90pt),
+    node("notification"),
+  )
+  #v(10pt)
+  #bullets(size: 13pt,
+    [Transfer membaca _header_ `X-Correlation-ID`, atau membuat ID baru bila _header_ tersebut kosong, lalu mengembalikannya di _response_.],
+    [ID disimpan di `context.Context`, ikut ke gRPC _metadata_, ke baris _outbox_, lalu ke _header_ Kafka.],
   )
 ]
 
-#slide(kicker: "Demo Grafana", title: [Membaca _trace_ di Tempo])[
+#code-slide(kicker: "Logging", title: [_Handler_ `slog` yang membaca `context`],
+  side: [
+    - Setiap baris _log_ otomatis membawa `correlation_id`, `trace_id`, `span_id`
+    - Kode _handler_ HTTP cukup memanggil `slog.InfoContext(ctx, ...)`
+    - _Output_ JSON ke _stdout_ sekaligus diekspor sebagai _log_ OTLP (_bridge_ `otelslog`)
+    - `WithAttrs` dan `WithGroup` membungkus ulang _handler_ hasilnya, sehingga _logger_ dari `logger.With(...)` tetap membawa ketiga atribut tersebut
+  ],
+)[
+```go
+type ctxHandler struct{ slog.Handler }
+
+func (h ctxHandler) Handle(ctx context.Context,
+    r slog.Record) error {
+    if id, ok := correlation.FromContext(ctx); ok {
+        r.AddAttrs(slog.String("correlation_id", id))
+    }
+    sc := trace.SpanContextFromContext(ctx)
+    if sc.IsValid() {
+        r.AddAttrs(
+            slog.String("trace_id", sc.TraceID().String()),
+            slog.String("span_id", sc.SpanID().String()))
+    }
+    return h.Handler.Handle(ctx, r)
+}
+
+func (h ctxHandler) WithAttrs(a []slog.Attr) slog.Handler {
+    return ctxHandler{h.Handler.WithAttrs(a)}
+}
+
+func (h ctxHandler) WithGroup(n string) slog.Handler {
+    return ctxHandler{h.Handler.WithGroup(n)}
+}
+```
+]
+
+#slide(kicker: "Metrik", title: "Metrik yang dipasang di setiap service")[
+  #table(
+    columns: (auto, auto, 1fr),
+    [Metrik], [Service], [Kegunaan],
+    [Histogram durasi _request_ (`method`, `route`, `status`)], [Semua], [_Latency_ p95 per _endpoint_],
+    [`transfers_total{status}`], [transfer], [Laju transfer per status: `COMPLETED`, `FAILED`, `COMPENSATED`],
+    [`circuit_breaker_state{target}`], [transfer], [0 = _closed_, 1 = _half-open_, 2 = _open_],
+    [_Counter_ transisi _breaker_], [transfer], [Berapa kali _breaker_ berganti status],
+    [`outbox_pending`], [transfer], [_Event_ yang belum terkirim ke Kafka],
+    [`notifications_processed_total{result}`], [notification], [`sent`, `duplicate`, dan `skipped`. `skipped` menghitung _event_ rusak atau yang ditolak database, dan nilainya seharusnya tetap 0],
+  )
+  #v(10pt)
+  #note(kind: "warn")[Label `route` diisi pola ServeMux (`GET /transfers/{id}`). Bila diisi _path_ asli yang mengandung ID, jumlah _time series_ akan terus bertambah.]
+]
+
+#slide(kicker: "Tracing", title: [Meneruskan _trace context_ lewat Kafka])[
+  #two-col(ratio: (1.15fr, 1fr),
+    [
+```go
+// telemetry.Setup: hanya W3C Trace Context
+otel.SetTextMapPropagator(propagation.TraceContext{})
+
+// transfer, outbox.Insert: dalam transaksi DB yang
+// sama dengan perubahan status transfer
+carrier := propagation.MapCarrier{}
+otel.GetTextMapPropagator().Inject(ctx, carrier)
+// carrier masuk kolom trace_context,
+// relay menyalinnya ke header Kafka
+
+// notification: saat membaca message
+headers := m.Headers
+ctx = otel.GetTextMapPropagator().Extract(ctx,
+    telemetry.KafkaHeaders{Headers: &headers})
+ctx, span := c.tracer.Start(ctx, "process "+m.Topic,
+    trace.WithSpanKind(trace.SpanKindConsumer))
+defer span.End()
+```
+    ],
+    [
+      #set text(size: 12.5pt)
+      - HTTP dan gRPC: `otelhttp` dan _stats handler_ `otelgrpc` meneruskan _header_ `traceparent` secara otomatis
+      - Kafka: _relay_ berjalan di _goroutine_ terpisah tanpa _context_ dari _request_ asal, dan baru mengirim _event_ hingga ±500 ms kemudian. Karena itu _trace context_ disimpan ke baris _outbox_ saat baris tersebut ditulis
+      - Hanya `traceparent` yang diteruskan. _Baggage_ tidak digunakan karena REST API diakses langsung oleh aplikasi _channel_, dan _baggage_ dari pemanggil luar itu akan ikut terkirim ke semua service yang dipanggil sesudahnya
+      - Hasilnya, satu transfer tampil sebagai satu _trace_ yang mencakup tiga service
+    ],
+  )
+]
+
+#slide(kicker: "Stack", title: [_Observability stack_ lab dalam satu _container_ `otel-lgtm`])[
+  #diagram(height: 250pt,
+    at(0pt, 0pt, node("transfer")),
+    at(0pt, 90pt, node("account")),
+    at(0pt, 180pt, node("notification")),
+    at(250pt, 90pt, node("collector", sub: "OTLP :4317", kind: "infra", width: 130pt)),
+    at(480pt, 30pt, node("Tempo", sub: "trace", kind: "infra")),
+    at(480pt, 110pt, node("Loki", sub: "log", kind: "infra")),
+    at(480pt, 190pt, node("Prometheus", sub: "metrik", kind: "infra")),
+    at(720pt, 110pt, node("Grafana", sub: ":3000", kind: "infra")),
+    edge((120pt, 28pt), (250pt, 108pt)),
+    edge((120pt, 118pt), (250pt, 118pt), label: "OTLP"),
+    edge((120pt, 208pt), (250pt, 128pt)),
+    edge((380pt, 110pt), (480pt, 58pt)),
+    edge((380pt, 126pt), (480pt, 138pt)),
+    edge((480pt, 226pt), (120pt, 226pt), label: "scrape /metrics", dash: "dashed", label-dy: 8pt),
+    edge((600pt, 58pt), (720pt, 128pt)),
+    edge((600pt, 138pt), (720pt, 138pt)),
+    edge((600pt, 218pt), (720pt, 148pt)),
+  )
+  #v(6pt)
+  #bullets(size: 13pt,
+    [Satu _container_ `grafana/otel-lgtm` berisi _collector_, Tempo, Loki, Prometheus, dan Grafana dengan _dashboard_ bawaan.],
+    [_Trace_ dan _log_ dikirim (_push_) lewat OTLP, sedangkan metrik diambil (_pull_) oleh Prometheus dari `/metrics` di setiap service.],
+  )
+]
+
+#decision(title: [`otel-lgtm` untuk _observability_ di lab],
+  [
+    - Lab 8 membutuhkan _collector_, penyimpanan _trace_, _log_, metrik, dan Grafana di setiap laptop
+    - RAM laptop terbatas, dan waktu lab tidak cukup untuk mengonfigurasi lima komponen
+  ],
+  [
+    - Komponen terpisah (OTel Collector, Tempo, Loki, Prometheus, Grafana) di `compose.yaml`
+    - Jaeger, khusus untuk _trace_
+    - Platform _observability_ SaaS
+    - `grafana/otel-lgtm`: kelima komponen tersebut dalam satu _container_
+  ],
+  [
+    - `grafana/otel-lgtm:0.37.0` di `compose.yaml`, _port_ 3000 (Grafana) dan 4317/4318 (OTLP)
+    - Service hanya mengenal `OTEL_EXPORTER_OTLP_ENDPOINT`
+  ],
+  [
+    - Ditujukan untuk pengembangan, demo, dan _testing_. Tidak ada _high availability_ maupun kontrol akses per tim
+    - Di _production_, setiap komponen dijalankan dan diskalakan sendiri (Hari 4, bagian Operasional)
+    - Kode service tidak berubah saat pindah ke _stack_ terpisah, cukup alamat OTLP yang diganti
+  ],
+)
+
+#slide(kicker: "Demo Grafana", title: [Mencari service yang lambat dari _waterfall_])[
   #let bar(y, x, w, label, c: navy, depth: 0) = (
     at(depth * 14pt, y, box(width: 250pt, height: 22pt, align(left + horizon, text(size: 11pt, label)))),
     at(260pt + x, y, box(width: w, height: 22pt, fill: c.lighten(70%), stroke: 0.8pt + c, radius: 2pt)),
@@ -1151,6 +1104,7 @@ grpc.WithChainUnaryInterceptor(
   #bullets(size: 13pt,
     [Setiap baris menggambarkan satu _span_, dan baris yang menjorok adalah _child span_ dari _parent span_ di atasnya],
     [Panjang _bar_ menunjukkan durasi. `Credit` di account menghabiskan hampir seluruh waktu transfer, sehingga account yang diperiksa lebih dahulu],
+    [Penyebabnya terbaca dari atribut _span_ dan dari log dengan `trace_id` yang sama, misalnya _fault delay_ yang dipasang dengan `make fault-slow` di Lab 8],
   )
   #note(kind: "tip")[Diagram di atas hanya ilustrasi. Demo sesi ini dijalankan instruktur dari tag `lab-08`, karena `otel-lgtm` baru ditambahkan ke `compose.yaml` di Lab 8.]
 ]
@@ -1210,12 +1164,11 @@ grpc.WithChainUnaryInterceptor(
   #table(
     columns: (auto, 1fr, 1fr),
     [Pola], [Masalah yang diselesaikan], [Layak digunakan ketika],
-    [Saga (_orchestration_)], [Transaksi bisnis lintas database], [Proses bisnis menyentuh lebih dari satu service dan butuh status yang jelas],
-    [Kompensasi], [Langkah yang sudah di-_commit_ harus dibatalkan], [Ada langkah saga yang bisa gagal setelah langkah lain berhasil],
     [_Transactional outbox_], [Penulisan ke DB dan _publish_ event tidak atomik], [Event wajib terkirim jika dan hanya jika data tersimpan],
     [_Idempotent consumer_], [Duplikat dari _at-least-once delivery_], [_Consumer_ mengubah data atau memicu efek ke luar],
     [_Idempotency-Key_], [Klien mengirim ulang _request_], [_Endpoint_ membuat transaksi finansial],
     [OAuth2 _client credentials_ + JWT], [Panggilan antarservice tanpa identitas], [Setiap service internal yang mengubah data],
+    [_Correlation ID_ + _tracing_], [Satu transaksi tersebar di banyak log], [Satu _request_ melewati lebih dari satu service],
   )
 ]
 
@@ -1226,7 +1179,7 @@ grpc.WithChainUnaryInterceptor(
     [failsafe-go di klien gRPC, _reversal_ dengan _policy_ sendiri],
     [Saga dengan kompensasi, outbox, _idempotent consumer_, _Idempotency-Key_],
     [JWT di REST transfer dan gRPC account, token dari Hydra],
-    [Konsep log, metrik, _trace_],
+    [Konsep dan rancangan instrumentasi sudah dibahas, kodenya dipasang di Lab 8],
     [_Environment variable_, service berhenti bila nilai wajib kosong],
     [Alamat `localhost` dari konfigurasi],
     [Proses Go di laptop],
@@ -1238,7 +1191,7 @@ grpc.WithChainUnaryInterceptor(
     [_Probe_ dan _rolling update_ (Lab 9)],
     [_Recovery job_ di _production_],
     [TLS dan API _gateway_ di _production_],
-    [Lab 8],
+    [Lab 8 di awal Hari 4],
     [ConfigMap dan Secret (Lab 9)],
     [Kubernetes Service (Lab 9)],
     [_Container_ dan k3d (Lab 9)],

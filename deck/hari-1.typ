@@ -46,8 +46,8 @@
     columns: (auto, 1fr, 1.3fr),
     [Hari], [Tema], [Lab],
     [1], [Arsitektur, Go _essentials_, fondasi service], [Lab 1 account service; Lab 2 transfer service dengan REST],
-    [2], [_Resiliency_ dan gRPC], [Lab 3 _timeout_, _retry_, _circuit breaker_; Lab 4 transfer ke account melalui gRPC],
-    [3], [_Messaging_, konsistensi data, _security_], [Lab 5 saga, _outbox_, Kafka; Lab 6 _idempotent consumer_; Lab 7 JWT],
+    [2], [_Resiliency_, gRPC, dan desain saga], [Lab 3 _timeout_, _retry_, _circuit breaker_; Lab 4 transfer ke account melalui gRPC],
+    [3], [_Messaging_, konsistensi data, _security_, konsep _observability_], [Lab 5 saga, _outbox_, Kafka; Lab 6 _idempotent consumer_; Lab 7 JWT],
     [4], [_Observability_, _deployment_, CI/CD], [Lab 8 _tracing_ di Grafana; Lab 9 _deploy_ ke k3d; Lab 10 _pipeline_ CI/CD],
   )
   #v(10pt)
@@ -183,7 +183,7 @@
     [Skalabilitas], [Seluruh aplikasi diperbanyak bersama], [Hanya service yang sibuk yang diperbanyak],
     [Konsistensi data], [Satu transaksi database], [Saga, _outbox_, dan _idempotency_ (Hari 2–3)],
     [Kegagalan], [Bila proses mati, seluruh aplikasi ikut berhenti], [Kegagalan parsial, perlu _timeout_ dan _circuit breaker_ (Hari 2)],
-    [_Debugging_], [_Stack trace_ dalam satu proses], [_Distributed tracing_ lintas service (Hari 4)],
+    [_Debugging_], [_Stack trace_ dalam satu proses], [_Distributed tracing_ lintas service (Hari 3–4)],
     [Beban operasional], [Satu aplikasi, satu database], [Banyak _deployable unit_, _pipeline_, dan database],
   )
 ]
@@ -329,8 +329,8 @@
     Di microservices, debit dan credit menjadi dua panggilan jaringan ke account service. Bila credit gagal setelah debit berhasil, tidak ada _rollback_ otomatis.
 
     - Hari 1: transfer dicatat `FAILED` dan masuk _log_
-    - Hari 2: konsep saga dan _idempotency key_
-    - Hari 3: saga dengan kompensasi
+    - Hari 2: desain saga dengan kompensasi dan _idempotency key_
+    - Hari 3: implementasi saga di Lab 5
   ],
 )[
 ```sql
@@ -565,7 +565,7 @@ if err := h.store.Ping(ctx); err != nil {
   side: [
     - Setiap tipe yang memiliki _method_ `ServeHTTP` dapat menangani _request_.
     - `http.HandlerFunc` mengubah fungsi biasa menjadi _handler_.
-    - _Middleware_ berupa fungsi yang menerima _handler_ dan mengembalikan _handler_ baru. Pola ini digunakan kembali untuk _fault injection_ (Hari 2), JWT (Hari 3), dan metrik (Hari 4).
+    - _Middleware_ berupa fungsi yang menerima _handler_ dan mengembalikan _handler_ baru. Pola ini digunakan kembali untuk _fault injection_ (Hari 2), JWT (Hari 3), dan metrik (Lab 8).
   ],
 )[
 ```go

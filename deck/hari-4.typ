@@ -29,20 +29,20 @@
   #table(
     columns: (auto, 1fr, auto),
     [Waktu], [Topik], [Format],
-    [08:00 – 08:30], [Rekap Hari 3 dan penyamaan posisi dari _checkpoint_ `lab-07` bagi peserta yang tertinggal], [Diskusi],
-    [08:30 – 09:30], [Peta _concern_ microservices. Lanskap _cloud_ untuk perbankan: model _deployment_, _managed_ vs _self-managed_, service pendukung, analisis _build_/_reuse_/_buy_, regulasi, posisi Kubernetes], [Presentasi + diskusi],
-    [09:30 – 10:30], [*Lab 8*: melacak satu transfer lintas tiga service di Grafana], [_Hands-on_],
-    [10:45 – 12:30], [_Containerization_, konfigurasi terpusat, dan *Lab 9*: seluruh sistem berjalan di k3d], [Demo + _hands-on_],
-    [13:30 – 14:15], [CI/CD per service dan pemetaannya ke Jenkins; GitOps sekilas], [Presentasi + demo],
+    [08:00 – 08:15], [Rekap Hari 3 dan penyamaan posisi dari _checkpoint_ `lab-07` bagi peserta yang tertinggal], [Diskusi],
+    [08:15 – 09:00], [Peta _concern_ microservices. Lanskap _cloud_ untuk perbankan: model _deployment_, _managed_ vs _self-managed_, service pendukung, analisis _build_/_reuse_/_buy_, regulasi, posisi Kubernetes], [Presentasi + diskusi],
+    [09:00 – 10:15], [*Lab 8*: melacak satu transfer lintas tiga service di Grafana], [_Hands-on_],
+    [10:30 – 12:30], [_Containerization_, konfigurasi, Kubernetes, dan *Lab 9*: seluruh sistem berjalan di k3d], [Demo + _hands-on_],
+    [13:30 – 14:15], [CI/CD per service dan pemetaannya ke Jenkins dan GitHub Actions; GitOps sekilas], [Presentasi + demo],
     [14:15 – 15:45], [*Lab 10*: dari _commit_ hingga _rolling update_], [_Hands-on_],
-    [15:45 – 17:00], [Operasional: HPA, penempatan _observability stack_, OpenShift. Peta _concern_ lengkap, ringkasan keputusan desain, diskusi dan tanya jawab], [Presentasi + diskusi],
+    [16:00 – 17:00], [Operasional: HPA, penempatan _observability stack_, OpenShift. Peta _concern_ lengkap, ringkasan keputusan desain, diskusi dan tanya jawab], [Presentasi + diskusi],
   )
 ]
 
 #slide(kicker: "Peta concern microservices", title: [_Concern_ yang dibahas di Hari 4])[
   #concern-map(highlight: (6, 7, 8, 9, 10))
   #v(8pt)
-  #note[Setiap _concern_ ditangani di kode, sebagai _library_ di dalam setiap service, atau oleh platform. Hari 1–3 banyak membahas sisi kode. Hari 4 membahas _concern_ yang sebagian besar ditangani platform: Kubernetes, _observability stack_, dan _pipeline_.]
+  #note[Setiap _concern_ ditangani di kode, sebagai _library_ di dalam setiap service, atau oleh platform. Hari 1–3 banyak membahas sisi kode. Hari 4 membahas _concern_ yang sebagian besar ditangani platform: Kubernetes dan _pipeline_. _Observability_ hanya muncul di Lab 8, yang mempraktikkan konsep dan kode dari akhir Hari 3.]
 ]
 
 #slide(kicker: "Studi kasus", title: "Posisi sistem di awal Hari 4")[
@@ -173,196 +173,7 @@
 ]
 
 // ════════════════════════════════════════════════════════════════════════════
-#section-slide(number: "02", title: "Observability lintas service", subtitle: [_Log_, metrik, dan _trace_ untuk menjawab "transfer pukul 14.03 itu mengapa lambat?"])
-
-#slide(kicker: "Observability", title: [_Log_, metrik, dan _trace_])[
-  #table(
-    columns: (auto, 1fr, 1fr, auto),
-    [Sumber], [Pertanyaan yang dijawab], [Implementasi di studi kasus], [Disimpan di],
-    [_Log_], [Apa yang terjadi pada satu _request_ tertentu?], [`slog` format JSON, `correlation_id`, `trace_id`], [Loki],
-    [Metrik], [Seberapa sering, seberapa cepat, berapa yang gagal?], [`prometheus/client_golang`, _endpoint_ `/metrics`], [Prometheus],
-    [_Trace_], [Di service mana sebagian besar waktu satu transaksi terpakai?], [OpenTelemetry, `otelhttp`, `otelgrpc`, _header_ Kafka], [Tempo],
-  )
-  #v(12pt)
-  #bullets(size: 13.5pt,
-    [Metrik mendeteksi adanya masalah. _Trace_ menunjukkan service yang paling banyak menyita waktu, dan _log_ berisi penyebabnya.],
-    [_Trace_ dan _log_ dihubungkan oleh `trace_id`. Dari lonjakan di grafik metrik, _engineer_ mempersempit rentang waktu lalu membuka _trace_ pada rentang tersebut. Tautan langsung dari metrik ke _trace_ membutuhkan _exemplar_ Prometheus, dan fitur tersebut tidak dipasang di lab.],
-  )
-]
-
-#slide(kicker: "Correlation ID", title: [_Correlation ID_ lintas tiga service])[
-  #flow(
-    node("klien", kind: "ext", width: 100pt),
-    arr(label: "X-Correlation-ID", length: 130pt),
-    node("transfer"),
-    arr(label: "metadata x-correlation-id", length: 170pt),
-    node("account"),
-  )
-  #v(10pt)
-  #flow(
-    node("transfer", sub: "baris outbox"),
-    arr(label: "relay", length: 90pt, dash: "dashed"),
-    node("Kafka", sub: "header", kind: "broker"),
-    arr(label: "consume", length: 90pt),
-    node("notification"),
-  )
-  #v(10pt)
-  #bullets(size: 13pt,
-    [Transfer membaca _header_ `X-Correlation-ID`, atau membuat ID baru bila _header_ tersebut kosong, lalu mengembalikannya di _response_.],
-    [ID disimpan di `context.Context`, ikut ke gRPC _metadata_, ke baris _outbox_, lalu ke _header_ Kafka.],
-  )
-]
-
-#code-slide(kicker: "Logging", title: [_Handler_ `slog` yang membaca `context`],
-  side: [
-    - Setiap baris _log_ otomatis membawa `correlation_id`, `trace_id`, `span_id`
-    - Kode _handler_ HTTP cukup memanggil `slog.InfoContext(ctx, ...)`
-    - _Output_ JSON ke _stdout_ sekaligus diekspor sebagai _log_ OTLP (_bridge_ `otelslog`)
-    - `WithAttrs` dan `WithGroup` membungkus ulang _handler_ hasilnya, sehingga _logger_ dari `logger.With(...)` tetap membawa ketiga atribut tersebut
-  ],
-)[
-```go
-type ctxHandler struct{ slog.Handler }
-
-func (h ctxHandler) Handle(ctx context.Context,
-    r slog.Record) error {
-    if id, ok := correlation.FromContext(ctx); ok {
-        r.AddAttrs(slog.String("correlation_id", id))
-    }
-    sc := trace.SpanContextFromContext(ctx)
-    if sc.IsValid() {
-        r.AddAttrs(
-            slog.String("trace_id", sc.TraceID().String()),
-            slog.String("span_id", sc.SpanID().String()))
-    }
-    return h.Handler.Handle(ctx, r)
-}
-
-func (h ctxHandler) WithAttrs(a []slog.Attr) slog.Handler {
-    return ctxHandler{h.Handler.WithAttrs(a)}
-}
-
-func (h ctxHandler) WithGroup(n string) slog.Handler {
-    return ctxHandler{h.Handler.WithGroup(n)}
-}
-```
-]
-
-#slide(kicker: "Metrik", title: "Metrik yang dipasang di setiap service")[
-  #table(
-    columns: (auto, auto, 1fr),
-    [Metrik], [Service], [Kegunaan],
-    [Histogram durasi _request_ (`method`, `route`, `status`)], [Semua], [_Latency_ p95 per _endpoint_],
-    [`transfers_total{status}`], [transfer], [Laju transfer per status: `COMPLETED`, `FAILED`, `COMPENSATED`],
-    [`circuit_breaker_state{target}`], [transfer], [0 = _closed_, 1 = _half-open_, 2 = _open_],
-    [_Counter_ transisi _breaker_], [transfer], [Berapa kali _breaker_ berganti status],
-    [`outbox_pending`], [transfer], [_Event_ yang belum terkirim ke Kafka],
-    [`notifications_processed_total{result}`], [notification], [`sent`, `duplicate`, dan `skipped`. `skipped` menghitung _event_ rusak atau yang ditolak database, dan nilainya seharusnya tetap 0],
-  )
-  #v(10pt)
-  #note(kind: "warn")[Label `route` diisi pola ServeMux (`GET /transfers/{id}`). Bila diisi _path_ asli yang mengandung ID, jumlah _time series_ akan terus bertambah.]
-]
-
-#slide(kicker: "Tracing", title: [Meneruskan _trace context_ lewat Kafka])[
-  #two-col(ratio: (1.15fr, 1fr),
-    [
-```go
-// telemetry.Setup: hanya W3C Trace Context
-otel.SetTextMapPropagator(propagation.TraceContext{})
-
-// transfer, outbox.Insert: dalam transaksi DB yang
-// sama dengan perubahan status transfer
-carrier := propagation.MapCarrier{}
-otel.GetTextMapPropagator().Inject(ctx, carrier)
-// carrier masuk kolom trace_context,
-// relay menyalinnya ke header Kafka
-
-// notification: saat membaca message
-headers := m.Headers
-ctx = otel.GetTextMapPropagator().Extract(ctx,
-    telemetry.KafkaHeaders{Headers: &headers})
-ctx, span := c.tracer.Start(ctx, "process "+m.Topic,
-    trace.WithSpanKind(trace.SpanKindConsumer))
-defer span.End()
-```
-    ],
-    [
-      #set text(size: 12.5pt)
-      - HTTP dan gRPC: `otelhttp` dan _stats handler_ `otelgrpc` meneruskan _header_ `traceparent` secara otomatis
-      - Kafka: _relay_ berjalan di _goroutine_ terpisah tanpa _context_ dari _request_ asal, dan baru mengirim _event_ hingga ±500 ms kemudian. Karena itu _trace context_ disimpan ke baris _outbox_ saat baris tersebut ditulis
-      - Hanya `traceparent` yang diteruskan. _Baggage_ tidak digunakan karena REST API diakses langsung oleh aplikasi _channel_, dan _baggage_ dari pemanggil luar itu akan ikut terkirim ke semua service yang dipanggil sesudahnya
-      - Hasilnya, satu transfer tampil sebagai satu _trace_ yang mencakup tiga service
-    ],
-  )
-]
-
-#slide(kicker: "Stack", title: [_Observability stack_ lab dalam satu _container_ `otel-lgtm`])[
-  #diagram(height: 250pt,
-    at(0pt, 0pt, node("transfer")),
-    at(0pt, 90pt, node("account")),
-    at(0pt, 180pt, node("notification")),
-    at(250pt, 90pt, node("collector", sub: "OTLP :4317", kind: "infra", width: 130pt)),
-    at(480pt, 30pt, node("Tempo", sub: "trace", kind: "infra")),
-    at(480pt, 110pt, node("Loki", sub: "log", kind: "infra")),
-    at(480pt, 190pt, node("Prometheus", sub: "metrik", kind: "infra")),
-    at(720pt, 110pt, node("Grafana", sub: ":3000", kind: "infra")),
-    edge((120pt, 28pt), (250pt, 108pt)),
-    edge((120pt, 118pt), (250pt, 118pt), label: "OTLP"),
-    edge((120pt, 208pt), (250pt, 128pt)),
-    edge((380pt, 110pt), (480pt, 58pt)),
-    edge((380pt, 126pt), (480pt, 138pt)),
-    edge((480pt, 226pt), (120pt, 226pt), label: "scrape /metrics", dash: "dashed", label-dy: 8pt),
-    edge((600pt, 58pt), (720pt, 128pt)),
-    edge((600pt, 138pt), (720pt, 138pt)),
-    edge((600pt, 218pt), (720pt, 148pt)),
-  )
-  #v(6pt)
-  #bullets(size: 13pt,
-    [Satu _container_ `grafana/otel-lgtm` berisi _collector_, Tempo, Loki, Prometheus, dan Grafana dengan _dashboard_ bawaan.],
-    [_Trace_ dan _log_ dikirim (_push_) lewat OTLP, sedangkan metrik diambil (_pull_) oleh Prometheus dari `/metrics` di setiap service.],
-  )
-]
-
-#decision(title: [`otel-lgtm` untuk _observability_ di lab],
-  [
-    - Lab 8 membutuhkan _collector_, penyimpanan _trace_, _log_, metrik, dan Grafana di setiap laptop
-    - RAM laptop terbatas, dan waktu lab tidak cukup untuk mengonfigurasi lima komponen
-  ],
-  [
-    - Komponen terpisah (OTel Collector, Tempo, Loki, Prometheus, Grafana) di `compose.yaml`
-    - Jaeger, khusus untuk _trace_
-    - Platform _observability_ SaaS
-    - `grafana/otel-lgtm`: kelima komponen tersebut dalam satu _container_
-  ],
-  [
-    - `grafana/otel-lgtm:0.37.0` di `compose.yaml`, _port_ 3000 (Grafana) dan 4317/4318 (OTLP)
-    - Service hanya mengenal `OTEL_EXPORTER_OTLP_ENDPOINT`
-  ],
-  [
-    - Ditujukan untuk pengembangan, demo, dan _testing_. Tidak ada _high availability_ maupun kontrol akses per tim
-    - Di _production_, setiap komponen dijalankan dan diskalakan sendiri (lihat bagian Operasional)
-    - Kode service tidak berubah saat pindah ke _stack_ terpisah, cukup alamat OTLP yang diganti
-  ],
-)
-
-#slide(kicker: "Membaca trace", title: [Mencari service yang lambat dari _waterfall_])[
-  #let bar(y, x, w, label, c: navy) = (
-    at(0pt, y, box(width: 230pt, height: 22pt, align(left + horizon, text(size: 11pt, label)))),
-    at(240pt + x, y, box(width: w, height: 22pt, fill: c.lighten(70%), stroke: 0.8pt + c, radius: 2pt)),
-  )
-  #diagram(height: 190pt,
-    at(240pt, 0pt, text(size: 10pt, fill: slate)[0 ms #h(240pt) 1.000 ms #h(240pt) 2.100 ms]),
-    ..bar(24pt, 0pt, 600pt, [transfer `POST /transfers`]),
-    ..bar(54pt, 6pt, 280pt, [account `Debit`], c: red),
-    ..bar(84pt, 292pt, 280pt, [account `Credit`], c: red),
-    ..bar(114pt, 580pt, 16pt, [transfer `insert outbox`]),
-    ..bar(144pt, 600pt, 24pt, [notification `process`], c: gold.darken(20%)),
-  )
-  #bullets(size: 13pt,
-    [_Span_ `Debit` dan `Credit` di account memakan hampir seluruh durasi transfer. Sumber masalah ada di account, sedangkan transfer hanya menunggu.],
-    [Buka atribut _span_ dan _log_ dengan `trace_id` yang sama untuk melihat penyebabnya, misalnya _fault delay_ yang sengaja dipasang di Lab 8.],
-  )
-]
+#section-slide(number: "02", title: "Lab 8: Observability lintas service", subtitle: [Melacak satu transfer lintas tiga service di Grafana])
 
 #lab-slide("8", "Melacak satu transfer di Grafana",
   [
@@ -377,7 +188,7 @@ defer span.End()
     - Mengamati _breaker_ berubah ke _open_ di _dashboard_
   ],
   "lab-07",
-  [],
+  [#note[Konsep, kode instrumentasi, dan `otel-lgtm` dibahas di akhir Hari 3, sesi _Observability_ lintas service.]],
 )
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -1219,10 +1030,10 @@ spec:
       [H3], [Notifikasi], [_Messaging_ asinkron], [_Eventual consistency_, duplikat dan urutan harus ditangani],
       [H3], [_Broker_], [Kafka], [Jumlah _consumer_ aktif per _group_ dibatasi jumlah _partition_, _routing_ lebih terbatas dibanding RabbitMQ],
       [H3], [Otorisasi antar-service], [OAuth2 _client credentials_, Hydra], [Token bergantung pada Hydra. Ganti IdP: ubah `OAUTH_*` URL dan sesuaikan _claim_ _scope_],
+      [H3], [_Observability_ lab], [`otel-lgtm`], [Tidak untuk _production_. Komponen dipisah saat naik ke _production_],
       [H4], [Artefak rilis], [_Container image_ `scratch`, _non-root_], [Membutuhkan _registry_ dan pemindaian, tanpa _shell_ untuk _debugging_],
       [H4], [Platform], [Kubernetes], [Kompleksitas operasional _cluster_],
       [H4], [_Cluster_ training], [k3d], [k3s berbeda dengan OpenShift (SCC, Route)],
-      [H4], [_Observability_ lab], [`otel-lgtm`], [Tidak untuk _production_. Komponen dipisah saat naik ke _production_],
     )
   }
 ]
@@ -1231,7 +1042,6 @@ spec:
   #table(
     columns: (auto, 1fr, 1fr),
     [Pola], [Masalah yang diselesaikan], [Layak digunakan ketika],
-    [_Correlation ID_ + _tracing_], [Satu transaksi tersebar di banyak _log_], [Satu _request_ melewati lebih dari satu service],
     [_Multi-stage build_ + `scratch`], [_Image_ besar dan penuh paket yang tidak dibutuhkan], [Service Go tanpa CGO],
     [_Readiness probe_], [_Traffic_ masuk ke _pod_ yang belum siap], [Selalu, untuk setiap service yang menerima _traffic_],
     [_Rolling update_], [_Downtime_ saat rilis], [Service _stateless_ dengan _readiness probe_ yang benar],
