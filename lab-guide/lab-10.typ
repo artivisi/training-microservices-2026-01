@@ -50,7 +50,7 @@ Alur yang sama di laptop, tanpa git server dan registry:
 ```
 
 #note[
-  *Status server pelatihan.* Runner CI pusat dan server pelatihan belum tersedia saat panduan ini disusun. _Workflow_, `Jenkinsfile`, dan _overlay_ `k8s/overlays/server` sudah ditulis, tetapi belum pernah dijalankan dari awal hingga akhir. _Target_ `apply` (_deploy_ pertama ke _namespace_ kosong) sudah diuji di k3d dengan _kubeconfig_ yang RBAC-nya terbatas pada satu _namespace_ dan _image_ dari registry. Latihan yang bisa dijalankan sepenuhnya di laptop adalah `make pipeline-k3d` pada Langkah 8. Bagian yang bergantung pada server ditandai di setiap langkah.
+  *Status server pelatihan.* Runner CI pusat dan server pelatihan belum tersedia saat panduan ini disusun. _Workflow_ dan _overlay_ `k8s/overlays/server` sudah ditulis, tetapi belum pernah dijalankan dari awal hingga akhir. Ketiga `Jenkinsfile` sudah dijalankan di Jenkins LTS 2.580.1 dengan _deploy_ ke k3d (Langkah 6). _Target_ `apply` (_deploy_ pertama ke _namespace_ kosong) sudah diuji di k3d dengan _kubeconfig_ yang RBAC-nya terbatas pada satu _namespace_ dan _image_ dari registry. Latihan yang bisa dijalankan sepenuhnya di laptop adalah `make pipeline-k3d` pada Langkah 8. Bagian yang bergantung pada server ditandai di setiap langkah.
 ]
 // TODO(endy): update this note and Langkah 10 once the central runner and the training server exist and the pipeline has run end to end.
 
@@ -534,10 +534,11 @@ Pemetaan antara kedua format:
   [_Secret_ `KUBE_CONFIG`], [_Credential_ `kubeconfig` jenis _secret file_], [`withCredentials` mengisi `KUBECONFIG` dengan _path_ _file_ sementara],
   [`concurrency`], [`disableConcurrentBuilds()`], [Satu _build_ per service dalam satu waktu],
   [`on.push.branches` dan `paths`], [`when { branch ...; changeset ... }`], [Lihat catatan di bawah],
+  [_Re-run_ sebuah _run_], [_Build Now_], [`triggeredBy 'UserIdCause'`: semua _stage_ berjalan untuk _commit_ terakhir tanpa memeriksa _changeset_],
 )
 
 #note[
-  *_Changeset_ pada _build_ pertama.* Kondisi `changeset` membandingkan _build_ saat ini dengan _build_ sebelumnya. _Build_ pertama sebuah _branch_ tidak punya pembanding, sehingga _changeset_-nya kosong dan semua _stage_ dilewati. Jalankan ulang setelah ada satu _commit_ baru, atau hapus kondisi tersebut untuk _build_ pertama itu.
+  *_Changeset_ pada _build_ pertama dan setelah _build_ gagal.* Kondisi `changeset` membandingkan _build_ saat ini dengan _build_ sebelumnya pada _branch_ yang sama, apa pun hasil _build_ sebelumnya. _Build_ pertama sebuah _branch_ tidak punya pembanding, sehingga _changeset_-nya kosong dan semua _stage_ dilewati. Hal yang sama terjadi pada _build_ ulang setelah _build_ yang gagal: _commit_ yang sudah tercatat di _build_ gagal tidak masuk lagi ke _changeset_ berikutnya. Karena itu kondisi `when` juga menerima `triggeredBy 'UserIdCause'`. _Build_ yang dijalankan manual dengan _Build Now_ selalu menjalankan semua _stage_ untuk _commit_ terakhir, sama seperti _re-run_ di runner lab. _Build_ yang dipicu _webhook_ atau _branch indexing_ tetap mengikuti _changeset_.
 ]
 
 Buat _file_ `studi-kasus/transfer/Jenkinsfile`:
@@ -551,8 +552,10 @@ Buat _file_ `studi-kasus/transfer/Jenkinsfile`:
 // only: "when { branch 'main' }" reads BRANCH_NAME, which only a
 // Multibranch job sets; in a plain Pipeline job every stage would be skipped.
 //
-// Not run on a Jenkins instance in the lab; the stages and make targets are
-// the ones the git server's runner executes.
+// Verified on Jenkins LTS 2.580.1 (Multibranch Pipeline, plain Git branch
+// source, built-in node with git, make, go, docker and kubectl) deploying to
+// k3d: path filter per service, first deploy into an empty namespace, rolling
+// update, disableConcurrentBuilds(), a missing variable stopping make.
 //
 // What Jenkins must provide (no defaults here; make stops with "missing
 // required variables: ..." when one is absent):
@@ -582,14 +585,17 @@ pipeline {
 
     stages {
         // The workflow's "on: push: branches/paths" filter. changeset
-        // compares with the previous build: the first build of a branch has
-        // no changeset and skips the stages (run it again after one commit,
-        // or remove the condition for that build).
+        // compares with the previous build of the branch, whatever its
+        // result: the first build of a branch has no changeset, and a build
+        // after a failed one sees only the commits pushed since. Both would
+        // skip the stages; "Build Now" (UserIdCause) runs them for the
+        // current commit, the counterpart of re-running a workflow run.
         stage('transfer') {
             when {
                 allOf {
                     branch 'main'
                     anyOf {
+                        triggeredBy 'UserIdCause'
                         changeset 'studi-kasus/transfer/**'
                         changeset 'studi-kasus/proto/**'
                         changeset 'studi-kasus/go.work'
@@ -650,8 +656,16 @@ sed -e 's/transfer/notification/g' -e '/studi-kasus\/proto/d' \
 ```
 ]
 
-`Jenkinsfile` ini belum pernah dijalankan di Jenkins. Di kelas, _file_ ini hanya digunakan sebagai bahan perbandingan.
-// TODO(endy): lint the Jenkinsfile on a Jenkins instance (changeset, branch condition, GIT_COMMIT) before presenting it as working.
+Ketiga `Jenkinsfile` ini sudah dijalankan di Jenkins LTS 2.580.1: _job_ _Multibranch Pipeline_ dengan sumber Git, _environment variable_ global `REGISTRY`, `IMAGE_OWNER`, dan `NAMESPACE`, _credential_ `registry` dan `kubeconfig` (_ServiceAccount_ dengan RBAC satu _namespace_), lalu _deploy_ ke k3d. Hasil yang teramati:
+
+- _commit_ yang mengubah `studi-kasus/transfer/` hanya menjalankan _stage_ di _job_ `transfer`; _job_ `account` dan `notification` ikut berjalan, tetapi semua _stage_-nya dilewati;
+- _commit_ yang mengubah `studi-kasus/proto/` menjalankan `account` dan `transfer`, tetapi tidak menjalankan `notification`;
+- _commit_ yang hanya mengubah dokumentasi melewati semua _stage_ di ketiga _job_;
+- _deploy_ pertama membuat ConfigMap, Service, Deployment, dan Ingress dari _namespace_ kosong, dan _deploy_ berikutnya menambah satu revisi di `kubectl rollout history` dengan anotasi `<service> <SHA>`;
+- _build_ kedua untuk service yang sama menunggu di antrean dengan pesan `Build #N is already in progress`;
+- tanpa `REGISTRY`, _stage_ `Build Image` berhenti dengan `missing required variables: REGISTRY`.
+
+Di kelas, _file_ ini digunakan sebagai bahan perbandingan; peserta tidak menjalankan Jenkins.
 
 === Langkah 7: _Overlay_ server pelatihan
 
@@ -933,7 +947,9 @@ git diff --no-index studi-kasus/transfer/Jenkinsfile studi-kasus/account/Jenkins
 
 *Hasil _pipeline_ hilang.* `make k8s-apply` dijalankan setelah `pipeline-k3d` dan mengembalikan _image_ ke `1.0.0`. Ini perilaku yang diharapkan (Langkah 9).
 
-*_Build_ Jenkins pertama melewati semua _stage_.* _Changeset_ kosong pada _build_ pertama sebuah _branch_ (lihat catatan di Langkah 6). Bila semua _build_ melewati semua _stage_, periksa tipe _job_: hanya _Multibranch Pipeline_ yang mengisi `BRANCH_NAME` untuk kondisi `branch 'main'`.
+*_Build_ Jenkins pertama melewati semua _stage_.* _Changeset_ kosong pada _build_ pertama sebuah _branch_ (lihat catatan di Langkah 6). Jalankan _Build Now_ pada _branch_ `main`. Bila semua _build_ melewati semua _stage_, termasuk _Build Now_, periksa tipe _job_: hanya _Multibranch Pipeline_ yang mengisi `BRANCH_NAME` untuk kondisi `branch 'main'`.
+
+*_Build_ Jenkins setelah _build_ yang gagal melewati semua _stage_.* _Changeset_ dibandingkan dengan _build_ sebelumnya, termasuk _build_ yang gagal, sehingga _build_ berikutnya tanpa _commit_ baru di direktori service tidak menjalankan apa pun. Perbaiki penyebabnya, lalu jalankan _Build Now_ atau _push_ _commit_ perbaikan.
 
 *_Build_ Jenkins berhenti dengan `GIT_COMMIT is empty`.* _Checkout_ SCM bawaan _declarative pipeline_ dimatikan, misalnya dengan `options { skipDefaultCheckout() }`, sehingga `VERSION` tidak berisi SHA _commit_. Hapus opsi tersebut.
 
