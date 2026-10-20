@@ -26,6 +26,7 @@
   #table(
     columns: (auto, 1fr, auto),
     [Waktu], [Sesi], [Format],
+    [08:00 – 08:45], [Rekap Hari 1 dan penyamaan posisi dari _checkpoint_ `lab-02` bagi peserta yang tertinggal], [Diskusi],
     [08:45 – 09:45], [Peta _concern_ Hari 2. Kegagalan komunikasi sinkron: _timeout_, _retry_ dengan _backoff_, _circuit breaker_, dan alasan memilih failsafe-go], [Presentasi],
     [09:45 – 10:45], [*Lab 3*: failsafe-go pada panggilan transfer ke account, simulasi service lambat dan mati], [_Hands-on_],
     [11:00 – 12:30], [gRPC untuk komunikasi internal: kontrak protobuf, _code generation_, _unary call_, _error handling_, _interceptor_], [Presentasi + demo],

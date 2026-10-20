@@ -16,17 +16,18 @@
   #table(
     columns: (auto, 1fr, auto),
     [Waktu], [Topik], [Format],
-    [08:45 – 09:45], [Peta concern Hari 3, komunikasi asinkron dengan Kafka, _at-least-once delivery_, _transactional outbox_], [Presentasi + demo],
+    [08:00 – 08:45], [Rekap Hari 2 dan penyamaan posisi dari _checkpoint_ `lab-04` bagi peserta yang tertinggal], [Diskusi],
+    [08:45 – 09:45], [Peta _concern_ Hari 3, komunikasi asinkron dengan Kafka, _at-least-once delivery_, _transactional outbox_], [Presentasi + demo],
     [09:45 – 11:15], [*Lab 5*: transfer sebagai saga, event ke Kafka melalui outbox, notification sebagai _consumer_], [_Hands-on_],
     [11:30 – 12:30], [*Lab 6*: _idempotent consumer_ dan _Idempotency-Key_ pada API transfer], [_Hands-on_],
     [13:30 – 14:30], [OAuth2 _client credentials_, pemilihan _authorization server_, validasi JWT, posisi API _gateway_], [Presentasi + demo],
     [14:45 – 15:45], [*Lab 7*: _middleware_ JWT pada REST dan _interceptor_ JWT pada gRPC], [_Hands-on_],
     [15:45 – 16:45], [Pengantar _observability_: log, metrik, _trace_, dan posisinya di kode dan platform], [Presentasi + demo],
-    [16:45 – 17:00], [Ringkasan hari ini pada peta concern, tanya jawab], [Diskusi],
+    [16:45 – 17:00], [Ringkasan hari ini pada peta _concern_, tanya jawab], [Diskusi],
   )
 ]
 
-#slide(kicker: "Gambaran besar", title: "Fokus Hari 3 di peta concern microservices")[
+#slide(kicker: "Peta concern microservices", title: [_Concern_ yang dibahas di Hari 3])[
   #concern-map(highlight: (2, 4, 5, 6))
   #v(8pt)
   #note[Baris berwarna dibahas hari ini. Sebagian besar jawabannya ada di kode setiap service: saga, outbox, _idempotency_, dan validasi JWT. Platform menyediakan Kafka, Hydra, dan _backend observability_. Untuk _observability_, hari ini hanya konsep, sedangkan implementasinya di Lab 8 (Hari 4).]
@@ -1090,7 +1091,7 @@ grpc.WithChainUnaryInterceptor(
   #note[Ketiganya ditampilkan di Grafana. Pada monolith satu _stack trace_ cukup untuk menjelaskan kegagalan, sedangkan pada microservices satu transfer melewati tiga service dan sebuah _broker_.]
 ]
 
-#slide(kicker: "Peta concern", title: [_Observability_ di kode dan di platform])[
+#slide(kicker: "Peta concern microservices", title: [_Observability_ di kode dan di platform])[
   #two-col(
     card([Di kode setiap service (Lab 8)])[
       - *Log.* slog dengan _handler_ JSON ke stdout
@@ -1218,7 +1219,7 @@ grpc.WithChainUnaryInterceptor(
   )
 ]
 
-#slide(kicker: "Ringkasan", title: "Peta concern di akhir Hari 3")[
+#slide(kicker: "Peta concern microservices", title: [Posisi Hari 3 pada peta _concern_])[
   #let kondisi = (
     [Tiga service, masing-masing dengan database sendiri],
     [REST dari kanal, gRPC transfer ke account, event Kafka ke notification],

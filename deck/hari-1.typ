@@ -118,7 +118,7 @@
   #note[Studi kasus mengikuti generasi Kubernetes. Alamat service, konfigurasi, _restart_, dan _rollout_ diserahkan ke platform. Kode Go hanya memuat kebijakan _resiliency_, konsistensi data, pemeriksaan token, dan instrumentasi, sehingga service tidak bergantung pada _framework_ tertentu. Sejak Desember 2018, Spring Cloud menetapkan modul Hystrix dan Ribbon sebagai _maintenance mode_, dengan pengganti Resilience4j dan Spring Cloud LoadBalancer.]
 ]
 
-#slide(kicker: "Peta training", title: [_Concern_ yang dibahas Hari 1])[
+#slide(kicker: "Peta concern microservices", title: [_Concern_ yang dibahas di Hari 1])[
   #let day1 = (
     [Lab 1–2: batas service dari kapabilitas bisnis, satu database per service],
     [Lab 2: panggilan REST pertama dari transfer ke account],
