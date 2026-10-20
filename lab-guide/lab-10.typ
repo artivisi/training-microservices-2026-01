@@ -50,9 +50,8 @@ Alur yang sama di laptop, tanpa git server dan registry:
 ```
 
 #note[
-  *Status server pelatihan.* Runner CI pusat dan server pelatihan belum tersedia saat panduan ini disusun. _Workflow_ dan _overlay_ `k8s/overlays/server` sudah ditulis, tetapi belum pernah dijalankan dari awal hingga akhir. Ketiga `Jenkinsfile` sudah dijalankan di Jenkins LTS 2.580.1 dengan _deploy_ ke k3d (Langkah 6). _Target_ `apply` (_deploy_ pertama ke _namespace_ kosong) sudah diuji di k3d dengan _kubeconfig_ yang RBAC-nya terbatas pada satu _namespace_ dan _image_ dari registry. Latihan yang bisa dijalankan sepenuhnya di laptop adalah `make pipeline-k3d` pada Langkah 8. Bagian yang bergantung pada server ditandai di setiap langkah.
+  *Status server pelatihan.* _Workflow_ dan _overlay_ `k8s/overlays/server` sudah dijalankan dari awal hingga akhir di server pelatihan (Langkah 10): _deploy_ pertama ke _namespace_ kosong, _rolling update_, dan dua peserta yang melakukan _push_ bersamaan. Ketiga `Jenkinsfile` sudah dijalankan di Jenkins LTS 2.580.1 dengan _deploy_ ke k3d (Langkah 6). Latihan yang bisa dijalankan sepenuhnya di laptop adalah `make pipeline-k3d` pada Langkah 8.
 ]
-// TODO(endy): update this note and Langkah 10 once the central runner and the training server exist and the pipeline has run end to end.
 
 == Titik Awal
 
@@ -344,8 +343,8 @@ pipeline-k3d:
 # the image to keep or to roll out, usually the commit already deployed
 # (kubectl rollout history). Pods read ConfigMaps only at start: kubectl
 # rollout restart deployment/<service> after a config change.
-# Refuses while a placeholder is left: the training server's addresses are
-# not known yet (PENDING).
+# Refuses while a placeholder is left: the instructor hands out the training
+# server's addresses (~/lab10.txt on the server).
 # Usage: make k8s-apply-server SERVICE=transfer VERSION=<sha> REGISTRY=...
 #        IMAGE_OWNER=... NAMESPACE=...  (KUBECONFIG of the training server)
 k8s-apply-server:
@@ -382,8 +381,9 @@ Buat _file_ `.forgejo/workflows/transfer.yaml` di direktori _root_ repository:
 # maps 1:1 to a stage of studi-kasus/transfer/Jenkinsfile, and the same commands
 # run on a laptop.
 #
-# PENDING: the central runner and the training server are not built yet; this
-# workflow has not run end to end.
+# Verified end to end on the training server (git server 16.0.6, runner
+# 13.2.0, k3s v1.36.5+k3s1): first deploy into an empty namespace, rolling
+# update, two participants pushing at the same time.
 #
 # The runner is shared by all participants and trusts them all: a job runs on
 # the runner host as the runner user, so anyone who can push a workflow change
@@ -510,7 +510,7 @@ Di `notification.yaml`, ganti kedua baris komentar di atas `paths:` dengan:
 ```
 ]
 
-// TODO(endy): verify on the actual git server version that secrets.GITHUB_TOKEN, vars.REGISTRY, vars.NAMESPACE and github.repository_owner resolve as written, and that the job token works as basic auth with user x-access-token for a fetch by SHA.
+// Verified 20 Okt on git server 16.0.6 + runner 13.2.0: secrets.GITHUB_TOKEN, vars.REGISTRY, vars.NAMESPACE and github.repository_owner resolve as written; the job token works as basic auth (user x-access-token) for a fetch by SHA; concurrency groups are per repository.
 
 === Langkah 6: `Jenkinsfile` untuk pemetaan ke Jenkins
 
@@ -767,7 +767,7 @@ _Path_ diawali `../` karena pemeriksaan ini dijalankan oleh _target_ `apply` dar
 
 Hasil _render_ _overlay_ bisa diperiksa tanpa _cluster_ dengan `kubectl kustomize k8s/overlays/server`.
 
-// TODO(endy): hand out the real values for every replace-me (Kafka, OAuth2, OTLP, Ingress host; namespace and registry go into the repository variables) once the training server exists.
+Nilai pengganti setiap `replace-me` dibagikan instruktur di server pelatihan (`~/lab10.txt`, Langkah 10). _Namespace_ dan registry tidak termasuk di dalamnya: keduanya sudah diisi sebagai _variable_ repository.
 
 === Langkah 8: Menjalankan _pipeline_ di laptop hingga _deploy_ ke k3d
 
@@ -888,24 +888,68 @@ Untuk mengulang latihan, ubah kode lagi, _commit_, lalu jalankan `make pipeline-
 
 === Langkah 10: _Pipeline_ di server pelatihan
 
-Langkah ini menjelaskan alur yang direncanakan. Runner CI pusat dan server pelatihan belum tersedia, sehingga langkah ini belum bisa dijalankan.
+Instruktur sudah menyiapkan hal berikut untuk setiap peserta:
 
-// TODO(endy): replace this plan with the verified procedure (remote name, repository URL on the git server, where participants see the job log) once the runner and server exist.
-
-Persiapan yang dilakukan instruktur untuk setiap peserta:
-
-- repository peserta di git server, dengan _variable_ `REGISTRY` dan `NAMESPACE` serta _secret_ `REGISTRY_USER`, `REGISTRY_PASSWORD`, dan `KUBE_CONFIG`. _Kubeconfig_ ini hanya berlaku di _namespace_ peserta, dan RBAC-nya mengizinkan pembuatan ConfigMap, Service, Deployment, dan Ingress di sana;
+- repository `<peserta>/training-microservices-2026-01` di git server, berisi semua _branch_ dan _tag_ repository publik, dengan _variable_ `REGISTRY` dan `NAMESPACE` serta _secret_ `REGISTRY_USER`, `REGISTRY_PASSWORD`, dan `KUBE_CONFIG`. _Kubeconfig_ ini hanya berlaku di _namespace_ peserta, dan RBAC-nya mengizinkan pembuatan ConfigMap, Service, Deployment, dan Ingress di sana;
+- akun Linux di server pelatihan dengan nama yang sama dengan akun git server, `kubectl` yang sudah terhubung ke _namespace_ peserta, dan _file_ `~/lab10.txt` berisi semua nilai untuk langkah ini;
 - _namespace_ peserta berisi Secret `registry-credentials` dan Secret `account`, `transfer`, `notification`;
-- _topic_ Kafka dan _client_ OAuth2 milik peserta;
-- nilai pengganti setiap `replace-me` di `config.yaml` dan `ingress.yaml` _overlay_ `k8s/overlays/server`.
+- _topic_ Kafka `<peserta>.transfer-events` dan dua _client_ OAuth2: `<peserta>-transfer-service` (digunakan `transfer` untuk memanggil `account`) dan `<peserta>-channel-app` (digunakan peserta untuk memanggil REST `transfer`).
+
+Langkah persiapan di git server:
+
++ Masuk ke git server lewat _browser_ dengan _password_ awal dari instruktur, lalu ganti _password_. Selama _password_ awal belum diganti, git server menolak `git clone` dan `git push` lewat HTTPS dengan pesan `remote: Update your password`.
++ Daftarkan _public key_ SSH di menu _Settings_ → _SSH / GPG Keys_. Kunci yang sama digunakan untuk git lewat SSH dan untuk masuk ke server pelatihan.
++ Masuk ke server pelatihan dan baca nilai milik sendiri:
+
+#perintah[
+```bash
+ssh <peserta>@app.<domain>
+cat ~/lab10.txt
+kubectl get pods
+```
+]
+
+`kubectl get pods` menjawab `No resources found in <peserta> namespace.` sebelum _pipeline_ pertama. _Namespace_ peserta lain tidak bisa dibaca: `kubectl -n <peserta-lain> get pods` berhenti dengan `Forbidden`.
 
 Alur peserta:
 
-+ Isi setiap `replace-me` di `k8s/overlays/server` dengan nilai dari instruktur, lalu _commit_.
-+ Tambahkan git server sebagai _remote_ lalu _push_ `main`.
-+ Buka halaman _Actions_ repository di git server. _Push_ yang mengubah `studi-kasus/transfer/` menjalankan _workflow_ `transfer` saja.
-+ Pada _pipeline_ pertama setiap service, Deployment-nya belum ada. Log _step_ Deploy menampilkan `deployment/transfer not in namespace <namespace>: first deploy, applying the overlay`, lalu `apply` membuat ConfigMap, Service, Deployment, dan Ingress dengan _image_ _commit_ tersebut. _Pipeline_ berikutnya hanya mengganti _image_.
-+ Setelah _step_ Deploy selesai, periksa `kubectl -n <namespace> rollout history deployment/transfer` seperti Langkah 9.
++ _Clone_ repository dari git server, di laptop atau di server pelatihan. Repository itu sudah berisi _overlay_ `k8s/overlays/server`:
+  #perintah[
+  ```bash
+  git clone git@<git server>:<peserta>/training-microservices-2026-01.git
+  cd training-microservices-2026-01
+  ```
+  ]
++ Ganti setiap `replace-me` di `studi-kasus/k8s/overlays/server/config.yaml` dan `ingress.yaml` dengan nilai dari `~/lab10.txt`. _File_ tersebut juga memuat satu perintah `sed` (GNU sed, Linux) yang mengganti semuanya sekaligus. Periksa hasilnya dengan `kubectl kustomize studi-kasus/k8s/overlays/server | grep replace-me`, yang tidak boleh mencetak apa pun.
++ Tambahkan satu baris komentar di akhir `studi-kasus/pipeline.mk`, lalu _commit_ dan _push_ `main`. Perubahan yang hanya menyentuh `k8s/overlays/server` tidak memicu _workflow_ mana pun, karena _path_ itu tidak tercantum di `on.push.paths`. Perubahan `pipeline.mk` memicu ketiga _workflow_, sehingga _pipeline_ pertama membuat ketiga service. `transfer` membutuhkan `account` untuk setiap transfer.
+  #perintah[
+  ```bash
+  echo '# first deploy to the training server' >> studi-kasus/pipeline.mk
+  git commit -am "Fill server overlay"
+  git push origin main
+  ```
+  ]
++ Buka halaman _Actions_ repository di git server (`https://<git server>/<peserta>/training-microservices-2026-01/actions`). Ketiga _workflow_ berjalan bersamaan; log setiap _step_ bisa dibuka dari halaman tersebut. Pada _pipeline_ pertama, Deployment belum ada, sehingga log _step_ Deploy menampilkan `deployment/transfer not in namespace <peserta>: first deploy, applying the overlay`, lalu `apply` membuat ConfigMap, Service, Deployment, dan Ingress dengan _image_ _commit_ tersebut. _Image_ ketiga service muncul di menu _Packages_ akun peserta.
++ Di server pelatihan, periksa hasilnya:
+  #perintah[
+  ```bash
+  kubectl get deploy,pods,ingress
+  kubectl rollout history deployment/transfer
+  ```
+  ]
++ Buat dua rekening lewat `kubectl port-forward`, ambil _token_ `channel-app`, lalu kirim transfer lewat Ingress. Port lokal untuk `port-forward` dan _client secret_ ada di `~/lab10.txt`. Server pelatihan digunakan bersama, sehingga setiap peserta mendapat nomor port sendiri.
++ Ubah pesan log di `studi-kasus/transfer/main.go` seperti Langkah 8, _commit_, lalu _push_. Hanya _workflow_ `transfer` yang berjalan. `kubectl rollout history deployment/transfer` kini menampilkan dua revisi, masing-masing dengan SHA _commit_-nya.
+
+Pada uji coba server pelatihan, _pipeline_ pertama (ketiga service sekaligus, _cache_ Go dan Docker masih kosong) selesai dalam sekitar 3,5 menit. _Pipeline_ berikutnya untuk satu service selesai dalam sekitar 1 menit, termasuk _rolling update_. Selama _rolling update_ tersebut, 81 transfer yang dikirim terus-menerus lewat Ingress semuanya dijawab `201`. Runner menjalankan paling banyak empat _job_ sekaligus; _push_ berikutnya menunggu di antrean.
+
+Hasil kerja sendiri dari laptop (_branch_ `lab-10-saya`) juga bisa dikirim ke repository ini. _Branch_ tersebut tidak berasal dari `main` repository git server, sehingga _push_ biasa ditolak sebagai _non-fast-forward_. Repository ini milik peserta sendiri, jadi `main` boleh ditimpa:
+
+#perintah[
+```bash
+git remote add git-server git@<git server>:<peserta>/training-microservices-2026-01.git
+git push --force git-server lab-10-saya:main
+```
+]
 
 Setelah Deployment ada, _pipeline_ tidak lagi menyentuh ConfigMap dan Ingress. Perubahan `config.yaml` atau `ingress.yaml` dikirim ke _cluster_ dengan `make k8s-apply-server`, satu service per perintah, dengan `VERSION` berisi _commit_ yang sedang berjalan agar _image_ tidak berubah:
 
