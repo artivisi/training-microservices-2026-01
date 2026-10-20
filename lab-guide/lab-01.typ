@@ -67,7 +67,7 @@ Kode di dalam `internal/account` disusun dengan pola _package by feature_ (penge
 
 == Titik Awal
 
-Lab 1 dimulai dari _checkpoint_ `lab-00`, yaitu repositori yang baru berisi materi dan `studi-kasus/README.md`. Bila repositori belum ada di laptop, lakukan _clone_ terlebih dahulu. Peserta Windows menjalankan perintah berikut di terminal Ubuntu (WSL2), dengan repositori di _home_ Ubuntu. Repositori yang di-_clone_ dengan Git for Windows ke folder Windows dapat berisi akhir baris CRLF yang membuat skrip _shell_ dan `Makefile` gagal:
+Lab 1 dimulai dari _checkpoint_ `lab-00`, yaitu repositori yang baru berisi panduan persiapan. Folder `studi-kasus` dibuat mulai Lab 1. Bila repositori belum ada di laptop, lakukan _clone_ terlebih dahulu. Peserta Windows menjalankan perintah berikut di terminal Ubuntu (WSL2), dengan repositori di _home_ Ubuntu. Repositori yang di-_clone_ dengan Git for Windows ke folder Windows dapat berisi akhir baris CRLF yang membuat skrip _shell_ dan `Makefile` gagal:
 
 // TODO(endy): create tag lab-00 on the commit before "Add Lab 1" when the wip tags are renamed.
 #perintah[```bash
