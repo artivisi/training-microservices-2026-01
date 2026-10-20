@@ -547,6 +547,7 @@ fmt.Println(x.Add(y))
     - _Health service_ standar gRPC (`grpc.health.v1`) tidak memeriksa database: statusnya `SERVING` sejak _startup_ hingga _shutdown_. _Readiness_ _pod_ tetap HTTP `/readyz`
     - _Reflection_ memungkinkan _client_ generik membaca daftar method tanpa _file_ `.proto`
     - HTTP dan gRPC berjalan di _goroutine_ terpisah dalam satu proses
+    - `notAccountService` bernilai `true` untuk method di luar `AccountService` (_health_, _reflection_), sehingga method tersebut tidak terkena _fault injection_. Di kode Lab 4 fungsi ini ditulis langsung sebagai argumen; variabel dengan nama ini baru ada sejak Lab 7
   ],
 )[
 ```go
