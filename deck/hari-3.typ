@@ -238,6 +238,20 @@ for {
   #note(kind: "warn")[`COMPENSATION_FAILED` dicatat sebagai log _error_ dan ditangani manual oleh petugas operasional. Status ini tidak boleh diperbaiki otomatis tanpa pemeriksaan.]
 ]
 
+#slide(kicker: "Saga", title: [Kode HTTP `POST /transfers` sejak Lab 5])[
+  #table(
+    columns: (1.6fr, auto, 1.3fr),
+    [Hasil Saga], [HTTP], [Arti bagi Channel],
+    [`COMPLETED`], [`201`], [Selesai],
+    [Rekening tidak ada atau saldo kurang, termasuk `COMPENSATED` karena rekening tujuan tidak ada], [`422`], [Tidak ada uang yang berpindah. Data yang sama memberi hasil yang sama],
+    [_Circuit breaker_ terbuka saat debit (`FAILED`), atau saat credit lalu debit dikembalikan (`COMPENSATED`)], [`503`], [Tidak ada uang yang berpindah, aman diulang setelah jeda],
+    [_Dependency_ gagal (`FAILED` atau `COMPENSATED`)], [`502`], [Periksa `GET /transfers/{id}`],
+    [`COMPENSATION_FAILED`], [`500`], [Dana tertahan di sisi transfer, ditangani petugas],
+  )
+  #v(8pt)
+  #note[Berbeda dengan Lab 3 dan Lab 4: _breaker_ yang terbuka di antara debit dan credit kini menghasilkan `503`, karena debit sudah dikembalikan dan tidak ada uang yang berpindah.]
+]
+
 #slide(kicker: "Saga", title: "Kompensasi berupa transaksi baru")[
   #flow(
     node("Debit", sub: "ref = id transfer", kind: "infra", width: 150pt),
@@ -247,28 +261,88 @@ for {
     node("Credit ke sumber", sub: "ref = id:reversal", kind: "infra", width: 170pt),
   )
   #v(14pt)
-  #bullets(size: 14pt,
-    [Kompensasi tidak menghapus mutasi debit; account mencatat mutasi credit baru dengan _reference_ `<transfer_id>:reversal`],
-    [Riwayat mutasi tetap lengkap, sehingga audit dapat melihat debit dan pengembaliannya],
-    [Kompensasi hanya dijalankan bila credit pasti tidak diproses: ditolak, `Unavailable`, atau _circuit breaker_ terbuka],
-    [Hasil credit yang tidak pasti (`DeadlineExceeded`) diulang dulu dengan _reference_ yang sama karena credit sudah idempoten; selama hasilnya belum pasti, kompensasi belum boleh dijalankan],
-    [Kompensasi juga bisa gagal atau _timeout_, jadi kompensasi wajib aman untuk diulang],
+  #bullets(size: 13.5pt,
+    [Kompensasi tidak menghapus mutasi debit; account mencatat mutasi credit baru dengan _reference_ `<transfer_id>:reversal`. Riwayat mutasi tetap lengkap untuk audit],
+    [Credit yang `DeadlineExceeded` diulang lebih dulu dengan _reference_ yang sama, karena credit sudah idempoten. Bila semua percobaan berakhir _timeout_, hasilnya tidak pasti: lab tetap menjalankan kompensasi, sedangkan sistem _production_ menambahkan _reconciliation job_],
+    [Kompensasi juga bisa gagal atau _timeout_, jadi kompensasi wajib aman untuk diulang. Kompensasi yang gagal berakhir di `COMPENSATION_FAILED`],
   )
   #v(4pt)
   #note[Kompensasi membalik efek bisnis, tidak membalik transaksi database. Istilahnya _semantic undo_.]
+]
+
+#code-slide(kicker: "Saga", title: [_Reversal_ dengan _policy_ sendiri tanpa _circuit breaker_],
+  side: [
+    - Credit biasanya gagal karena account mati atau _breaker_ baru terbuka. Bila _reversal_ lewat _breaker_ yang sama, _reversal_ langsung ditolak dan transfer berakhir `COMPENSATION_FAILED`
+    - _Reversal_ berjalan di koneksi gRPC kedua: _retry_ dengan _backoff_ 200 ms–5 detik selama paling lama 30 detik
+    - Setiap percobaan membawa _reference_ yang sama, sehingga saldo tidak bertambah dua kali
+    - Log `retrying reversal` menandai setiap percobaan ulang
+  ],
+)[
+```go
+// transfer.Service
+func (s *Service) compensate(ctx context.Context,
+    t Transfer, cause error) (Transfer, error) {
+    reason := fmt.Sprintf("credit failed: %v", cause)
+    err := s.accounts.Reverse(ctx, t.FromAccount,
+        t.Amount, t.ID+ReversalSuffix)
+    if err != nil {
+        reason = fmt.Sprintf("%s; reversal failed: %v",
+            reason, err)
+        return s.finish(ctx, t, Debited, CompensationFailed,
+            reason, "", fmt.Errorf("%w: %w",
+                ErrReversalFailed, errors.Join(cause, err)))
+    }
+    return s.finish(ctx, t, Debited, Compensated,
+        reason, EventCompensated, cause)
+}
+
+// accountclient.New: tanpa breaker, dibatasi durasi
+reversalRetry := retrypolicy.NewBuilder[any]().
+    HandleIf(countsAsFailure).
+    WithMaxRetries(-1). // dibatasi durasi, bukan jumlah
+    WithMaxDuration(s.ReversalMaxDuration). // 30 s
+    WithBackoff(s.ReversalBackoffMin, s.ReversalBackoffMax).
+    WithJitterFactor(jitterFactor).
+    Build()
+```
+]
+
+#slide(kicker: "Saga", title: [Saga dan _graceful shutdown_])[
+  #two-col(
+    card([Durasi terburuk satu saga])[
+      #table(
+        columns: (1fr, auto),
+        [Langkah], [Durasi],
+        [Debit: 4 percobaan × 2 detik + 3 _backoff_ × 1,25 detik], [11,75 detik],
+        [Credit, dengan perhitungan yang sama], [11,75 detik],
+        [_Reversal_: jendela 30 detik + 1 percobaan terakhir], [32 detik],
+        [*Total*], [*55,5 detik*],
+      )
+    ],
+    card([Akibatnya], accent: gold.darken(15%))[
+      - `shutdownGrace` transfer = 60 detik. `TestShutdownGrace` gagal bila _policy_ bertambah panjang melewati angka ini
+      - Platform harus memberi waktu yang cukup sebelum `SIGKILL`: `terminationGracePeriodSeconds` di Kubernetes (Hari 4), `stop_grace_period` di Docker Compose
+    ],
+  )
+  #v(10pt)
+  #note(kind: "warn")[Celah yang tersisa: proses yang mati paksa (`SIGKILL`, _crash_) di antara dua langkah meninggalkan baris `PENDING` atau `DEBITED` yang tidak dilanjutkan siapa pun. Sistem _production_ menambahkan _recovery job_ yang melanjutkan atau mengompensasi baris tersebut.]
 ]
 
 #slide(kicker: "Saga", title: "Mutasi account dibuat idempoten")[
   #two-col(
     [
       ```sql
-      alter table mutation
-        add constraint uq_mutation_ref
-        unique (account_number, type, reference);
+      create unique index if not exists
+        mutation_idempotency
+        on mutation (account_number, type, reference);
+
+      insert into mutation (...) values (...)
+      on conflict (account_number, type, reference)
+      do nothing;
       ```
       #v(6pt)
-      #bullets(size: 13.5pt,
-        [Debit atau Credit dengan _reference_ yang sama dijalankan ulang: account mengembalikan saldo saat ini tanpa mutasi baru],
+      #bullets(size: 13pt,
+        [Tidak ada baris yang masuk: _reference_ sudah pernah diterapkan. Account membaca saldo dalam transaksi yang sama, menjawab sukses tanpa mutasi baru, dan mencatat log `mutation already applied, not repeated`],
         [_Reference_ debit = `transfer_id`, _reference_ reversal = `transfer_id:reversal`],
       )
     ],
@@ -283,7 +357,7 @@ for {
     ratio: (1.2fr, 1fr),
   )
   #v(8pt)
-  #note(kind: "tip")[_Idempotency_ menjadi syarat agar _retry_ dan kompensasi aman. Pola ini muncul lagi di Lab 6 pada sisi _consumer_ dan API.]
+  #note(kind: "warn")[Lab 5 dimulai dengan `make infra-reset` lalu `make infra-up`. Database dari Lab 1–4 dapat berisi _reference_ ganda; _unique index_ gagal dibuat dan account berhenti saat _startup_ dengan _error_ `apply schema`.]
 ]
 
 // ── 03 Outbox ──────────────────────────────────────────────────────────────
@@ -336,33 +410,34 @@ for {
 #code-slide(kicker: "Outbox", title: "Status dan event dalam satu transaksi",
   side: [
     - `tx.Rollback` setelah `Commit` tidak berpengaruh, jadi aman di-`defer`
+    - `and status = @from` menjaga urutan status: transfer yang sudah dipindahkan proses lain tidak ditimpa (`ErrStaleState`)
     - Tabel `outbox`: `id`, `aggregate_id`, `event_type`, `payload` (jsonb), `created_at`, `published_at`
-    - Event: `TransferCompleted`, `TransferFailed`, `TransferCompensated`
+    - Event hanya untuk status akhir: `TransferCompleted`, `TransferFailed`, `TransferCompensated`
   ],
 )[
 ```go
-func (r *Repository) UpdateStatus(ctx context.Context,
-    t Transfer, ev Event) error {
-    tx, err := r.db.Begin(ctx)
-    if err != nil {
-        return fmt.Errorf("begin: %w", err)
-    }
-    defer tx.Rollback(ctx)
+func (s *PostgresStore) Transition(ctx context.Context,
+    id string, from, to Status, reason string,
+    event EventType) (Transfer, error) {
+    tx, err := s.pool.Begin(ctx)
+    // ...
+    defer tx.Rollback(ctx) // no-op after Commit
 
-    _, err = tx.Exec(ctx, `update transfers
-        set status = $1, failure_reason = $2
-        where id = $3`, t.Status, t.FailureReason, t.ID)
-    if err != nil {
-        return fmt.Errorf("update transfer: %w", err)
+    t, err := one(ctx, tx, `
+        update transfer set status = @to, ...
+        where id = @id and status = @from
+        returning `+columns, pgx.NamedArgs{...})
+    // ... tidak ada baris: ErrStaleState
+    if event != "" {
+        // e := Event{EventID: uuid.NewString(), ...}
+        payload, err := json.Marshal(e)
+        // ...
+        err = outbox.Insert(ctx, tx, outbox.Message{
+            ID: e.EventID, AggregateID: t.ID,
+            EventType: string(event), Payload: payload})
+        // ...
     }
-    _, err = tx.Exec(ctx, `insert into outbox
-        (id, aggregate_id, event_type, payload)
-        values ($1, $2, $3, $4)`,
-        ev.EventID, t.ID, ev.Type, ev.Payload)
-    if err != nil {
-        return fmt.Errorf("insert outbox: %w", err)
-    }
-    return tx.Commit(ctx)
+    return t, tx.Commit(ctx)
 }
 ```
 ]
@@ -377,22 +452,25 @@ func (r *Repository) UpdateStatus(ctx context.Context,
 )[
 ```go
 rows, err := tx.Query(ctx, `
-    select id, aggregate_id, event_type, payload
+    select id::text, aggregate_id::text, event_type, payload
     from outbox
     where published_at is null
     order by created_at
-    limit 100
-    for update skip locked`)
+    limit @limit
+    for update skip locked`,
+    pgx.NamedArgs{"limit": BatchSize}) // 100
 // ... baca baris menjadi msgs ([]kafka.Message)
 
-if err := w.WriteMessages(ctx, msgs...); err != nil {
-    return fmt.Errorf("publish: %w", err)
+if err := r.pub.WriteMessages(pubCtx, msgs...); err != nil {
+    return 0, fmt.Errorf("publish %d events: %w",
+        len(msgs), err)
 }
 // jendela duplikat: event sudah di Kafka,
 // published_at belum tersimpan
 _, err = tx.Exec(ctx, `update outbox
     set published_at = now()
-    where id = any($1)`, ids)
+    where id = any(@ids::uuid[])`,
+    pgx.NamedArgs{"ids": ids})
 ```
 ]
 
@@ -424,6 +502,23 @@ _, err = tx.Exec(ctx, `update outbox
   )
 ]
 
+#slide(kicker: [_Consumer_], title: [_Event_ yang tidak mungkin diproses (_poison message_)])[
+  #two-col(
+    card([Dicatat `ERROR` lalu dilewati], accent: red)[
+      - JSON yang tidak dapat dibaca
+      - `event_id` atau `transfer_id` yang bukan UUID 36 karakter
+      - Ditolak PostgreSQL dengan SQLSTATE kelas 22 (data tidak valid, misalnya `22P02`) atau 23 (_constraint_, misalnya `23502`)
+      - _Offset_ tetap di-_commit_, sehingga _event_ berikutnya di _partition_ yang sama tidak tertahan
+    ],
+    card([Diulang sampai berhasil], accent: gold.darken(15%))[
+      - Database atau Kafka mati, koneksi putus, _timeout_
+      - _Error_ skema (kelas 42, misalnya tabel tidak ada): semua _event_ gagal dengan cara yang sama. Melewatinya berarti membuang semua notifikasi, sedangkan mengulangnya hanya menahan konsumsi sampai perbaikan di-_deploy_
+    ],
+  )
+  #v(10pt)
+  #note[_Event_ yang terus gagal tanpa batas memblokir seluruh _partition_. Di _production_, _event_ seperti ini dikirim ke _dead-letter topic_ untuk diperiksa petugas.]
+]
+
 #slide(kicker: "Lab 5", title: "Transfer sebagai saga dengan outbox dan Kafka")[
   #two-col(
     card("Tujuan")[
@@ -439,7 +534,8 @@ _, err = tx.Exec(ctx, `update outbox
   )
   #v(10pt)
   #bullets(size: 13pt,
-    [Uji kegagalan: aktifkan _fault_ di account dengan `make fault-error RATE=0.5`, kirim beberapa transfer, lalu periksa status akhir setiap transfer],
+    [Langkah pertama: `make infra-reset` lalu `make infra-up`. Kafka baru muncul di lab ini dan _unique index_ mutasi membutuhkan database kosong],
+    [Uji kompensasi: transfer ke `to_account` yang tidak terdaftar menghasilkan `COMPENSATED` dan dua mutasi di db-account. Dengan `make fault-error RATE=0.6` dan ±20 transfer bersamaan, sebagian transfer menampilkan log `retrying reversal` lalu berakhir `COMPENSATED` dengan HTTP `503`],
     [Uji duplikat: hentikan notification, jalankan `make replay`, lalu lihat notifikasi ganda],
   )
   #note(kind: "tip")[Langkah lengkap: Panduan Lab, bab Lab 5. Titik awal: tag `lab-04`; hasil akhir: tag `lab-05`.]
@@ -467,32 +563,35 @@ _, err = tx.Exec(ctx, `update outbox
   side: [
     - Tabel `processed_event` dengan `event_id` sebagai _primary key_
     - Tanda \"sudah diproses\" dan notifikasi ditulis dalam satu transaksi
-    - Duplikat dicatat di log lalu dilewati; _offset_ tetap di-_commit_
-    - Setelah ini, `make replay` tidak lagi menghasilkan notifikasi ganda
+    - Duplikat dilaporkan ke _consumer_ (`inserted` = `false`), dicatat di log `duplicate event skipped`, lalu dilewati; _offset_ tetap di-_commit_
+    - Setelah ini, `make replay` tidak lagi menghasilkan notifikasi ganda; `make duplicates` menampilkan daftar kosong
   ],
 )[
 ```go
-tx, err := s.db.Begin(ctx)
-if err != nil {
-    return fmt.Errorf("begin: %w", err)
-}
-defer tx.Rollback(ctx)
+func (s *PostgresStore) Insert(ctx context.Context,
+    n Notification) (Notification, bool, error) {
+    tx, err := s.pool.Begin(ctx)
+    if err != nil {
+        return Notification{}, false, err
+    }
+    defer tx.Rollback(ctx) // no-op after Commit
 
-tag, err := tx.Exec(ctx, `insert into processed_event
-    (event_id) values ($1)
-    on conflict (event_id) do nothing`, ev.EventID)
-if err != nil {
-    return fmt.Errorf("mark processed: %w", err)
+    tag, err := tx.Exec(ctx, `insert into processed_event
+        (event_id) values (@event_id)
+        on conflict (event_id) do nothing`,
+        pgx.NamedArgs{"event_id": n.EventID})
+    if err != nil {
+        return Notification{}, false, err
+    }
+    if tag.RowsAffected() == 0 {
+        return Notification{}, false, nil // duplikat
+    }
+    rows, err := tx.Query(ctx, `insert into notification
+        (event_id, transfer_id, event_type, message)
+        values (...) returning `+columns, ...)
+    // ... stored dari rows
+    return stored, true, tx.Commit(ctx)
 }
-if tag.RowsAffected() == 0 {
-    slog.Info("duplicate event skipped",
-        "event_id", ev.EventID)
-    return tx.Commit(ctx)
-}
-if err := insertNotification(ctx, tx, ev); err != nil {
-    return err
-}
-return tx.Commit(ctx)
 ```
 ]
 
@@ -511,20 +610,22 @@ return tx.Commit(ctx)
     ],
     [
       #table(
-        columns: (1fr, auto),
+        columns: (1fr, 1fr),
         [Permintaan], [Hasil],
-        [_Key_ baru], [Transfer baru dibuat],
-        [_Key_ sama, _body_ sama], [`200`, transfer yang lama],
+        [_Key_ baru], [Transfer baru, saga dijalankan],
+        [_Key_ sama, _body_ sama], [Transfer asli, kode HTTP sama dengan respons pertama, _header_ `Idempotent-Replayed: true`],
+        [_Key_ sama, transfer pertama masih berjalan], [`202`, periksa `GET /transfers/{id}`],
         [_Key_ sama, _body_ berbeda], [`422`],
+        [Format _key_ salah], [`400`],
       )
     ],
-    ratio: (1.1fr, 1fr),
+    ratio: (1fr, 1.1fr),
   )
-  #v(10pt)
-  #bullets(size: 13.5pt,
-    [_Key_ dibuat oleh aplikasi kanal dan disimpan dengan _unique constraint_ di db-transfer],
-    [_Timeout_ di aplikasi kanal tidak lagi berarti \"kirim ulang dan berharap tidak dobel\"],
-    [_Body_ berbeda dengan _key_ sama menandakan kesalahan di klien, maka ditolak],
+  #v(8pt)
+  #bullets(size: 13pt,
+    [_Key_ dibuat oleh aplikasi kanal dan disimpan dengan _unique index_ di db-transfer. _Replay_ transfer yang selesai menjawab `201`, bukan `200`],
+    [Kode yang sama membuat klien yang kehilangan respons pertama mengambil keputusan yang sama. Penyebab `FAILED` dan `COMPENSATED` dibaca ulang dari teks `failure_reason`; desain _production_ menyimpannya di kolom kode tersendiri],
+    [Baris `PENDING` atau `DEBITED` yang tertinggal karena _crash_ tidak dilanjutkan, sehingga _replay_-nya terus menjawab `202`],
   )
 ]
 
@@ -534,7 +635,7 @@ return tx.Commit(ctx)
     [Titik], [Penanda keunikan], [Penyimpanan], [Hasil saat duplikat],
     [Mutasi account (Lab 5)], [`account_number`, `type`, `reference`], [_Unique constraint_ di tabel mutasi], [Saldo saat ini, tanpa mutasi baru],
     [_Consumer_ notification (Lab 6)], [`event_id`], [Tabel `processed_event`], [Dilewati dan dicatat di log],
-    [API transfer (Lab 6)], [_Header_ `Idempotency-Key`], [Kolom unik di tabel transfer], [Transfer lama (`200`) atau `422`],
+    [API transfer (Lab 6)], [_Header_ `Idempotency-Key`], [Kolom unik di tabel transfer], [Transfer asli dengan kode HTTP respons pertama, atau `422` bila _body_ berbeda],
   )
   #v(12pt)
   #note(kind: "tip")[Penanda keunikan dan perubahan data selalu ditulis dalam satu transaksi database. Bila ditulis terpisah, celah duplikatnya hanya berpindah tempat.]
@@ -554,10 +655,9 @@ return tx.Commit(ctx)
   )
   #v(10pt)
   #enum(
-    [Hentikan notification, jalankan `make replay`, lalu jalankan notification kembali],
-    [Hitung baris notifikasi per `transfer_id`: jumlahnya tetap sama],
-    [Panggil Debit dua kali dengan _reference_ yang sama melalui grpcurl: saldo rekening dan jumlah baris mutasi tidak berubah setelah panggilan kedua],
-    [Kirim `POST /transfers` dua kali dengan _key_ yang sama, lalu dengan _body_ berbeda; saldo kedua rekening hanya berubah satu kali],
+    [Hentikan notification, tunggu 10–30 detik hingga sesi _consumer group_ berakhir, jalankan `make replay`, lalu jalankan notification kembali. `make replay` yang terlalu cepat gagal dengan pesan `group ... is Stable`],
+    [`make duplicates` menampilkan daftar kosong: tidak ada _event_ dengan lebih dari satu notifikasi],
+    [Kirim `POST /transfers` dua kali dengan _key_ yang sama: jawaban kedua `201` dengan `Idempotent-Replayed: true`, saldo kedua rekening hanya berubah satu kali. Dengan _body_ berbeda: `422`],
   )
   #note(kind: "tip")[Langkah lengkap: Panduan Lab, bab Lab 6. Titik awal: tag `lab-05`; hasil akhir: tag `lab-06`.]
 ]
@@ -615,7 +715,7 @@ return tx.Commit(ctx)
         "iss": "http://localhost:14444/",
         "sub": "transfer-service",
         "client_id": "transfer-service",
-        "scp": ["account:read", "account:write"],
+        "scp": ["account:write"],
         "iat": 1793182500,
         "exp": 1793186100
       }
@@ -639,31 +739,35 @@ return tx.Commit(ctx)
 
 #code-slide(kicker: "JWT", title: "Validasi token dengan keyfunc dan golang-jwt",
   side: [
-    - keyfunc mengambil JWKS dan memperbaruinya di _background_
-    - Tanda tangan, `iss`, dan `exp` diperiksa oleh `jwt.Parse`
+    - keyfunc mengambil JWKS saat _startup_ dan setiap jam. Token dengan `kid` yang belum dikenal memicu unduhan baru, paling sering sekali per 5 detik
+    - Tanda tangan, `iss`, dan `exp` diperiksa oleh _parser_ `jwt`
     - `WithValidMethods` menolak token dengan `alg` lain, termasuk `none`
-    - _Scope_ diperiksa terpisah sesuai operasi yang dipanggil
+    - _Scope_ diperiksa oleh pemanggil `Verify`, karena setiap operasi membutuhkan _scope_ berbeda
   ],
 )[
 ```go
-jwks, err := keyfunc.NewDefaultCtx(ctx,
-    []string{cfg.OAuthJWKSURL})
-if err != nil {
-    return fmt.Errorf("load JWKS: %w", err)
-}
+keys, err := keyfunc.NewDefaultOverrideCtx(ctx,
+    []string{jwksURL}, keyfunc.Override{
+        RefreshUnknownKID: rate.NewLimiter(
+            rate.Every(5*time.Second), 1),
+        // ...
+    })
 
-func (v *Verifier) Verify(raw, scope string) error {
-    tok, err := jwt.Parse(raw, v.jwks.Keyfunc,
-        jwt.WithIssuer(v.issuer),
-        jwt.WithExpirationRequired(),
-        jwt.WithValidMethods([]string{"RS256"}))
-    if err != nil {
-        return ErrUnauthenticated
+parser := jwt.NewParser(
+    jwt.WithValidMethods([]string{"RS256"}),
+    jwt.WithIssuer(issuer),
+    jwt.WithExpirationRequired(),
+    jwt.WithLeeway(30*time.Second),
+)
+
+func (v *Verifier) Verify(token string) (Claims, error) {
+    var c Claims
+    if _, err := v.parser.ParseWithClaims(token, &c,
+        v.keys.Keyfunc); err != nil {
+        return Claims{}, fmt.Errorf("%w: %w",
+            ErrInvalidToken, err)
     }
-    if !hasScope(tok.Claims, scope) {
-        return ErrForbidden
-    }
-    return nil
+    return c, nil
 }
 ```
 ]
@@ -671,113 +775,149 @@ func (v *Verifier) Verify(raw, scope string) error {
 #code-slide(kicker: "Lab 7", title: [_Middleware_ JWT di REST transfer],
   side: [
     - `POST /transfers` butuh `transfer:write`, `GET /transfers/{id}` butuh `transfer:read`
-    - Token tidak ada atau tidak valid: `401`
+    - Token tidak ada atau tidak valid: `401` dengan _header_ `WWW-Authenticate`
     - Token valid tanpa _scope_: `403`
     - `/healthz` dan `/readyz` terbuka untuk _probe_; `/debug/circuit-breaker` terbuka hanya untuk keperluan lab dan di _production_ tidak diekspos keluar
   ],
 )[
 ```go
-func (a *Auth) Require(scope string,
+func (m *Middleware) Require(scope string,
     next http.Handler) http.Handler {
     return http.HandlerFunc(func(
         w http.ResponseWriter, r *http.Request) {
-        raw, ok := strings.CutPrefix(
-            r.Header.Get("Authorization"), "Bearer ")
+        token, ok := bearer(r.Header.Get("Authorization"))
         if !ok {
+            w.Header().Set("WWW-Authenticate", `Bearer`)
             writeError(w, http.StatusUnauthorized,
-                "missing bearer token")
+                ErrNoToken.Error())
             return
         }
-        switch err := a.v.Verify(raw, scope); {
-        case errors.Is(err, ErrForbidden):
-            writeError(w, http.StatusForbidden,
-                "insufficient scope")
-        case err != nil:
+        claims, err := m.v.Verify(token)
+        if err != nil { // detail hanya di log
             writeError(w, http.StatusUnauthorized,
-                "invalid token")
-        default:
-            next.ServeHTTP(w, r)
+                ErrInvalidToken.Error())
+            return
         }
+        if !claims.HasScope(scope) {
+            writeError(w, http.StatusForbidden,
+                "scope "+scope+" required")
+            return
+        }
+        next.ServeHTTP(w, r.WithContext(context.WithValue(
+            r.Context(), claimsKey{}, claims)))
     })
 }
-
-mux.Handle("POST /transfers",
-    auth.Require("transfer:write", createTransfer))
 ```
 ]
 
 #code-slide(kicker: "Lab 7", title: [_Interceptor_ JWT di gRPC account],
   side: [
     - Token dibaca dari _metadata_ `authorization`
-    - _Health check_ dikecualikan secara eksplisit
-    - _Method_ yang tidak terdaftar ditolak
+    - Predikat `public` meloloskan _method_ di luar `AccountService` (_health_, _reflection_) tanpa token
+    - _Method_ `AccountService` tanpa _scope_ di peta ditolak (_fail closed_)
     - Kode gRPC: `Unauthenticated` dan `PermissionDenied`
+    - Batasannya: hanya panggilan _unary_. RPC _streaming_ dan service lain yang kelak didaftarkan tidak terlindungi
   ],
 )[
 ```go
-var requiredScope = map[string]string{
-    accountv1.AccountService_GetAccount_FullMethodName: "account:read",
-    accountv1.AccountService_Debit_FullMethodName:      "account:write",
-    accountv1.AccountService_Credit_FullMethodName:     "account:write",
-}
-
-func (a *Auth) Unary(ctx context.Context, req any,
+// GRPCScopes: GetAccount -> account:read,
+// Debit dan Credit -> account:write
+return func(ctx context.Context, req any,
     info *grpc.UnaryServerInfo,
-    next grpc.UnaryHandler) (any, error) {
-    if strings.HasPrefix(info.FullMethod, "/grpc.health.v1.") {
-        return next(ctx, req)
+    handler grpc.UnaryHandler) (any, error) {
+    if public(info.FullMethod) {
+        return handler(ctx, req)
     }
-    scope, ok := requiredScope[info.FullMethod]
+    scope, ok := scopes[info.FullMethod]
     if !ok {
         return nil, status.Error(codes.PermissionDenied,
             "method not allowed")
     }
-    raw, err := bearerFromMetadata(ctx)
+    token, err := bearerFromMetadata(ctx)
+    // err: Unauthenticated, missing bearer token
+    claims, err := v.Verify(token)
     if err != nil {
         return nil, status.Error(codes.Unauthenticated,
-            "missing bearer token")
+            ErrInvalidToken.Error())
     }
-    if err := a.v.Verify(raw, scope); err != nil {
-        return nil, toStatus(err)
+    if !claims.HasScope(scope) {
+        return nil, status.Errorf(codes.PermissionDenied,
+            "scope %s required", scope)
     }
-    return next(ctx, req)
+    return handler(context.WithValue(ctx,
+        claimsKey{}, claims), req)
 }
 ```
 ]
 
 #code-slide(kicker: "Lab 7", title: "Token dikirim otomatis oleh klien gRPC",
   side: [
-    - `clientcredentials` meminta token ke Hydra dan menyimpannya sampai hampir kedaluwarsa
-    - `PerRPCCredentials` menempelkan token ke setiap panggilan gRPC
+    - Transfer meminta _scope_ `account:write` saja, sesuai kebutuhannya (_least privilege_)
+    - `tokenCredentials` menyimpan token sampai 10 detik sebelum kedaluwarsa, lalu meminta token baru ke Hydra
+    - Satu _cache_ token digunakan bersama oleh koneksi utama dan koneksi _reversal_
     - Di _production_, koneksi gRPC wajib TLS dan `RequireTransportSecurity` mengembalikan `true`
   ],
 )[
 ```go
-cc := clientcredentials.Config{
+tokenCfg := clientcredentials.Config{
     ClientID:     cfg.OAuthClientID,
     ClientSecret: cfg.OAuthClientSecret,
     TokenURL:     cfg.OAuthTokenURL,
-    Scopes:       []string{"account:read", "account:write"},
+    Scopes:       []string{"account:write"},
 }
+accounts, err := accountclient.New(cfg.AccountGRPCAddr,
+    accountclient.ProductionSettings, tokenCfg.Token, log)
 
-type bearer struct{ ts oauth2.TokenSource }
-
-func (b bearer) GetRequestMetadata(ctx context.Context,
-    _ ...string) (map[string]string, error) {
-    t, err := b.ts.Token()
-    if err != nil {
-        return nil, fmt.Errorf("get token: %w", err)
+func (c *tokenCredentials) GetRequestMetadata(
+    ctx context.Context, _ ...string) (map[string]string, error) {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+    if !c.tok.Valid() {
+        tok, err := c.fetch(ctx)
+        if err != nil {
+            return nil, &tokenFetchError{err: err}
+        }
+        c.tok = tok
     }
-    return map[string]string{
-        "authorization": "Bearer " + t.AccessToken}, nil
+    return map[string]string{"authorization":
+        c.tok.Type() + " " + c.tok.AccessToken}, nil
 }
 
 // Lab tanpa TLS. Production: TLS dan return true.
-func (bearer) RequireTransportSecurity() bool { return false }
+func (*tokenCredentials) RequireTransportSecurity() bool {
+    return false
+}
+```
+]
 
-conn, err := grpc.NewClient(cfg.AccountGRPCAddr,
-    grpc.WithPerRPCCredentials(bearer{cc.TokenSource(ctx)}),
-    /* ... interceptor resiliency ... */)
+#code-slide(kicker: "Lab 7", title: "Token yang ditolak account diganti satu kali",
+  side: [
+    - Token dapat ditolak sebelum kedaluwarsa, misalnya Hydra mengganti _signing key_. Token di _cache_ dibuang dan panggilan diulang sekali dengan token baru
+    - Gagal mengambil token (Hydra mati) menghasilkan `tokenFetchError` dengan kode `Unauthenticated`. Panggilan tidak sampai ke account, tidak diulang, tidak dihitung _circuit breaker_; transfer berakhir `FAILED` dengan `502`
+    - _Interceptor_ ini dipasang paling luar, sebelum _policy_ resiliency, di kedua koneksi
+  ],
+)[
+```go
+func (c *tokenCredentials) refreshOnUnauthenticated(
+    ctx context.Context, method string, req, reply any,
+    cc *grpc.ClientConn, invoker grpc.UnaryInvoker,
+    opts ...grpc.CallOption) error {
+    err := invoker(ctx, method, req, reply, cc, opts...)
+    var fetchErr *tokenFetchError
+    if status.Code(err) != codes.Unauthenticated ||
+        errors.As(err, &fetchErr) {
+        return err
+    }
+    c.mu.Lock()
+    c.tok = nil
+    c.mu.Unlock()
+    return invoker(ctx, method, req, reply, cc, opts...)
+}
+
+// dial(): untuk koneksi utama dan koneksi reversal
+grpc.WithPerRPCCredentials(tokens),
+grpc.WithChainUnaryInterceptor(
+    tokens.refreshOnUnauthenticated, resilience),
 ```
 ]
 
@@ -812,18 +952,19 @@ conn, err := grpc.NewClient(cfg.AccountGRPCAddr,
     card("Sebelum Lab 7", accent: red)[
       ```json
       {"status": "FAILED",
-       "failure_reason": "rpc error: code =
-        Unavailable desc = dial tcp
-        10.0.3.7:9091: connect: refused"}
+       "failure_reason": "debit failed: debit
+        1111111111: rpc error: code = Unavailable
+        desc = dial tcp 10.0.3.7:9091: ..."}
       ```
       Alamat internal dan detail error gRPC terbaca oleh klien.
     ],
     card("Sesudah Lab 7", accent: gold.darken(15%))[
       ```json
       {"status": "FAILED",
-       "failure_reason": "account service unavailable"}
+       "failure_reason": "debit failed:
+        account service unavailable"}
       ```
-      Detail lengkap tetap ditulis ke log service bersama `transfer_id`.
+      Detail lengkap tetap ditulis ke log service bersama `transfer_id`. Transfer yang tersimpan sebelum Lab 7 tetap memuat alasan lama.
     ],
   )
   #v(10pt)
@@ -914,8 +1055,8 @@ conn, err := grpc.NewClient(cfg.AccountGRPCAddr,
 
 #slide(kicker: "Demo Grafana", title: [Dari baris log ke _trace_])[
   ```json
-  {"time":"2026-10-28T10:15:00.412Z","level":"ERROR",
-   "msg":"credit failed","transfer_id":"3b2a...9d",
+  {"time":"2026-10-28T10:15:00.412Z","level":"WARN",
+   "msg":"credit failed after debit, reversing the debit","transfer_id":"3b2a...9d",
    "correlation_id":"c7f3e1...","trace_id":"4bf92f3577b34da6a3ce929d0e0e4736",
    "span_id":"00f067aa0ba902b7","error":"rpc error: code = DeadlineExceeded"}
   ```
