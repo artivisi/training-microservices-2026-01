@@ -54,6 +54,20 @@ Status transfer mengikuti _state machine_ (mesin status) berikut. _Event_ hanya 
 
 Mengapa tidak langsung menulis ke Kafka setelah transaksi database selesai? Database dan Kafka tidak memiliki transaksi bersama. Bila proses berhenti di antara keduanya, ada dua kemungkinan buruk: status sudah tersimpan tetapi _event_-nya hilang, atau _event_ terkirim untuk perubahan yang ternyata di-_rollback_. Dengan tabel `outbox`, perubahan status dan _event_ ditulis ke database yang sama, sehingga keduanya dapat disimpan dalam satu transaksi.
 
+=== Alasan Memilih _Messaging_ dan Kafka
+
+#table(
+  columns: (1fr, 3.6fr),
+  table.header([Pertimbangan], [Keterangan]),
+  [Kebutuhan], [Hasil transfer perlu diketahui _service_ lain: `notification` di lab ini, dan nantinya bisa juga audit atau analitik. Gangguan di `notification` tidak boleh menggagalkan transfer],
+  [Opsi yang dipertimbangkan], [`transfer` memanggil `notification` secara sinkron (REST atau gRPC). `transfer` mengirim _event_ ke _message broker_, yaitu Kafka atau RabbitMQ],
+  [Pilihan di studi kasus], [_Messaging_ dengan Kafka. `transfer` mengirim _event_ melalui _outbox_, dan `notification` membacanya sebagai anggota _consumer group_],
+  [Yang diperoleh], [_Temporal decoupling_: `notification` boleh mati sementara, dan _event_ menunggu di Kafka hingga dibaca. _Load leveling_: lonjakan transfer tidak langsung membebani _consumer_, karena _consumer_ membaca sesuai kapasitasnya. _Fan-out_: _consumer_ baru cukup membaca _topic_ yang sama dengan _consumer group_ sendiri, tanpa perubahan di `transfer`],
+  [Yang dikorbankan], [_Eventual consistency_: notifikasi tercatat beberapa saat setelah transfer selesai. Pengiriman _at-least-once_ menghasilkan duplikat, sehingga _consumer_ harus _idempotent_ (Lab 6), dan urutan hanya terjamin di dalam satu _partition_. Kafka menjadi infrastruktur tambahan yang harus dioperasikan dan dipantau],
+)
+
+Kafka menyimpan _event_ di _log_ dengan masa retensi tertentu. _Event_ tetap tersimpan setelah dibaca, sehingga _consumer_ baru atau _consumer_ yang baru diperbaiki dapat membaca ulang (_replay_) dari _offset_ sebelumnya. Urutan terjamin per _partition_, dan _consumer group_ membagi _partition_ ke beberapa _instance_. RabbitMQ menggunakan model _queue_ dengan _routing_ yang lebih fleksibel melalui _exchange_. Pada _queue_ klasik, _message_ dihapus setelah _consumer_ mengirim _acknowledgement_, sehingga _replay_ tidak tersedia. Studi kasus memilih Kafka karena _replay_ digunakan pada Lab 5 dan Lab 6 (`make replay`), dan urutan _event_ satu transfer terjaga dengan _key_ berupa ID transfer.
+
 == Titik Awal
 
 Lab ini melanjutkan kondisi akhir Lab 4. Peserta yang belum menyelesaikan Lab 4 dapat memulai dari _checkpoint_-nya:

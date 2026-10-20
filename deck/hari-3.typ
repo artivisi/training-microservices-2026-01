@@ -16,13 +16,20 @@
   #table(
     columns: (auto, 1fr, auto),
     [Waktu], [Topik], [Format],
-    [09:00 – 09:45], [Komunikasi asinkron dengan Kafka, _at-least-once delivery_, _transactional outbox_], [Presentasi + demo],
+    [08:45 – 09:45], [Peta concern Hari 3, komunikasi asinkron dengan Kafka, _at-least-once delivery_, _transactional outbox_], [Presentasi + demo],
     [09:45 – 11:15], [*Lab 5*: transfer sebagai saga, event ke Kafka melalui outbox, notification sebagai _consumer_], [_Hands-on_],
     [11:30 – 12:30], [*Lab 6*: _idempotent consumer_ dan _Idempotency-Key_ pada API transfer], [_Hands-on_],
-    [13:30 – 14:15], [OAuth2 _client credentials_, validasi JWT, posisi API _gateway_], [Presentasi + demo],
-    [14:30 – 15:30], [*Lab 7*: _middleware_ JWT pada REST dan _interceptor_ JWT pada gRPC], [_Hands-on_],
-    [15:30 – 16:30], [Pengantar _observability_: log, metrik, _trace_], [Presentasi + demo],
+    [13:30 – 14:30], [OAuth2 _client credentials_, pemilihan _authorization server_, validasi JWT, posisi API _gateway_], [Presentasi + demo],
+    [14:45 – 15:45], [*Lab 7*: _middleware_ JWT pada REST dan _interceptor_ JWT pada gRPC], [_Hands-on_],
+    [15:45 – 16:45], [Pengantar _observability_: log, metrik, _trace_, dan posisinya di kode dan platform], [Presentasi + demo],
+    [16:45 – 17:00], [Ringkasan hari ini pada peta concern, tanya jawab], [Diskusi],
   )
+]
+
+#slide(kicker: "Gambaran besar", title: "Fokus Hari 3 di peta concern microservices")[
+  #concern-map(highlight: (2, 4, 5, 6))
+  #v(8pt)
+  #note[Baris berwarna dibahas hari ini. Sebagian besar jawabannya ada di kode setiap service: saga, outbox, _idempotency_, dan validasi JWT. Platform menyediakan Kafka, Hydra, dan _backend observability_. Untuk _observability_, hari ini hanya konsep, sedangkan implementasinya di Lab 8 (Hari 4).]
 ]
 
 #slide(kicker: "Posisi studi kasus", title: "Kondisi sistem di akhir Hari 2")[
@@ -73,8 +80,62 @@
     ],
   )
   #v(10pt)
-  #note[Transfer tidak perlu menunggu notifikasi terkirim. Jika notification mati, transfer tetap selesai dan notifikasi dikirim setelah notification aktif kembali.]
+  #note[Debit dan credit tetap sinkron karena hasilnya menentukan status transfer. Alasan notifikasi dikirim secara asinkron ada di _slide_ berikutnya.]
 ]
+
+#decision(title: [_Messaging_ untuk notifikasi transfer],
+  [
+    - Nasabah menerima notifikasi untuk setiap transfer yang selesai atau gagal
+    - Gangguan di notification tidak boleh menggagalkan transfer
+    - Service lain, misalnya pencatatan audit, dapat ikut bereaksi atas transfer tanpa mengubah transfer
+  ],
+  [
+    - Transfer memanggil notification secara sinkron (REST atau gRPC) setelah saga selesai
+    - Transfer menulis event ke _message broker_, lalu notification membacanya sebagai _consumer_
+  ],
+  [
+    Event ke _topic_ `transfer-events`, dibaca oleh _consumer group_ `notification`:
+    - _Temporal decoupling_: notification boleh mati, event menunggu di _broker_
+    - _Load leveling_: lonjakan transfer ditampung _broker_, notification memproses sesuai kapasitasnya
+    - _Fan-out_: _consumer_ baru cukup membuat _consumer group_ sendiri
+  ],
+  [
+    - _Eventual consistency_: notifikasi tiba sesaat setelah status transfer berubah, bukan bersamaan
+    - Duplikat dan urutan event harus ditangani penerima (_key_ `transfer_id`, Lab 6)
+    - _Broker_ menjadi infrastruktur baru yang harus dioperasikan dan dipantau
+    - Alur lintas _broker_ hanya terlihat utuh melalui _tracing_ (Lab 8)
+  ],
+)
+
+#decision(title: [Kafka dibandingkan RabbitMQ],
+  ratio: (1fr, 1.6fr),
+  [
+    - Event transfer dapat dibaca ulang (_replay_) setelah _bug_ di _consumer_ diperbaiki
+    - Urutan event milik satu transfer terjaga
+    - Beberapa _replica_ notification berbagi beban
+  ],
+  [
+    #show table.cell: set text(size: 10.5pt)
+    #table(
+      columns: (auto, 1fr, 1fr),
+      inset: (x: 5pt, y: 3.5pt),
+      [Aspek], [Kafka], [RabbitMQ (_classic_ dan _quorum queue_)],
+      [Penyimpanan], [_Log_ yang hanya ditambah, dibaca berdasarkan _offset_], [_Message_ dihapus dari _queue_ setelah _consumer_ mengirim _ack_],
+      [_Replay_], [_Offset_ dikembalikan, selama masih dalam masa retensi], [_Producer_ harus mengirim ulang],
+      [Urutan], [Per _partition_], [Per _queue_ (FIFO), dapat berubah bila terjadi _redelivery_ dan ada beberapa _consumer_],
+      [_Routing_], [Berdasarkan _topic_ dan _key_], [_Exchange_ direct, topic, fanout, headers],
+    )
+  ],
+  [
+    Kafka (_mode_ KRaft, tanpa ZooKeeper) dengan _client_ kafka-go. Retensi dan _replay_ digunakan langsung di Lab 5 dan Lab 6 (`make replay`), urutan dijaga dengan _key_ `transfer_id`
+  ],
+  [
+    - Jumlah _consumer_ aktif per _group_ dibatasi jumlah _partition_ (3 di studi kasus)
+    - Pilihan _routing_ lebih sedikit dibanding _exchange_ RabbitMQ, sehingga penyaringan event dilakukan di _consumer_
+    - Lab menggunakan satu _broker_ tanpa replikasi, sedangkan _production_ butuh beberapa _broker_ dan kebijakan retensi
+    - RabbitMQ Streams juga menyediakan _log_ dengan _replay_. Tabel ini membandingkan _classic_ dan _quorum queue_
+  ],
+)
 
 #let offsets(label) = box(width: 300pt, height: 40pt)[
   #place(left + horizon, text(size: 11pt, weight: "bold", fill: amber.darken(25%), label))
@@ -685,6 +746,27 @@ func (s *PostgresStore) Insert(ctx context.Context,
   #note[Prinsip ini disebut _zero trust_. Setiap panggilan wajib diperiksa, termasuk panggilan dari dalam jaringan sendiri.]
 ]
 
+#decision(title: [OAuth2 _client credentials_ dengan Hydra],
+  [
+    - Identitas per service dan hak akses per operasi (_scope_)
+    - Token diperiksa secara lokal di setiap service
+    - Mengikuti standar terbuka, sehingga _authorization server_ dapat diganti dengan milik organisasi
+  ],
+  [
+    - _API key_ atau _shared secret_ per pasangan service: tanpa _scope_ standar, rotasi manual
+    - mTLS: identitas di tingkat koneksi, butuh PKI, _scope_ tetap diatur sendiri
+    - OAuth2 _client credentials_ + JWT dari Hydra, Keycloak, atau IdP lain
+  ],
+  [
+    OAuth2 _client credentials_ dengan Ory Hydra, dijalankan dari konfigurasi `compose.yaml` yang sudah disediakan. Hydra hanya berperan sebagai _authorization server_ OAuth2/OIDC, tanpa UI _login_ dan tanpa manajemen _user_. Untuk alur dengan _user_, _login_ dan _consent_ diserahkan ke aplikasi terpisah. _Client credentials_ tidak melibatkan _user_, sehingga cukup satu _container_
+  ],
+  [
+    - Pengambilan token bergantung pada Hydra. Bila Hydra mati saat token harus diperbarui, transfer berakhir `FAILED` (saat debit) atau `COMPENSATION_FAILED` (saat _reversal_)
+    - Mengganti dengan Keycloak atau IdP lain cukup dengan mengubah `OAUTH_ISSUER`, `OAUTH_JWKS_URL`, dan `OAUTH_TOKEN_URL`, misalnya _issuer_ `https://sso.example/realms/<realm>` dan JWKS `.../protocol/openid-connect/certs`
+    - Nama _claim_ _scope_ berbeda: Hydra `scp` (_array_), Keycloak `scope` (_string_ dipisah spasi). _Struct_ `Claims` di paket `auth` perlu disesuaikan
+  ],
+)
+
 #slide(kicker: "OAuth2", title: [Alur _client credentials_])[
   #diagram(height: 250pt,
     at(0pt, 130pt, node("transfer", sub: "client: transfer-service", width: 150pt)),
@@ -1008,6 +1090,25 @@ grpc.WithChainUnaryInterceptor(
   #note[Ketiganya ditampilkan di Grafana. Pada monolith satu _stack trace_ cukup untuk menjelaskan kegagalan, sedangkan pada microservices satu transfer melewati tiga service dan sebuah _broker_.]
 ]
 
+#slide(kicker: "Peta concern", title: [_Observability_ di kode dan di platform])[
+  #two-col(
+    card([Di kode setiap service (Lab 8)])[
+      - *Log.* slog dengan _handler_ JSON ke stdout
+      - *Metrik.* Prometheus client (`client_golang`), dibaca dari `GET /metrics`
+      - *Trace.* OpenTelemetry SDK: otelhttp dan otelgrpc, _trace context_ di _header_ Kafka ditulis sendiri, dikirim melalui OTLP
+      - Setiap service punya salinan paket `telemetry` sendiri. Yang dibagi hanya konvensi, misalnya nama _header_ dan nama metrik
+    ],
+    card("Di platform", accent: gold.darken(15%))[
+      - *Prometheus* mengambil (_scrape_) `/metrics` secara berkala
+      - *Loki* menyimpan log, *Tempo* menyimpan _trace_
+      - *Grafana* menampilkan ketiganya dan menghubungkan log dengan _trace_
+      - Lab menggunakan `otel-lgtm`, yaitu semua komponen di atas dalam satu _container_. _Production_ menjalankannya terpisah dengan _storage_ (Hari 4)
+    ],
+  )
+  #v(10pt)
+  #note[*12-factor, faktor XI (_logs_).* Service menulis log sebagai aliran event ke stdout, tanpa mengatur _file_ atau rotasi. Pengumpulan dan penyimpanan log menjadi tugas platform, misalnya `kubectl logs` dan _log collector_ di Kubernetes. Daftar 12-factor diperkenalkan di Hari 1, sesi Anatomi Service Go. Di Lab 8, catatan log yang sama juga dikirim melalui OTLP agar langsung tampil di Loki.]
+]
+
 #slide(kicker: "Konsep", title: [_Correlation ID_ dan _trace context_ lintas service])[
   #flow(
     node("klien", kind: "ext", width: 90pt),
@@ -1115,6 +1216,38 @@ grpc.WithChainUnaryInterceptor(
     [_Idempotency-Key_], [Klien mengirim ulang _request_], [_Endpoint_ membuat transaksi finansial],
     [OAuth2 _client credentials_ + JWT], [Panggilan antarservice tanpa identitas], [Setiap service internal yang mengubah data],
   )
+]
+
+#slide(kicker: "Ringkasan", title: "Peta concern di akhir Hari 3")[
+  #let kondisi = (
+    [Tiga service, masing-masing dengan database sendiri],
+    [REST dari kanal, gRPC transfer ke account, event Kafka ke notification],
+    [failsafe-go di klien gRPC, _reversal_ dengan _policy_ sendiri],
+    [Saga dengan kompensasi, outbox, _idempotent consumer_, _Idempotency-Key_],
+    [JWT di REST transfer dan gRPC account, token dari Hydra],
+    [Konsep log, metrik, _trace_],
+    [_Environment variable_, service berhenti bila nilai wajib kosong],
+    [Alamat `localhost` dari konfigurasi],
+    [Proses Go di laptop],
+    [—],
+  )
+  #let berikutnya = (
+    [—],
+    [—],
+    [_Probe_ dan _rolling update_ (Lab 9)],
+    [_Recovery job_ di _production_],
+    [TLS dan API _gateway_ di _production_],
+    [Lab 8],
+    [ConfigMap dan Secret (Lab 9)],
+    [Kubernetes Service (Lab 9)],
+    [_Container_ dan k3d (Lab 9)],
+    [_Pipeline_ (Lab 10)],
+  )
+  #concern-map(highlight: (2, 4, 5, 6), cols: ("concern",), size: 12pt, inset: (x: 6pt, y: 5.5pt),
+    extra: (
+      (header: [Kondisi studi kasus setelah Lab 7], cells: kondisi, width: 1.6fr),
+      (header: [Berikutnya], cells: berikutnya, width: 1.1fr),
+    ))
 ]
 
 #slide(kicker: "Penutup", title: "Pertanyaan untuk direnungkan")[

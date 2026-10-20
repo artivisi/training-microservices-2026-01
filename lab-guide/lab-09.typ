@@ -50,6 +50,20 @@ Susunan sistem di akhir lab:
 
 Pembagian ini mengikuti praktik umum di _production_: aplikasi berjalan di _cluster_, sedangkan database, _message broker_, dan _authorization server_ sering dikelola terpisah (_managed service_ atau _cluster_ khusus data).
 
+=== Alasan Memilih Kubernetes dan k3d
+
+#table(
+  columns: (1fr, 3.6fr),
+  table.header([Pertimbangan], [Keterangan]),
+  [Kebutuhan], [Ketiga service harus dijalankan, diperbarui tanpa menghentikan layanan, dijalankan ulang otomatis saat macet, dan dapat menemukan alamat satu sama lain. Cara menjalankannya harus sama di laptop, di server _testing_, dan di _production_],
+  [Opsi yang dipertimbangkan], [Docker Compose di beberapa VM, HashiCorp Nomad, atau Kubernetes (_vanilla_, OpenShift, atau layanan Kubernetes _managed_ milik penyedia _cloud_). Untuk Kubernetes di laptop: k3d, minikube, kind, atau Kubernetes bawaan Docker Desktop],
+  [Pilihan di studi kasus], [Setiap service dikemas sebagai _container image_ dan dijalankan di Kubernetes. Untuk training, Kubernetes dijalankan dengan k3d],
+  [Yang diperoleh], [_Image_ yang sama digunakan dari laptop sampai _production_. Kubernetes bersifat deklaratif: kondisi yang diinginkan ditulis di _manifest_, lalu Kubernetes menyesuaikan isi _cluster_ dengan _manifest_ tersebut. Kubernetes juga menjalankan ulang _container_ yang gagal (_self-healing_), menyediakan _rolling update_, nama DNS untuk setiap Service, dan _load balancing_. _Manifest_ yang sama dapat digunakan di OpenShift dan di layanan Kubernetes _managed_ milik penyedia _cloud_. k3d menjalankan k3s (distribusi Kubernetes yang ringan) di dalam _container_ Docker: _cluster_ dibuat dengan `make k3d-up` dan dihapus dengan `make k3d-down`, kebutuhan RAM-nya kecil, Traefik (_ingress controller_) sudah terpasang di k3s, _load balancer_ milik k3d meneruskan _port_ 8080 di laptop ke Traefik, dan `k3d image import` memasukkan _image_ ke _cluster_ tanpa _registry_],
+  [Yang dikorbankan], [Kubernetes adalah platform tambahan yang harus dipelajari dan dioperasikan (_manifest_, RBAC, _upgrade_ _cluster_). _Cluster_ k3d hanya ditujukan untuk pengembangan dan pengujian di laptop. Komponen bawaan k3s seperti Traefik dan metrics-server belum tentu tersedia di _cluster_ lain. k3s tidak sama dengan OpenShift: perbedaan seperti SCC dan Route dibahas di sesi OpenShift pada Hari 4],
+)
+
+Dibandingkan k3d, minikube menyediakan banyak _add-on_ dan dapat berjalan di dalam VM maupun _container_. kind juga menjalankan Kubernetes di dalam Docker, tetapi _Ingress_ dan Service bertipe LoadBalancer membutuhkan komponen tambahan (cloud-provider-kind) yang dijalankan terpisah. Kubernetes bawaan Docker Desktop hanya tersedia bila menggunakan Docker Desktop.
+
 == Titik Awal
 
 Lanjutkan dari kode hasil Lab 8. Peserta yang tertinggal mengambil _checkpoint_ Lab 8:
@@ -549,6 +563,7 @@ Kutipan dari `k8s/base/account/deployment.yaml`:
               path: /readyz
               port: http
             periodSeconds: 5
+            timeoutSeconds: 3
             failureThreshold: 2
           livenessProbe:
             httpGet:
@@ -558,8 +573,19 @@ Kutipan dari `k8s/base/account/deployment.yaml`:
             failureThreshold: 3
 ```]
 
-- *_Readiness probe_* (`/readyz`) memeriksa database milik service. _Pod_ yang gagal dikeluarkan dari daftar _endpoint_ Service sehingga tidak menerima _request_, tetapi tidak di-_restart_. `transfer` tidak memeriksa `account` maupun Kafka di _readiness probe_: gangguan pada keduanya sudah ditangani _circuit breaker_ dan _outbox_.
-- *_Liveness probe_* (`/healthz`) hanya memeriksa bahwa proses masih melayani HTTP. Pemeriksaan dependensi sengaja tidak dilakukan di sini. Jika database mati dan _liveness probe_ ikut gagal, Kubernetes me-_restart_ semua _pod_ sekaligus, padahal _restart_ tidak memperbaiki database.
+Konsep _liveness_ dan _readiness_, termasuk tabel kondisinya, sudah dibahas di Lab 1 (@lab01-liveness-readiness). _Manifest_ di atas menghubungkan kedua _endpoint_ tersebut dengan tindakan Kubernetes:
+
+#table(
+  columns: (1fr, 1.5fr, 2.4fr),
+  table.header([_Probe_], [Pemeriksaan], [Tindakan Kubernetes saat Gagal]),
+  [`readinessProbe`], [`GET /readyz` setiap 5 detik dengan batas waktu 3 detik. Dianggap gagal setelah 2 kegagalan berturut-turut], [_Pod_ dikeluarkan dari daftar _endpoint_ Service sehingga tidak menerima _request_ baru, tetapi _container_ tidak di-_restart_. Kolom `READY` di `kubectl get pods` menjadi `0/1`. _Pod_ kembali menerima _request_ setelah `/readyz` kembali berhasil],
+  [`livenessProbe`], [`GET /healthz` setiap 10 detik. Dianggap gagal setelah 3 kegagalan berturut-turut], [kubelet menghentikan lalu menjalankan ulang _container_. Kolom `RESTARTS` bertambah],
+)
+
+`/readyz` hanya memeriksa database milik service itu sendiri. `transfer` tidak memeriksa `account` maupun Kafka di _readiness probe_, karena gangguan pada keduanya sudah ditangani _circuit breaker_ dan _outbox_. `/healthz` tidak memeriksa dependensi apa pun, sehingga database yang mati tidak memicu _restart_ massal. _Readiness probe_ diberi `timeoutSeconds: 3`, lebih panjang dari batas 2 detik untuk _ping_ database di `/readyz`. Dengan begitu, hasil _ping_ yang menentukan _pod_ siap atau tidak. _Liveness probe_ tetap menggunakan nilai bawaan Kubernetes (`timeoutSeconds: 1`), karena `/healthz` tidak menunggu apa pun.
+
+_Manifest_ tidak memuat `startupProbe`, karena _service_ Go di studi kasus selesai _startup_ dalam waktu kurang dari satu detik. _Service_ dengan _startup_ lambat menambahkan `startupProbe`. Selama _probe_ ini belum berhasil, kubelet menunda _liveness_ dan _readiness probe_, sehingga _container_ tidak di-_restart_ sebelum selesai _startup_.
+
 - *`maxSurge: 1`, `maxUnavailable: 0`.* Saat _rolling update_, Kubernetes membuat satu _pod_ baru terlebih dahulu dan baru menghentikan _pod_ lama setelah _pod_ baru lolos _readiness probe_. Jika _image_ baru gagal berjalan, _rollout_ terhenti dan _pod_ lama tetap melayani _request_.
 
 ==== Deployment: Menghentikan _Pod_ dengan Aman
@@ -826,7 +852,6 @@ kubectl -n bank rollout status deployment/notification --timeout=60s
 
 `rollout status` berhenti dengan pesan _timeout_. _Pod_ baru masuk status `CrashLoopBackOff`, sedangkan _pod_ lama tetap `Running` dan terus memproses _event_, karena Kubernetes tidak menghentikan _pod_ lama sebelum _pod_ pengganti _ready_. Log _pod_ baru menyebut variabel yang hilang:
 
-// TODO(endy): the CrashLoopBackOff outcome is inferred from LoadConfig; observe it on a real cluster before D-1.
 #perintah[```bash
 kubectl -n bank get pods -l app.kubernetes.io/name=notification
 kubectl -n bank logs <nama-pod-baru>
@@ -927,7 +952,7 @@ Jalankan pemeriksaan berikut dari direktori `studi-kasus/` dengan _cluster_ `ban
   Hasilnya _array_ JSON berisi satu notifikasi dengan `"event_type":"TransferCompleted"`.
 + _Trace_ transfer dari _pod_ tetap masuk ke Grafana (`http://localhost:3000`, Tempo), dengan _span_ dari `transfer`, `account`, dan `notification` dalam satu _trace_.
 
-// TODO(endy): run the whole Verifikasi list once on Docker Desktop and once on Linux Docker Engine with k3d 5.9.0 (host.k3d.internal to host-published ports, Traefik on 8080, DNS account:9091).
+// TODO(endy): run the whole Verifikasi list once on Docker Desktop with k3d 5.9.0 (verified on Linux Docker Engine 29.9.1, 20 Okt).
 
 == Masalah Umum
 

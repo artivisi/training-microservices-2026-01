@@ -314,3 +314,73 @@
     })
   )
 }
+
+// ── Peta concern microservices ─────────────────────────────────────────────
+// The ten concerns, same order and wording in every deck.
+#let concern-rows = (
+  (concern: [_Decomposition_ dan kepemilikan data], question: [Batas service dan pemilik data], when: [H1, Lab 1–2], code: [—], platform: [_Database per service_]),
+  (concern: [Komunikasi sinkron dan asinkron], question: [REST, gRPC, _messaging_], when: [H1–H3, Lab 2, 4, 5], code: [`net/http`, grpc-go, kafka-go], platform: [Kafka]),
+  (concern: [_Resiliency_], question: [Tetap berfungsi saat dependensi lambat atau mati], when: [H2, Lab 3–4], code: [failsafe-go], platform: [_Probe_, _restart_, _rolling update_ (H4)]),
+  (concern: [Konsistensi data], question: [Perubahan data lintas database], when: [H2–H3, Lab 5–6], code: [Saga, _outbox_, _idempotency_], platform: [—]),
+  (concern: [_Security_], question: [Siapa boleh memanggil apa], when: [H3, Lab 7], code: [JWT _middleware_ dan _interceptor_], platform: [Hydra (_authorization server_), API _gateway_]),
+  (concern: [_Observability_], question: [Apa yang terjadi dan di mana lambatnya], when: [H3–H4, Lab 8], code: [`slog`, Prometheus _client_, OTel SDK], platform: [Grafana, Loki, Tempo, Prometheus]),
+  (concern: [_Configuration_ (termasuk _centralized config_ dan _secret_)], question: [Nilai yang berbeda per _environment_], when: [H1, Lab 1 (_env var_); H4, Lab 9 (ConfigMap, Secret)], code: [`LoadConfig`], platform: [ConfigMap, Secret, _secret manager_]),
+  (concern: [_Service discovery_ dan _load balancing_], question: [Alamat service tujuan], when: [H4, Lab 9], code: [— (alamat dari konfigurasi)], platform: [Kubernetes Service (DNS), Ingress]),
+  (concern: [_Packaging_ dan _deployment_], question: [Cara service dijalankan dan diperbarui], when: [H4, Lab 9], code: [Dockerfile], platform: [Kubernetes Deployment, _probe_, _rolling update_]),
+  (concern: [_Automation_ (CI/CD)], question: [Dari _commit_ ke _production_], when: [H4, Lab 10], code: [Target `Makefile`], platform: [_Pipeline_ (git server dan runner CI, Jenkins)]),
+)
+
+#let concern-columns = (
+  concern:  (header: [_Concern_], width: 1.35fr),
+  question: (header: [Pertanyaan yang dijawab], width: 1.25fr),
+  when:     (header: [Hari dan lab], width: 1fr),
+  code:     (header: [Di kode (_library_)], width: 1.1fr),
+  platform: (header: [Di platform atau infrastruktur], width: 1.3fr),
+)
+
+// Concern map table.
+//   highlight: row numbers (1-10) to highlight
+//   cols: which of the standard columns to show, in order
+//   extra: additional columns after the standard ones, each
+//          (header: [...], cells: (10 items), width: 1fr)
+#let concern-map(
+  highlight: (),
+  cols: ("concern", "question", "when", "code", "platform"),
+  extra: (),
+  size: 10.5pt,
+  inset: (x: 6pt, y: 4.5pt),
+) = {
+  for k in cols {
+    assert(k in concern-columns, message: "concern-map: unknown column " + repr(k))
+  }
+  for (i, e) in extra.enumerate() {
+    assert("header" in e and "cells" in e, message: "concern-map: extra column " + str(i) + " needs header and cells")
+    assert(e.cells.len() == concern-rows.len(), message: "concern-map: extra column " + str(i) + " needs " + str(concern-rows.len()) + " cells")
+  }
+  let widths = (auto,) + cols.map(k => concern-columns.at(k).width) + extra.map(e => e.at("width", default: 1fr))
+  let headers = ([\#],) + cols.map(k => concern-columns.at(k).header) + extra.map(e => e.header)
+  show table.cell: set text(size: size)
+  table(
+    columns: widths,
+    inset: inset,
+    fill: (_, y) => if y == 0 { panel } else if highlight.contains(y) { gold.lighten(80%) },
+    ..headers,
+    ..concern-rows.enumerate().map(((i, r)) => {
+      let n = i + 1
+      let hl = highlight.contains(n)
+      let cells = cols.map(k => if k == "concern" and hl { strong(r.at(k)) } else { r.at(k) })
+      (if hl { strong[#n] } else [#n],) + cells + extra.map(e => e.cells.at(i))
+    }).flatten(),
+  )
+}
+
+// ── Keputusan desain ───────────────────────────────────────────────────────
+// One design decision per slide, four cards in fixed order and colours.
+#let decision(title: none, ratio: (1fr, 1fr), need, options, choice, consequence) = slide(kicker: "Keputusan desain", title: title)[
+  #grid(columns: ratio, column-gutter: 16pt, row-gutter: 12pt,
+    card("Kebutuhan", need),
+    card("Opsi yang dipertimbangkan", accent: slate, options),
+    card("Pilihan di studi kasus", accent: gold.darken(15%), choice),
+    card([Konsekuensi dan _trade-off_], accent: amber, consequence),
+  )
+]
