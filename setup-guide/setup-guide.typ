@@ -123,6 +123,8 @@ Langkah berikutnya dijalankan di terminal Ubuntu: @linux (lewati bagian Docker E
 
 Editor yang disarankan adalah Visual Studio Code dengan ekstensi *WSL* dan *Go*. Jalankan `code .` dari terminal Ubuntu untuk membuka folder proyek di dalam WSL2.
 
+*Lokasi repositori.* Lakukan `git clone` dari terminal Ubuntu ke _home_ Ubuntu (misalnya `~/training`). Repositori yang di-_clone_ dengan Git for Windows ke folder Windows (`C:\...`, terlihat sebagai `/mnt/c/...` di WSL2) dapat berisi akhir baris CRLF, sehingga skrip _shell_ dan `Makefile` gagal dijalankan. Akses _file_ di `/mnt/c` dari WSL2 juga jauh lebih lambat untuk _build_ Go dan Docker.
+
 = Instalasi di macOS <macos>
 
 + Pasang Command Line Tools (berisi Git dan Make):
