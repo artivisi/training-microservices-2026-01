@@ -14,7 +14,7 @@ Setelah menyelesaikan lab ini, peserta mampu:
 
 == Gambaran
 
-Sampai akhir Lab 1, sistem hanya berisi account service dengan database `account`. Lab 2 menambahkan transfer service. Transfer memindahkan sejumlah uang dari rekening sumber ke rekening tujuan. Data rekening dan saldo tetap dimiliki account service, sehingga transfer service tidak boleh membaca atau mengubah tabel `account` secara langsung. Satu-satunya jalan adalah memanggil API milik account service.
+Hingga akhir Lab 1, sistem hanya berisi account service dengan database `account`. Lab 2 menambahkan transfer service. Transfer memindahkan sejumlah uang dari rekening sumber ke rekening tujuan. Data rekening dan saldo tetap dimiliki account service, sehingga transfer service tidak boleh membaca atau mengubah tabel `account` secara langsung. Transfer service hanya dapat mengakses data tersebut dengan memanggil API milik account service.
 
 ```
                  POST /transfers
@@ -32,12 +32,12 @@ Sampai akhir Lab 1, sistem hanya berisi account service dengan database `account
           └────────────────────┘               └────────────────────┘
 ```
 
-Setiap service memiliki database sendiri di _container_ PostgreSQL yang berbeda. Konsekuensinya, debit dan kredit tidak dapat dibungkus dalam satu transaksi database. Debit terjadi di account service, status transfer tersimpan di transfer service, dan di antara keduanya ada jaringan. Lab ini sengaja membangun versi paling sederhana dari alur tersebut supaya kelemahannya terlihat jelas:
+Setiap service memiliki database sendiri di _container_ PostgreSQL yang berbeda. Konsekuensinya, debit dan kredit tidak dapat dibungkus dalam satu transaksi database. Debit terjadi di account service, sedangkan status transfer tersimpan di transfer service. Kedua service hanya terhubung melalui jaringan. Lab ini sengaja membuat versi paling sederhana dari alur tersebut supaya kelemahannya terlihat jelas:
 
 - *Tanpa _timeout_.* Jika account service lambat, setiap transfer ikut menunggu tanpa batas. Lab 3 menambahkan _timeout_, _retry_, dan _circuit breaker_.
-- *Tanpa kompensasi.* Jika debit berhasil lalu kredit gagal, uang sudah keluar dari rekening sumber tetapi tidak masuk ke rekening tujuan. Transfer ditandai `FAILED` dan dicatat di _log_ untuk dikoreksi manual. Lab 5 menyelesaikan masalah ini dengan pola _saga_.
+- *Tanpa kompensasi.* Jika debit berhasil lalu kredit gagal, uang sudah keluar dari rekening sumber tetapi tidak masuk ke rekening tujuan. Transfer service menandai transfer sebagai `FAILED` dan mencatatnya di _log_ supaya saldo rekening sumber dapat dikoreksi manual. Lab 5 menyelesaikan masalah ini dengan pola _saga_.
 
-Perubahan pada lab ini terbagi dua bagian. Bagian pertama melengkapi account service dengan _endpoint_ debit dan kredit. Bagian kedua membangun transfer service dari awal.
+Perubahan pada lab ini terbagi dua bagian. Bagian pertama melengkapi account service dengan _endpoint_ debit dan kredit. Bagian kedua membuat transfer service dari awal.
 
 == Titik Awal
 
@@ -72,7 +72,7 @@ create table if not exists mutation (
 );
 ```
 
-Schema diterapkan otomatis ketika account service dijalankan (Lab 1 menggunakan `create table if not exists`), sehingga tabel baru langsung terbentuk pada _startup_ berikutnya tanpa menghapus data lama.
+_Schema_ diterapkan otomatis ketika account service dijalankan (Lab 1 menggunakan `create table if not exists`), sehingga tabel baru langsung terbentuk pada _startup_ berikutnya tanpa menghapus data lama.
 
 === Model mutasi dan kontrak `Store`
 
@@ -106,7 +106,7 @@ var (
 )
 ```
 
-Validasi _request_ mutasi diletakkan setelah method `CreateRequest.Validate`. Jumlah harus positif, dan referensi wajib diisi dengan panjang maksimal 64 karakter sesuai kolom `reference`:
+Validasi _request_ mutasi diletakkan setelah _method_ `CreateRequest.Validate`. Jumlah harus positif, dan referensi wajib diisi dengan panjang maksimal 64 karakter sesuai kolom `reference`:
 
 ```go
 func (r MutationRequest) Validate() error {
@@ -124,7 +124,7 @@ func (r MutationRequest) Validate() error {
 }
 ```
 
-Terakhir, tambahkan method `Mutate` ke _interface_ `Store`, di antara `List` dan `Ping`:
+Terakhir, tambahkan _method_ `Mutate` ke _interface_ `Store`, di antara `List` dan `Ping`:
 
 ```go
 	// Mutate debits or credits the account and records the mutation, atomically.
@@ -134,13 +134,13 @@ Terakhir, tambahkan method `Mutate` ke _interface_ `Store`, di antara `List` dan
 
 === Implementasi `Mutate` di PostgreSQL
 
-Perubahan saldo dan pencatatan mutasi harus terjadi bersama-sama: keduanya berhasil atau keduanya batal. Karena itu `Mutate` menggunakan satu transaksi database.
+Perubahan saldo dan pencatatan mutasi harus terjadi bersama-sama. Jika salah satunya gagal, keduanya dibatalkan. Karena itu `Mutate` menggunakan satu transaksi database.
 
-Bagian yang paling penting adalah pemeriksaan saldo. Cara yang sekilas tampak wajar adalah membaca saldo dengan `select`, membandingkannya di Go, lalu menjalankan `update`. Cara tersebut rawan _race condition_: dua debit yang datang bersamaan dapat sama-sama membaca saldo lama, sama-sama lolos pemeriksaan, lalu sama-sama mengurangi saldo. Solusinya adalah meletakkan pemeriksaan saldo di klausa `where` pada perintah `update`. PostgreSQL mengunci baris yang sedang diubah. Debit kedua menunggu kunci tersebut dilepas, lalu mengevaluasi ulang kondisi `where` terhadap saldo terbaru.
+Bagian yang paling penting adalah pemeriksaan saldo. Cara yang sekilas tampak wajar adalah membaca saldo dengan `select`, membandingkannya di Go, lalu menjalankan `update`. Cara tersebut rawan _race condition_: dua debit yang datang bersamaan dapat sama-sama membaca saldo lama, sama-sama lolos pemeriksaan, lalu sama-sama mengurangi saldo. Solusinya adalah meletakkan pemeriksaan saldo di klausa `where` pada perintah `update`. PostgreSQL mengunci baris yang sedang diubah. Debit kedua menunggu _lock_ tersebut dilepas, lalu mengevaluasi ulang kondisi `where` terhadap saldo terbaru.
 
 Jika `update` tidak mengubah satu baris pun, ada dua kemungkinan: nomor rekening tidak ada, atau saldo tidak mencukupi. Kode membedakan keduanya dengan membaca rekening melalui `Get`.
 
-Tambahkan method berikut ke `account/internal/account/store.go`, setelah method `Get`:
+Tambahkan _method_ berikut ke `account/internal/account/store.go`, setelah _method_ `Get`:
 
 ```go
 func (s *PostgresStore) Mutate(ctx context.Context, number string, t MutationType, req MutationRequest) (Account, error) {
@@ -186,13 +186,13 @@ func (s *PostgresStore) Mutate(ctx context.Context, number string, t MutationTyp
 }
 ```
 
-`defer tx.Rollback(ctx)` menjamin transaksi dibatalkan pada setiap jalur `return` yang membawa _error_. Setelah `Commit` berhasil, pemanggilan `Rollback` tidak berpengaruh apa-apa.
+`defer tx.Rollback(ctx)` menjamin transaksi dibatalkan pada setiap `return` yang mengembalikan _error_. Setelah `Commit` berhasil, pemanggilan `Rollback` tidak berpengaruh.
 
 === Endpoint debit dan kredit
 
 Account service kini membutuhkan dua _endpoint_ baru: `POST /accounts/{number}/debit` dan `POST /accounts/{number}/credit`. Logika keduanya identik kecuali `MutationType`, sehingga satu fungsi pembuat _handler_ cukup untuk keduanya.
 
-Kode pembacaan JSON dari Lab 1 juga akan dibutuhkan oleh _handler_ baru. Pindahkan kode tersebut ke fungsi `decode` supaya tidak ditulis dua kali. Tambahkan fungsi berikut di `account/internal/account/http.go`, tepat sebelum `writeError`:
+_Handler_ baru juga membutuhkan kode pembacaan JSON dari Lab 1. Pindahkan kode tersebut ke fungsi `decode` supaya tidak ditulis dua kali. Tambahkan fungsi berikut di `account/internal/account/http.go`, tepat sebelum `writeError`:
 
 ```go
 // decode reads a JSON body into dst and answers 400 itself when the body is invalid.
@@ -207,7 +207,7 @@ func decode(w http.ResponseWriter, r *http.Request, dst any) bool {
 }
 ```
 
-Lalu ganti awal method `create` sehingga menggunakan `decode`:
+Lalu ganti awal _method_ `create` sehingga menggunakan `decode`:
 
 ```go
 func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
@@ -218,7 +218,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	// ... validasi dan penyimpanan tetap seperti Lab 1
 ```
 
-Tambahkan _handler_ mutasi setelah method `get`. Pemetaan _error_ ke status HTTP menjadi kontrak bagi pemanggil: `404` berarti rekening tidak ada, `422 Unprocessable Entity` berarti saldo tidak mencukupi, dan `500` berarti kegagalan teknis.
+Tambahkan _handler_ mutasi setelah _method_ `get`. Pemetaan _error_ ke status HTTP menjadi kontrak bagi pemanggil: `404` berarti rekening tidak ada, `422 Unprocessable Entity` berarti saldo tidak mencukupi, dan `500` berarti kegagalan teknis.
 
 ```go
 func (h *Handler) mutate(t MutationType) http.HandlerFunc {
@@ -247,7 +247,7 @@ func (h *Handler) mutate(t MutationType) http.HandlerFunc {
 }
 ```
 
-Daftarkan kedua _route_ di method `Routes`, setelah `GET /accounts/{number}`:
+Daftarkan kedua _route_ di _method_ `Routes`, setelah `GET /accounts/{number}`:
 
 ```go
 	mux.HandleFunc("POST /accounts/{number}/debit", h.mutate(Debit))
@@ -256,7 +256,7 @@ Daftarkan kedua _route_ di method `Routes`, setelah `GET /accounts/{number}`:
 
 === Pengujian account service
 
-Test _handler_ dari Lab 1 menggunakan `fakeStore`, implementasi `Store` di memori. Karena _interface_ `Store` kini memiliki method `Mutate`, `fakeStore` tidak lagi memenuhi _interface_ tersebut dan test gagal dikompilasi. Tambahkan method berikut di `account/internal/account/http_test.go`, sebelum method `Ping` milik `fakeStore`:
+Test _handler_ dari Lab 1 menggunakan `fakeStore`, implementasi `Store` di memori. Karena _interface_ `Store` kini memiliki _method_ `Mutate`, `fakeStore` tidak lagi memenuhi _interface_ tersebut dan test gagal dikompilasi. Tambahkan _method_ berikut di `account/internal/account/http_test.go`, sebelum _method_ `Ping` milik `fakeStore`:
 
 ```go
 func (f *fakeStore) Mutate(_ context.Context, number string, t MutationType, req MutationRequest) (Account, error) {
@@ -329,11 +329,11 @@ make infra-up
 docker compose ps
 ```]
 
-Keluaran `docker compose ps` harus menampilkan `db-account` dan `db-transfer` dengan status `healthy`.
+_Output_ `docker compose ps` harus menampilkan `db-account` dan `db-transfer` dengan status `healthy`.
 
 === Modul Go untuk transfer service
 
-Setiap service adalah modul Go tersendiri dengan `go.mod` sendiri. Pemisahan ini membuat setiap service dapat dibangun, diuji, dan di-_deploy_ secara terpisah. File `go.work` menyatukan modul-modul tersebut selama pengembangan di laptop, sehingga perintah `go` dapat dijalankan dari folder mana pun di dalam `studi-kasus/`.
+Setiap service adalah modul Go tersendiri dengan `go.mod` sendiri. Pemisahan ini membuat setiap service dapat di-_build_, diuji, dan di-_deploy_ secara terpisah. File `go.work` menyatukan modul-modul tersebut selama pengembangan di laptop, sehingga perintah `go` dapat dijalankan dari folder mana pun di dalam `studi-kasus/`.
 
 #perintah[```bash
 mkdir -p transfer/internal/transfer transfer/internal/accountclient
@@ -357,7 +357,7 @@ use (
 )
 ```
 
-Daftarkan juga transfer service di `Makefile` level atas supaya `make test` menguji kedua service. Ubah baris pertama menjadi:
+Daftarkan juga transfer service di `Makefile` di folder `studi-kasus/` supaya `make test` menguji kedua service. Ubah baris pertama menjadi:
 
 ```make
 SERVICES := account transfer
@@ -365,11 +365,11 @@ SERVICES := account transfer
 
 === Domain transfer
 
-Paket `transfer` berisi model, validasi, dan dua _interface_ yang dibutuhkan logika transfer: `Store` untuk database milik sendiri, dan `AccountClient` untuk account service. Logika transfer hanya bergantung pada kedua _interface_ ini. Implementasi konkretnya (PostgreSQL dan _HTTP client_) disambungkan di `main.go`, sehingga logika transfer dapat diuji dengan implementasi palsu tanpa database dan tanpa jaringan.
+_Package_ `transfer` berisi model, validasi, dan dua _interface_ yang dibutuhkan logika transfer, yaitu `Store` untuk mengakses database milik transfer service dan `AccountClient` untuk memanggil account service. Logika transfer hanya bergantung pada kedua _interface_ ini. Implementasi konkretnya (PostgreSQL dan _HTTP client_) disambungkan di `main.go`, sehingga logika transfer dapat diuji dengan implementasi _fake_ (tiruan untuk pengujian) tanpa database dan tanpa jaringan.
 
 Transfer memiliki tiga status. `PENDING` berarti transfer sudah dicatat tetapi belum selesai diproses. `COMPLETED` berarti debit dan kredit berhasil. `FAILED` berarti salah satu langkah gagal, dengan alasan tersimpan di `failure_reason`.
 
-Dua _error_ bisnis, `ErrAccountNotFound` dan `ErrInsufficientFunds`, didefinisikan di sini, bukan di paket _HTTP client_. Dengan begitu logika transfer dan _handler_ HTTP dapat mengenali penolakan bisnis tanpa mengetahui bahwa account service diakses melalui REST. Pada Lab 4, REST diganti gRPC dan kedua _error_ ini tetap sama.
+_Error_ bisnis `ErrAccountNotFound` dan `ErrInsufficientFunds` sengaja didefinisikan di _package_ `transfer` dan tidak diletakkan di _package_ _HTTP client_. Dengan begitu logika transfer dan _handler_ HTTP dapat mengenali penolakan bisnis tanpa mengetahui bahwa account service diakses melalui REST. Pada Lab 4, REST diganti gRPC dan kedua _error_ ini tetap sama.
 
 Buat `transfer/internal/transfer/transfer.go`:
 
@@ -479,7 +479,7 @@ create table if not exists transfer (
 
 Perhatikan bahwa kolom `from_account` dan `to_account` tidak memiliki _foreign key_. Tabel `account` berada di database lain, sehingga keberadaan rekening hanya dapat diperiksa melalui account service.
 
-Implementasi `Store` mengikuti pola account service dari Lab 1: _connection pool_ pgx, registrasi tipe `decimal`, dan schema yang di-_embed_ ke dalam _binary_. Semua _query_ mengembalikan kolom yang sama dalam urutan yang sama, sehingga cukup satu konstanta `columns` dan satu fungsi pembantu `one`. Ada satu kasus khusus: `GET /transfers/abc` mengirim teks yang bukan UUID, dan PostgreSQL menolaknya dengan kode `22P02`. Bagi pemanggil API, kasus ini sama saja dengan transfer yang tidak ditemukan.
+Implementasi `Store` mengikuti pola account service dari Lab 1: _connection pool_ pgx, registrasi tipe `decimal`, dan _schema_ yang di-_embed_ ke dalam _binary_. Semua _query_ mengembalikan kolom yang sama dalam urutan yang sama, sehingga cukup satu konstanta `columns` dan satu fungsi _helper_ `one`. Ada satu kasus khusus: `GET /transfers/abc` mengirim teks yang bukan UUID, dan PostgreSQL menolaknya dengan kode `22P02`. Bagi pemanggil API, kasus ini sama saja dengan transfer yang tidak ditemukan.
 
 Buat `transfer/internal/transfer/store.go`:
 
@@ -578,9 +578,9 @@ func (s *PostgresStore) one(ctx context.Context, sql string, args pgx.NamedArgs)
 
 `Service.Execute` menjalankan empat langkah secara berurutan: catat transfer dengan status `PENDING`, debit rekening sumber, kredit rekening tujuan, lalu ubah status menjadi `COMPLETED`. Jika debit atau kredit gagal, status menjadi `FAILED` dan alasannya disimpan.
 
-Transfer dicatat lebih dahulu, sebelum memanggil account service. Urutan ini memastikan setiap mutasi di account service selalu memiliki pasangan transfer yang dapat ditelusuri, termasuk ketika proses berhenti di tengah jalan.
+Transfer service mencatat transfer lebih dahulu sebelum memanggil account service. Urutan ini memastikan setiap mutasi di account service selalu memiliki pasangan transfer yang dapat ditelusuri, termasuk ketika proses berhenti di tengah jalan.
 
-Komentar _known gap_ pada kode di bawah menjelaskan kelemahan utama lab ini. Debit dan kredit adalah dua panggilan terpisah ke service lain, tanpa transaksi database bersama. Ketika kredit gagal setelah debit berhasil, transfer ditandai `FAILED`, tetapi saldo rekening sumber tetap berkurang. Satu-satunya penanganan pada lab ini adalah _log_ level `ERROR` sebagai penanda bahwa rekening sumber perlu dikoreksi manual.
+Komentar _known gap_ pada kode di bawah menjelaskan kelemahan utama lab ini. Debit dan kredit dijalankan sebagai dua panggilan terpisah ke service lain, tanpa transaksi database bersama. Ketika kredit gagal setelah debit berhasil, transfer ditandai `FAILED`, tetapi saldo rekening sumber tetap berkurang. Pada lab ini, kondisi tersebut hanya ditangani dengan _log_ level `ERROR` sebagai penanda bahwa rekening sumber perlu dikoreksi manual.
 
 Buat `transfer/internal/transfer/service.go`:
 
@@ -652,11 +652,11 @@ func (s *Service) Get(ctx context.Context, id string) (Transfer, error) {
 func (s *Service) Ping(ctx context.Context) error { return s.store.Ping(ctx) }
 ```
 
-Fungsi `fail` mengembalikan `cause` apa adanya, yaitu _error_ dari account client. Pemanggil `Execute` dapat memeriksa _error_ ini dengan `errors.Is(err, ErrInsufficientFunds)` untuk menentukan status HTTP.
+Fungsi `fail` mengembalikan `cause` apa adanya, yaitu _error_ dari `AccountClient`. Pemanggil `Execute` dapat memeriksa _error_ ini dengan `errors.Is(err, ErrInsufficientFunds)` untuk menentukan status HTTP.
 
 === REST client ke account service
 
-Paket `accountclient` mengimplementasikan _interface_ `AccountClient` dengan memanggil _endpoint_ debit dan kredit milik account service. Tugas utamanya adalah menerjemahkan respons HTTP menjadi _error_ yang dipahami paket `transfer`:
+_Package_ `accountclient` mengimplementasikan _interface_ `AccountClient` dengan memanggil _endpoint_ debit dan kredit milik account service. Tugas utamanya adalah menerjemahkan respons HTTP menjadi _error_ yang dipahami _package_ `transfer`:
 
 #table(
   columns: (auto, 1fr),
@@ -668,7 +668,7 @@ Paket `accountclient` mengimplementasikan _interface_ `AccountClient` dengan mem
   [Gagal terhubung], [_Error_ dari `http.Client.Do`, misalnya _connection refused_],
 )
 
-Pembungkusan dengan `%w` menambahkan konteks (operasi dan nomor rekening) ke pesan _error_, sementara `errors.Is` tetap dapat mengenali _error_ aslinya.
+_Wrapping_ dengan `%w` menambahkan konteks (operasi dan nomor rekening) ke pesan _error_, sementara `errors.Is` tetap dapat mengenali _error_ aslinya.
 
 Perhatikan konstruktor `New`. `http.Client{}` tanpa nilai `Timeout` akan menunggu respons tanpa batas waktu. Kelemahan ini sengaja dibiarkan dan dicatat di komentar, karena Lab 3 membahasnya secara khusus.
 
@@ -752,9 +752,9 @@ _Handler_ transfer mengikuti pola account service: `decode`, validasi, panggil l
   columns: (auto, 1fr),
   [Status HTTP], [Kondisi],
   [`201 Created`], [Debit dan kredit berhasil, transfer `COMPLETED`],
-  [`400 Bad Request`], [JSON tidak valid atau validasi gagal; transfer tidak dicatat],
-  [`422 Unprocessable Entity`], [Penolakan bisnis (rekening tidak ada, saldo kurang); transfer `FAILED`],
-  [`502 Bad Gateway`], [Account service gagal atau tidak dapat dihubungi; transfer `FAILED`],
+  [`400 Bad Request`], [JSON tidak valid atau validasi gagal, sehingga transfer tidak dicatat],
+  [`422 Unprocessable Entity`], [Penolakan bisnis (rekening tidak ada, saldo kurang) sehingga transfer berstatus `FAILED`],
+  [`502 Bad Gateway`], [Account service gagal atau tidak dapat dihubungi, sehingga transfer berstatus `FAILED`],
   [`500 Internal Server Error`], [Transfer bahkan tidak sempat dicatat, misalnya database transfer bermasalah],
 )
 
@@ -762,9 +762,9 @@ Pada respons `422` dan `502`, isi respons tetap berupa data transfer lengkap den
 
 Dua keputusan desain pada _handler_ ini perlu diperhatikan.
 
-*`context.WithoutCancel`.* Secara bawaan, _context_ dari `r.Context()` dibatalkan ketika klien memutus koneksi. Jika _context_ tersebut diteruskan ke `Execute`, klien yang memutus koneksi di tengah proses dapat menghentikan transfer tepat di antara debit dan kredit. `context.WithoutCancel` mempertahankan nilai-nilai di dalam _context_ tetapi melepas sinyal pembatalannya, sehingga transfer yang sudah dimulai tetap berjalan hingga selesai.
+*`context.WithoutCancel`.* Secara _default_, _context_ dari `r.Context()` dibatalkan ketika klien memutus koneksi. Jika _context_ tersebut diteruskan ke `Execute`, klien yang memutus koneksi di tengah proses dapat menghentikan transfer tepat di antara debit dan kredit. `context.WithoutCancel` mempertahankan nilai-nilai di dalam _context_ tetapi melepas sinyal pembatalannya, sehingga transfer yang sudah dimulai tetap berjalan hingga selesai.
 
-*`readyz` hanya memeriksa database sendiri.* Account service memiliki _probe_ sendiri. Jika `readyz` milik transfer service ikut gagal ketika account service mati, transfer service akan dikeluarkan dari _load balancer_ karena gangguan yang tidak dapat diperbaikinya sendiri, dan `GET /transfers/{id}` yang tidak membutuhkan account service ikut tidak dapat diakses.
+*`readyz` hanya memeriksa database sendiri.* Account service memiliki _probe_ sendiri. Jika `readyz` milik transfer service ikut gagal ketika account service mati, transfer service akan dikeluarkan dari _load balancer_ padahal sumber gangguannya ada di account service, dan `GET /transfers/{id}` yang tidak membutuhkan account service ikut tidak dapat diakses.
 
 Buat `transfer/internal/transfer/http.go`:
 
@@ -881,11 +881,11 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 }
 ```
 
-Fungsi `decode`, `writeError`, dan `writeJSON` memang sama persis dengan milik account service. Duplikasi kecil seperti ini disengaja: berbagi kode lewat modul bersama akan membuat kedua service saling terikat pada setiap perubahan modul tersebut.
+Fungsi `decode`, `writeError`, dan `writeJSON` memang sama persis dengan milik account service. Duplikasi kecil seperti ini disengaja. Jika kode tersebut dipindahkan ke modul bersama, kedua service akan saling terikat pada setiap perubahan modul itu.
 
 === Konfigurasi dan `main.go`
 
-Transfer service membutuhkan tiga variabel _environment_: alamat HTTP, URL database, dan URL account service. Ketiganya wajib diisi. Jika salah satu kosong, service berhenti pada _startup_ dengan pesan yang menyebutkan nama variabelnya, bukan berjalan dengan nilai tebakan yang mungkin mengarah ke database atau service yang salah.
+Transfer service membutuhkan tiga variabel _environment_: alamat HTTP, URL database, dan URL account service. Ketiganya wajib diisi. Jika salah satu kosong, service berhenti pada _startup_ dengan pesan yang menyebutkan nama variabelnya. Service tidak menebak nilainya sendiri, karena nilai tebakan dapat mengarah ke database atau service yang salah.
 
 Buat `transfer/config.go`:
 
@@ -1038,7 +1038,7 @@ cd ..
 
 === Pengujian transfer service
 
-Test logika transfer tidak membutuhkan database maupun account service. Keduanya diganti implementasi palsu: `fakeStore` menyimpan transfer di _map_, dan `fakeAccounts` mengembalikan _error_ yang sudah ditentukan sambil mencatat setiap panggilan. Tiga skenario diuji:
+Test logika transfer tidak membutuhkan database maupun account service. Keduanya diganti implementasi _fake_: `fakeStore` menyimpan transfer di _map_, dan `fakeAccounts` mengembalikan _error_ yang sudah ditentukan sambil mencatat setiap panggilan. Tiga skenario diuji:
 
 - transfer berhasil: status `COMPLETED`, dua panggilan (debit lalu kredit);
 - saldo tidak cukup: status `FAILED`, hanya satu panggilan, karena kredit tidak boleh dijalankan setelah debit ditolak;
@@ -1151,7 +1151,7 @@ func TestValidate(t *testing.T) {
 }
 ```
 
-Account client diuji terhadap server palsu dari `net/http/httptest`. `httptest.NewServer` menjalankan server HTTP sungguhan di port acak pada `localhost`, sehingga pemetaan status HTTP ke _error_ dapat diperiksa tanpa menjalankan account service. Buat `transfer/internal/accountclient/client_test.go`:
+_Package_ `accountclient` diuji menggunakan server _fake_ dari `net/http/httptest`. `httptest.NewServer` menjalankan server HTTP sungguhan di port acak pada `localhost`, sehingga pemetaan status HTTP ke _error_ dapat diperiksa tanpa menjalankan account service. Buat `transfer/internal/accountclient/client_test.go`:
 
 ```go
 package accountclient
@@ -1214,7 +1214,7 @@ Jalankan test kedua service dari folder `studi-kasus/`:
 make test
 ```]
 
-Keluaran berisi baris `ok` untuk paket `account/internal/account`, `transfer/internal/accountclient`, dan `transfer/internal/transfer`, tanpa satu pun `FAIL`.
+_Output_ `make test` berisi baris `ok` untuk _package_ `account/internal/account`, `transfer/internal/accountclient`, dan `transfer/internal/transfer`, tanpa satu pun `FAIL`.
 
 === Konfigurasi wajib
 
@@ -1242,7 +1242,7 @@ make -C account run
 make -C transfer run
 ```]
 
-Terminal 2 menampilkan baris `msg="transfer service listening" addr=:8082 account_service=http://localhost:8081`. Buka terminal ketiga untuk perintah-perintah berikutnya, lalu buat dua rekening uji. Jika nomor rekening ini sudah dibuat pada Lab 1, account service menjawab `409` dan rekening yang lama dapat langsung digunakan; sesuaikan angka saldo pada langkah berikutnya.
+Terminal 2 menampilkan baris `msg="transfer service listening" addr=:8082 account_service=http://localhost:8081`. Buka terminal ketiga untuk perintah-perintah berikutnya, lalu buat dua rekening uji. Jika nomor rekening ini sudah dibuat pada Lab 1, account service menjawab `409` dan rekening yang lama dapat langsung digunakan. Dalam kasus tersebut, sesuaikan angka saldo pada langkah berikutnya.
 
 #perintah[```bash
 curl -s -X POST localhost:8081/accounts -H 'Content-Type: application/json' \
@@ -1310,7 +1310,7 @@ curl -s localhost:8081/accounts/1111111111
 Respons transfer berstatus `422` dengan `"status":"FAILED"` dan `"failure_reason":"credit failed after debit: credit 9999999999: account not found"`. Terminal transfer service menampilkan _log_ `level=ERROR msg="credit failed after debit, source account needs manual reversal"`. Namun saldo `1111111111` turun dari `"400000"` menjadi `"350000"`: uang Rp50.000 sudah keluar dan tidak masuk ke mana pun. Tabel `mutation` mencatat satu `DEBIT` dengan `reference` transfer tersebut, tanpa pasangan `CREDIT`.
 
 #note[
-  Validasi nomor rekening tujuan sebelum debit memang dapat mencegah kasus ini secara khusus. Namun kredit tetap dapat gagal karena sebab lain, misalnya account service mati tepat setelah debit. Masalah intinya adalah tidak adanya transaksi bersama antara dua panggilan, dan Lab 5 menyelesaikannya dengan kompensasi pada pola _saga_.
+  Validasi nomor rekening tujuan sebelum debit memang dapat mencegah kasus ini secara khusus. Namun kredit tetap dapat gagal karena sebab lain, misalnya account service mati tepat setelah debit. Akar masalahnya, kedua panggilan tidak berada dalam satu transaksi database bersama. Lab 5 menyelesaikan masalah ini dengan kompensasi pada pola _saga_.
 ]
 
 === Account service mati
@@ -1331,25 +1331,25 @@ Transfer menghasilkan `502 Bad Gateway` dengan `"status":"FAILED"` dan `failure_
 
 *`missing go.sum entry` atau `no required module provides package`.* _Dependency_ belum diunduh. Jalankan `go get` dan `go mod tidy` di folder `transfer/` seperti pada langkah Makefile dan _dependency_.
 
-*Test account gagal dikompilasi dengan pesan `*fakeStore does not implement Store (missing method Mutate)`.* Method `Mutate` sudah ditambahkan ke _interface_ `Store` tetapi belum ke `fakeStore` di `http_test.go`.
+*Test account gagal dikompilasi dengan pesan `*fakeStore does not implement Store (missing method Mutate)`.* _Method_ `Mutate` sudah ditambahkan ke _interface_ `Store` tetapi belum ke `fakeStore` di `http_test.go`.
 
 *`make: *** missing separator. Stop.`* Baris perintah di `transfer/Makefile` diawali spasi. Ganti dengan karakter _tab_. Sebagian editor mengubah _tab_ menjadi spasi secara otomatis.
 
 *Transfer service gagal _startup_ dengan `connect to database: ... connection refused` pada port 15433.* _Container_ `db-transfer` belum berjalan. Periksa `compose.yaml`, lalu jalankan `make infra-up` dan `docker compose ps`.
 
-*`relation "mutation" does not exist` di _log_ account service.* Account service yang sedang berjalan masih versi lama. Hentikan dengan `Ctrl+C` dan jalankan ulang `make -C account run` supaya schema baru diterapkan.
+*`relation "mutation" does not exist` di _log_ account service.* Account service yang sedang berjalan masih versi lama. Hentikan dengan `Ctrl+C` dan jalankan ulang `make -C account run` supaya _schema_ baru diterapkan.
 
-*Semua transfer gagal dengan `422` dan `failure_reason` `debit failed: debit ...: account not found`, termasuk untuk rekening yang ada.* Nilai `ACCOUNT_SERVICE_URL` diakhiri `/accounts`, sehingga path permintaan menjadi `/accounts/accounts/{number}/debit` dan account service menjawab `404`. Paket `accountclient` menerjemahkan setiap `404` menjadi `ErrAccountNotFound`, sehingga kesalahan konfigurasi ini terlihat seperti penolakan bisnis. Hapus `/accounts` dari nilai tersebut.
+*Semua transfer gagal dengan `422` dan `failure_reason` `debit failed: debit ...: account not found`, termasuk untuk rekening yang ada.* Nilai `ACCOUNT_SERVICE_URL` diakhiri `/accounts`, sehingga _request_ dikirim ke `/accounts/accounts/{number}/debit` dan account service menjawab `404`. _Package_ `accountclient` menerjemahkan setiap `404` menjadi `ErrAccountNotFound`, sehingga kesalahan konfigurasi ini terlihat seperti penolakan bisnis. Hapus `/accounts` dari nilai tersebut.
 
-*`bind: address already in use` pada port 8081 atau 8082.* Masih ada proses lama yang berjalan, misalnya dari terminal lain. Hentikan proses tersebut, atau cari dengan `lsof -i :8082`.
+*`bind: address already in use` pada port 8081 atau 8082.* Masih ada proses lama yang berjalan, misalnya dari terminal lain. Cari proses tersebut dengan `lsof -i :8082`, lalu hentikan.
 
 == Eksplorasi Mandiri
 
 + *Account service yang lambat.* Lab ini menyebut _HTTP client_ tanpa _timeout_ sebagai kelemahan. Buktikan dengan menghentikan sementara proses account service. Cari PID _binary_ hasil `go run` dengan `pgrep -f 'exe/account'`, hentikan sementara dengan `kill -STOP <pid>`, lalu kirim transfer. Amati bahwa `curl` menunggu tanpa batas. Lanjutkan kembali proses tersebut dengan `kill -CONT <pid>` dan perhatikan bahwa transfer yang tertunda langsung selesai. Bayangkan dampaknya jika ratusan transfer menunggu bersamaan.
 + *Debit bersamaan.* Buat rekening dengan saldo 100000, lalu kirim sepuluh transfer masing-masing 20000 secara paralel, misalnya dengan `for i in $(seq 10); do curl ... & done; wait`. Hitung jumlah transfer `COMPLETED` dan periksa bahwa saldo tidak pernah negatif. Jelaskan peran klausa `where balance + @delta >= 0` dalam hasil tersebut.
-+ *Rekonsiliasi.* Tulis _query_ SQL di database `account` yang menampilkan referensi transfer dengan `DEBIT` tetapi tanpa `CREDIT`. _Query_ ini adalah bentuk paling sederhana dari laporan rekonsiliasi untuk koreksi manual pada _known gap_.
-+ *Jumlah dengan tiga digit desimal.* Kirim transfer dengan `"amount":"100.005"`. Transfer tetap `COMPLETED`, tetapi jumlah yang tercatat adalah `"100.01"`. Kolom `numeric(19, 2)` di database transfer membulatkan nilai tersebut tanpa _error_, lalu debit dan kredit ke account service menggunakan nilai hasil pembulatan. Rumuskan aturan validasi `amount` yang menolak _request_ ini dengan `400`, bukan diam-diam membulatkannya. Lab 4 menambahkan aturan tersebut pada kedua service.
-+ *Context yang dibatalkan.* Ganti sementara `context.WithoutCancel(r.Context())` dengan `r.Context()`, gabungkan dengan percobaan nomor 1, lalu hentikan `curl` dengan `Ctrl+C` sebelum proses account service dilanjutkan dengan `kill -CONT`. Amati status akhir transfer tersebut, lalu kembalikan kodenya.
++ *Rekonsiliasi.* Tulis _query_ SQL di database `account` yang menampilkan referensi transfer dengan `DEBIT` tetapi tanpa `CREDIT`. _Query_ ini menjadi laporan rekonsiliasi paling sederhana untuk koreksi manual pada _known gap_.
++ *Jumlah dengan tiga digit desimal.* Kirim transfer dengan `"amount":"100.005"`. Transfer tetap `COMPLETED`, tetapi jumlah yang tercatat adalah `"100.01"`. Kolom `numeric(19, 2)` di database transfer membulatkan nilai tersebut tanpa _error_, lalu debit dan kredit ke account service menggunakan nilai hasil pembulatan. Rumuskan aturan validasi `amount` yang menolak _request_ ini dengan `400` sehingga jumlah tersebut tidak lagi dibulatkan tanpa _error_. Lab 4 menambahkan aturan tersebut pada kedua service.
++ *_Context_ yang dibatalkan.* Ganti sementara `context.WithoutCancel(r.Context())` dengan `r.Context()`, gabungkan dengan percobaan nomor 1, lalu hentikan `curl` dengan `Ctrl+C` sebelum proses account service dilanjutkan dengan `kill -CONT`. Amati status akhir transfer tersebut, lalu kembalikan kodenya.
 
 == Checkpoint
 
@@ -1359,7 +1359,7 @@ Kondisi akhir lab ini tersedia sebagai tag `lab-02`. Bandingkan hasil kerja deng
 git diff lab-02 -- .
 ```]
 
-Tag `lab-02` juga sudah berisi _fault injector_ yang dibutuhkan Lab 3, yaitu paket `account/internal/fault` dan perubahan `account/main.go` yang memasangnya. Perbedaan pada kedua bagian tersebut, serta pada `go.work.sum`, dapat diabaikan karena tidak ditulis pada langkah lab ini. Karena paket tersebut ada di _checkpoint_, `make test` pada tag `lab-02` juga menampilkan baris `ok` untuk `account/internal/fault`.
+Tag `lab-02` juga sudah berisi _fault injector_ yang dibutuhkan Lab 3, yaitu _package_ `account/internal/fault` dan perubahan `account/main.go` yang memasangnya. Perbedaan pada kedua bagian tersebut, serta pada `go.work.sum`, dapat diabaikan karena tidak ditulis pada langkah lab ini. Karena _package_ tersebut ada di _checkpoint_, `make test` pada tag `lab-02` juga menampilkan baris `ok` untuk `account/internal/fault`.
 
 Peserta yang ingin langsung melanjutkan ke Lab 3 dari kondisi _checkpoint_ dapat menjalankan:
 

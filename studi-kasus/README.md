@@ -5,7 +5,7 @@ Tiga service Go dalam satu Go _workspace_ (`go.work`), masing-masing dengan data
 | Service | Tanggung jawab | Port HTTP | Port gRPC | Database |
 |---|---|---|---|---|
 | `account` | Data rekening dan saldo | 8081 | 9091 (Lab 4) | `db-account`, port 15432 |
-| `transfer` | Transfer antar rekening (Lab 2), _saga orchestrator_ (Lab 5) | 8082 | – | `db-transfer`, port 15433 |
+| `transfer` | Transfer antarrekening (Lab 2), _saga orchestrator_ (Lab 5) | 8082 | – | `db-transfer`, port 15433 |
 | `notification` | Notifikasi hasil transfer (Lab 5) | 8083 | – | `db-notification`, port 15434 |
 
 Port database dimulai dari 15432 agar tidak bentrok dengan PostgreSQL yang terpasang langsung di laptop.
@@ -22,11 +22,11 @@ make infra-down          # hentikan container, data tetap tersimpan
 make infra-reset         # hentikan container dan hapus seluruh data
 ```
 
-Konfigurasi service hanya dibaca dari _environment variable_. Variabel yang kosong menghentikan service saat _startup_ dengan pesan error yang menyebutkan nama variabelnya.
+Konfigurasi service hanya dibaca dari _environment variable_. Bila ada variabel yang kosong, service berhenti saat _startup_ dengan pesan error yang menyebutkan nama variabelnya.
 
 ### Rekening contoh
 
-Contoh transfer di README ini memakai rekening `1111111111` dan `2222222222`. Buat keduanya sekali setelah `account` berjalan. Datanya tetap ada di `db-account` sampai `make infra-reset`:
+Contoh transfer di README ini menggunakan rekening `1111111111` dan `2222222222`. Buat keduanya sekali setelah `account` berjalan. Datanya tetap ada di `db-account` hingga `make infra-reset`:
 
 ```
 curl -X POST localhost:8081/accounts -d '{"number":"1111111111","owner_name":"Budi","initial_balance":"10000000"}'
@@ -46,7 +46,7 @@ make fault-clear           # account normal kembali
 make breaker               # status circuit breaker di transfer: closed, open, half-open
 ```
 
-Saat _circuit breaker_ terbuka sebelum _debit_, `POST /transfers` langsung dijawab HTTP 503 dengan status transfer `FAILED` tanpa memanggil `account`: belum ada saldo yang berubah, sehingga _request_ aman diulang. Jika _debit_ sudah berhasil lalu _credit_ gagal karena sebab apa pun, termasuk _circuit breaker_ yang baru terbuka, jawabannya HTTP 502: saldo sumber sudah berkurang dan perlu dikembalikan manual, sehingga _request_ tidak boleh diulang.
+Bila _circuit breaker_ terbuka sebelum _debit_, `transfer` langsung menjawab `POST /transfers` dengan HTTP 503 dan status transfer `FAILED` tanpa memanggil `account`. Saldo belum berubah, sehingga _request_ aman diulang. Bila _credit_ gagal setelah _debit_ berhasil, karena sebab apa pun termasuk _circuit breaker_ yang baru terbuka, `transfer` menjawab HTTP 502. Saldo sumber sudah berkurang dan perlu dikembalikan manual, sehingga _request_ tidak boleh diulang.
 
 ## gRPC (Lab 4)
 
@@ -63,9 +63,9 @@ Pembagian API `account`:
 | REST | 8081 | Aplikasi _channel_ | `POST /accounts`, `GET /accounts`, `GET /accounts/{number}`, _probe_, `/admin/fault` |
 | gRPC | 9091 | Service lain | `GetAccount`, `Debit`, `Credit`, _health_ (`grpc.health.v1`), _reflection_ |
 
-Endpoint REST `POST /accounts/{number}/debit` dan `/credit` sudah dihapus: perubahan saldo hanya lewat gRPC. Nominal dikirim sebagai _string_ desimal (`"150000.50"`), bukan `double`: hanya angka dengan paling banyak 2 digit desimal, tanpa tanda minus dan tanpa notasi eksponen (`"1e3"`). Format lain dijawab `INVALID_ARGUMENT`, tidak dibulatkan, karena kolom `numeric(19,2)` di PostgreSQL membulatkan digit desimal ketiga tanpa pesan apa pun. Aturan yang sama berlaku untuk `initial_balance` di `POST /accounts` dan `amount` di `POST /transfers`: lebih dari 2 digit desimal atau nilai 10^17 ke atas dijawab HTTP 400.
+Endpoint REST `POST /accounts/{number}/debit` dan `/credit` sudah dihapus: perubahan saldo hanya lewat gRPC. Nominal dikirim sebagai _string_ desimal (`"150000.50"`), tidak sebagai `double`. _String_ itu hanya berisi angka dengan maksimal 2 digit desimal, tanpa tanda minus dan tanpa notasi eksponen (`"1e3"`). Format lain dijawab `INVALID_ARGUMENT`, tidak dibulatkan, karena kolom `numeric(19,2)` di PostgreSQL membulatkan digit desimal ketiga tanpa pesan apa pun. Aturan yang sama berlaku untuk `initial_balance` di `POST /accounts` dan `amount` di `POST /transfers`: lebih dari 2 digit desimal atau nilai 10^17 ke atas dijawab HTTP 400.
 
-_Health_ gRPC (`grpc.health.v1`) tidak memeriksa database: statusnya `SERVING` sejak service berjalan sampai _shutdown_. Kesiapan menerima _traffic_ tetap ditentukan oleh `GET /readyz` di HTTP, yang memeriksa database.
+_Health_ gRPC (`grpc.health.v1`) tidak memeriksa database: statusnya `SERVING` sejak service berjalan hingga _shutdown_. Kesiapan menerima _traffic_ tetap ditentukan oleh `GET /readyz` di HTTP, yang memeriksa database.
 
 _Error_ gRPC dari `account`:
 
@@ -76,8 +76,8 @@ _Error_ gRPC dari `account`:
 | `INVALID_ARGUMENT` | _Field_ tidak valid | Tidak | Tidak |
 | `UNAVAILABLE` | Ditolak sebelum diproses (termasuk _fault injection_), atau koneksi gagal | Ya | Ya |
 | `DEADLINE_EXCEEDED`, _timeout_ 2 detik | Jawaban terlambat, _debit_ mungkin sudah terjadi | Tidak (Lab 4), Ya (mulai Lab 5) | Ya |
-| `INTERNAL`, `UNKNOWN` | Kesalahan di server | Tidak | Ya |
-| `CANCELLED` | Pemanggil sudah berhenti menunggu (misalnya _timeout_ di sisi `transfer`) saat _request_ masih diproses. Hanya terlihat di _log_ `account` sebagai WARN, bukan ERROR | - | - |
+| `INTERNAL`, `UNKNOWN` | _Error_ di sisi server | Tidak | Ya |
+| `CANCELLED` | Pemanggil sudah berhenti menunggu (misalnya _timeout_ di sisi `transfer`) saat _request_ masih diproses. Hanya terlihat di log `account` dengan level WARN | - | - |
 
 `transfer` membaca alamat gRPC `account` dari `ACCOUNT_GRPC_ADDR` (menggantikan `ACCOUNT_SERVICE_URL`). _Policy_ failsafe-go dari Lab 3 tetap sama, sekarang dipasang sebagai _unary client interceptor_. Di sisi server, `account` memasang dua _interceptor_: _logging_ (`grpc request` dengan `method`, `code`, `duration_ms`) dan _fault injection_. `make fault-slow` dan `make fault-error` berlaku untuk REST dan gRPC sekaligus.
 
@@ -94,7 +94,7 @@ _Unique index_ baru di tabel `mutation` gagal dibuat bila database dari Lab 1–
 
 ### Mutasi _idempotent_
 
-Tabel `mutation` di `db-account` mendapat _unique index_ `(account_number, type, reference)`. `Debit` atau `Credit` yang diulang dengan `reference` yang sama tidak diterapkan lagi; `account` menjawab sukses dengan saldo saat ini dan mencatat log `mutation already applied, not repeated`. Karena itu `transfer` sekarang juga me-_retry_ `DEADLINE_EXCEEDED` dan _timeout_ 2 detik.
+Tabel `mutation` di `db-account` mendapat _unique index_ `(account_number, type, reference)`. Bila `Debit` atau `Credit` diulang dengan `reference` yang sama, `account` tidak menerapkannya lagi, menjawab sukses dengan saldo saat ini, dan mencatat log `mutation already applied, not repeated`. Karena itu `transfer` sekarang juga me-_retry_ `DEADLINE_EXCEEDED` dan _timeout_ 2 detik.
 
 ### Status transfer
 
@@ -117,15 +117,15 @@ Respons HTTP `POST /transfers`:
 | 502 | _Dependency_ gagal (`FAILED` atau `COMPENSATED`) |
 | 500 | `COMPENSATION_FAILED` |
 
-Pengembalian _debit_ (_reversal_) memakai _policy_ sendiri, melalui koneksi gRPC terpisah: tanpa _circuit breaker_, _retry_ dengan _backoff_ 200 ms–5 detik selama maksimal 30 detik, _reference_ tetap `<transfer_id>:reversal` sehingga pengulangan tidak menggandakan saldo. Alasannya: _credit_ biasanya gagal karena `account` mati atau _circuit breaker_ baru terbuka. Bila _reversal_ lewat _breaker_ yang sama, _reversal_ langsung ditolak dan transfer berakhir `COMPENSATION_FAILED`. _Log_ `retrying reversal` menandai percobaan ulang.
+Pengembalian _debit_ (_reversal_) menggunakan _policy_ sendiri, melalui koneksi gRPC terpisah: tanpa _circuit breaker_, _retry_ dengan _backoff_ 200 ms–5 detik selama maksimal 30 detik, _reference_ tetap `<transfer_id>:reversal` sehingga pengulangan tidak menggandakan saldo. _Policy_ terpisah ini diperlukan karena _credit_ biasanya gagal saat `account` mati atau _circuit breaker_ baru terbuka. Bila _reversal_ lewat _breaker_ yang sama, _reversal_ langsung ditolak dan transfer berakhir `COMPENSATION_FAILED`. Log `retrying reversal` menandai setiap _retry_.
 
-_Graceful shutdown_ `transfer` menunggu transfer yang sedang berjalan sampai 60 detik (`shutdownGrace` di `transfer/main.go`). Angka ini menutup durasi terburuk satu saga: _debit_ dan _credit_ masing-masing 11,75 detik (4 percobaan × 2 detik + 3 _backoff_), _reversal_ 32 detik. Celah yang tersisa: proses yang dimatikan paksa (SIGKILL, _crash_) di antara dua langkah meninggalkan baris `PENDING` atau `DEBITED` yang tidak dilanjutkan oleh siapa pun. Sistem _production_ menambahkan _recovery job_ yang melanjutkan atau mengompensasi baris seperti itu.
+_Graceful shutdown_ `transfer` menunggu transfer yang sedang berjalan hingga 60 detik (`shutdownGrace` di `transfer/main.go`). Angka ini mencakup durasi terburuk satu saga: _debit_ dan _credit_ masing-masing 11,75 detik (4 percobaan × 2 detik + 3 _backoff_), _reversal_ 32 detik. Celah tetap ada bila proses dimatikan paksa (SIGKILL, _crash_) di antara dua langkah, karena baris `PENDING` atau `DEBITED` yang tertinggal tidak akan dilanjutkan. Sistem _production_ menambahkan _recovery job_ yang melanjutkan atau mengompensasi baris seperti itu.
 
-Celah yang disengaja: jika semua percobaan _debit_ atau _credit_ berakhir _timeout_, hasilnya di `account` tidak pasti. Lab ini tetap menandai `FAILED` atau menjalankan kompensasi; sistem _production_ menjalankan _reconciliation job_ yang mengulang mutasi dengan _reference_ yang sama sampai jawabannya pasti.
+Jika semua percobaan _debit_ atau _credit_ berakhir _timeout_, hasilnya di `account` tidak pasti, tetapi lab ini sengaja tetap menandai `FAILED` atau menjalankan kompensasi. Sistem _production_ menjalankan _reconciliation job_ yang mengulang mutasi dengan _reference_ yang sama hingga jawabannya pasti.
 
 ### _Transactional outbox_
 
-Perubahan status dan _event_-nya ditulis dalam satu transaksi database: tabel `transfer` dan `outbox` di `db-transfer`. _Relay_ di dalam `transfer` membaca `outbox` setiap 500 ms (`for update skip locked`, maksimal 100 baris), mengirim ke Kafka, lalu mengisi `published_at`. Selama Kafka mati, transfer tetap jalan dan _event_ menunggu di `outbox`.
+`transfer` menulis perubahan status dan _event_-nya ke tabel `transfer` dan `outbox` di `db-transfer` dalam satu transaksi database. _Relay_ di dalam `transfer` membaca `outbox` setiap 500 ms (`for update skip locked`, maksimal 100 baris), mengirim ke Kafka, lalu mengisi `published_at`. Selama Kafka mati, transfer tetap berjalan dan _event_ tertahan di `outbox` hingga Kafka aktif kembali.
 
 _Delivery_ bersifat _at-least-once_: bila proses berhenti setelah Kafka menerima _event_ tetapi sebelum `published_at` tersimpan, _event_ dikirim ulang.
 
@@ -140,9 +140,9 @@ Kafka dari laptop: `localhost:9092`. Konfigurasi `transfer` menambah `KAFKA_BROK
 
 ### Notification service
 
-`notification` membaca `transfer-events` dengan _consumer group_ `notification`, menyimpan satu baris per _event_ di `db-notification`, mencatat log `notification sent`, lalu melakukan _commit offset_. Kafka atau database yang mati ditunggu sampai kembali aktif; service tidak berhenti.
+`notification` membaca `transfer-events` dengan _consumer group_ `notification`, menyimpan satu baris per _event_ di `db-notification`, mencatat log `notification sent`, lalu melakukan _commit offset_. Bila Kafka atau database mati, service tetap berjalan dan menunggu hingga keduanya aktif kembali.
 
-_Event_ yang tidak mungkin diproses (_poison message_) dicatat dengan level `ERROR` lalu dilewati, dan _offset_-nya tetap di-_commit_ agar _event_ berikutnya di _partition_ yang sama tidak tertahan: JSON rusak, `event_id` atau `transfer_id` yang bukan UUID, dan _error_ PostgreSQL kelas 22 (data tidak valid, misalnya `22P02`) atau 23 (_constraint_, misalnya `23502`, `23514`). _Error_ lain, seperti koneksi putus atau _timeout_, diulang terus.
+_Event_ yang tidak mungkin diproses (_poison message_) dicatat dengan level `ERROR` lalu dilewati, dan _offset_-nya tetap di-_commit_ agar _event_ berikutnya di _partition_ yang sama tidak tertahan. _Poison message_ mencakup JSON rusak, `event_id` atau `transfer_id` yang bukan UUID, dan _error_ PostgreSQL kelas 22 (data tidak valid, misalnya `22P02`) atau 23 (_constraint_, misalnya `23502`, `23514`). _Error_ lain, seperti koneksi putus atau _timeout_, diulang terus.
 
 ```
 curl "localhost:8083/notifications?transfer_id=<id>"
@@ -164,7 +164,7 @@ Skenario uji:
 
 | Skenario | Cara | Hasil |
 |---|---|---|
-| Transfer berhasil | Transfer antar dua rekening yang ada | `COMPLETED`, notifikasi "berhasil" |
+| Transfer berhasil | Transfer antara dua rekening yang ada | `COMPLETED`, notifikasi "berhasil" |
 | Saldo kurang | Nominal melebihi saldo | `FAILED`, HTTP 422 |
 | Kompensasi | `to_account` yang tidak terdaftar, misalnya `9999999999` | `COMPENSATED`, saldo asal kembali, dua mutasi di `db-account` |
 | Kafka mati | `docker compose stop kafka`, transfer, `make outbox`, `docker compose start kafka` | `published_at` kosong, terisi setelah Kafka aktif |
@@ -206,7 +206,7 @@ Kode HTTP untuk _request_ yang diulang (_replay_):
 
 Dengan kode yang sama, klien yang mengulang _request_ karena respons pertama hilang mengambil keputusan yang sama seperti bila respons pertama sampai. Penyebab `FAILED` dan `COMPENSATED` dibaca kembali dari teks `failure_reason`, karena hanya kolom itu yang menyimpan penyebabnya.
 
-Baris yang tertinggal di `PENDING` atau `DEBITED` karena proses `transfer` mati di tengah _saga_ tidak dilanjutkan oleh siapa pun (lihat celah di Lab 5). _Replay_ untuk transfer seperti itu terus menjawab 202 dengan status yang sama.
+Baris yang tertinggal di `PENDING` atau `DEBITED` karena proses `transfer` mati di tengah _saga_ tidak akan dilanjutkan (lihat celah di Lab 5). `transfer` terus menjawab _replay_ untuk transfer seperti itu dengan 202 dan status yang sama.
 
 Nominal dibandingkan sebagai desimal: `"100000"` dan `"100000.00"` dianggap sama. _Request_ paralel dengan _key_ yang sama menghasilkan satu transfer.
 
@@ -221,7 +221,7 @@ Database dari Lab 5 tidak perlu di-_reset_: tabel `processed_event` dan kolom `i
 
 ## OAuth2 dan JWT (Lab 7)
 
-Hydra (_authorization server_) dijalankan dari `compose.yaml` dengan konfigurasi siap pakai. Peserta tidak mengonfigurasi Hydra; yang ditulis adalah verifikasi _token_ di `account` dan `transfer`.
+Hydra (_authorization server_) dijalankan dari `compose.yaml` dengan konfigurasi siap pakai. Peserta tidak mengonfigurasi Hydra, cukup menulis verifikasi _token_ di `account` dan `transfer`.
 
 | Endpoint Hydra | Alamat |
 |---|---|
@@ -237,7 +237,7 @@ Hydra (_authorization server_) dijalankan dari `compose.yaml` dengan konfigurasi
 | `transfer-service` | `transfer-service-secret` | `account:read`, `account:write` | `transfer` saat memanggil gRPC `account` |
 | `channel-app` | `channel-app-secret` | `transfer:read`, `transfer:write` | Aplikasi _channel_ (di lab: `curl`) |
 
-Hydra menyimpan data di memori (`DSN=memory`): setelah Hydra di-_restart_, _client_ dan _signing key_ hilang. `make infra-up` membuat ulang _client_. `account` dan `transfer` mengambil JWKS baru saat menerima _token_ dengan `kid` yang belum dikenal (paling sering sekali per 5 detik). `transfer` meminta _token_ baru bila `account` menolak _token_ lama dengan `UNAUTHENTICATED`, lalu mengulang panggilan sekali.
+Hydra menyimpan data di memori (`DSN=memory`): setelah Hydra di-_restart_, _client_ dan _signing key_ hilang. `make infra-up` membuat ulang _client_. `account` dan `transfer` mengambil JWKS baru saat menerima _token_ dengan `kid` yang belum dikenal (maksimal sekali per 5 detik). `transfer` meminta _token_ baru bila `account` menolak _token_ lama dengan `UNAUTHENTICATED`, lalu mengulang panggilan sekali.
 
 ### Aturan akses
 
@@ -250,17 +250,17 @@ Hydra menyimpan data di memori (`DSN=memory`): setelah Hydra di-_restart_, _clie
 
 Tanpa _token_: `/healthz`, `/readyz`, `/debug/circuit-breaker`, gRPC _health_ dan _reflection_, `/admin/fault`, serta REST `account` (`/accounts`).
 
-Pemeriksaan _token_: tanda tangan RS256 dengan _key_ dari JWKS, `iss` sama persis dengan `OAUTH_ISSUER`, `exp` wajib ada dan belum lewat, _scope_ dari _claim_ `scp`. `aud` tidak diperiksa karena _token_ `client_credentials` dari Hydra tidak membawa `aud` kecuali diminta.
+Pemeriksaan _token_: _signature_ RS256 dengan _key_ dari JWKS, `iss` sama persis dengan `OAUTH_ISSUER`, `exp` wajib ada dan belum lewat, _scope_ dari _claim_ `scp`. `aud` tidak diperiksa karena _token_ `client_credentials` dari Hydra tidak membawa `aud` kecuali diminta.
 
 | Kondisi | REST `transfer` | gRPC `account` |
 |---|---|---|
 | Tanpa _token_ | 401, `WWW-Authenticate: Bearer` | `UNAUTHENTICATED` |
-| _Token_ rusak, kedaluwarsa, _issuer_ lain, tanda tangan salah | 401, `WWW-Authenticate: Bearer error="invalid_token"` | `UNAUTHENTICATED` |
+| _Token_ rusak, kedaluwarsa, _issuer_ lain, _signature_ salah | 401, `WWW-Authenticate: Bearer error="invalid_token"` | `UNAUTHENTICATED` |
 | _Token_ valid, _scope_ kurang | 403, `WWW-Authenticate: Bearer error="insufficient_scope"` | `PERMISSION_DENIED` |
 
 Detail penolakan (misalnya `token is expired`) hanya ada di log `request rejected` / `grpc call rejected`; respons hanya berisi `missing bearer token`, `invalid token`, atau `scope ... required`.
 
-`transfer` mengambil _token_ `transfer-service` hanya dengan _scope_ `account:write`, menyimpannya sampai 10 detik sebelum kedaluwarsa (masa berlaku 1 jam), dan mengirimnya di _metadata_ `authorization`. Kegagalan mengambil _token_ menghasilkan `UNAUTHENTICATED`: tidak di-_retry_, tidak memicu pengambilan _token_ kedua, dan tidak dihitung _circuit breaker_, karena `account` tidak bermasalah. Transfer berakhir `FAILED` dengan kode 502. Koneksi gRPC di lab tanpa TLS; di _production_, _bearer token_ wajib lewat TLS.
+`transfer` mengambil _token_ `transfer-service` hanya dengan _scope_ `account:write`, menyimpannya hingga 10 detik sebelum kedaluwarsa (masa berlaku 1 jam), dan mengirimnya di _metadata_ `authorization`. Bila `transfer` gagal mengambil _token_, panggilan berakhir `UNAUTHENTICATED` tanpa _retry_ dan tanpa pengambilan _token_ kedua, serta tidak dihitung _circuit breaker_ karena `account` tidak bermasalah. Transfer berakhir `FAILED` dengan kode 502. Koneksi gRPC di lab tidak menggunakan TLS, sedangkan di _production_ pengiriman _bearer token_ wajib lewat TLS.
 
 ### Konfigurasi
 
@@ -309,7 +309,7 @@ Tiga sinyal dari setiap service:
 
 `otel-lgtm` (`grafana/otel-lgtm:0.37.0`) berisi OpenTelemetry Collector, Prometheus, Tempo, Loki, dan Grafana dalam satu _container_, khusus untuk lab. Grafana: http://localhost:3000, tanpa _login_. Data hilang bila _container_ dibuat ulang.
 
-Prometheus di dalam _container_ mengambil `/metrics` service di laptop lewat `host.docker.internal` (`observability/prometheus.yaml`). Docker Desktop menyediakan nama ini; di Docker Engine Linux, `extra_hosts: host-gateway` di `compose.yaml` yang membuatnya. Status pengambilan: panel _Target scrape_ di _dashboard_, atau query `up` di Grafana Explore.
+Prometheus di dalam _container_ mengambil `/metrics` service di laptop lewat `host.docker.internal` (`observability/prometheus.yaml`). Docker Desktop menyediakan nama ini; di Docker Engine Linux, `extra_hosts: host-gateway` di `compose.yaml` yang membuatnya. Status _scrape_: panel _Target scrape_ di _dashboard_, atau query `up` di Grafana Explore.
 
 ### Konfigurasi
 
@@ -318,7 +318,7 @@ Prometheus di dalam _container_ mengambil `/metrics` service di laptop lewat `ho
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | Wajib berupa URL `http://host:port` atau `https://host:port`; format lain menghentikan service saat _startup_ |
 | `OTEL_SERVICE_NAME` | `account`, `transfer`, `notification` | Nama service di Tempo dan Loki |
 
-Keduanya wajib di ketiga service. Collector yang mati tidak menghentikan service: kegagalan kirim dicatat di _stdout_ sebagai `telemetry export failed`, lalu _span_ dan log yang gagal dikirim dibuang.
+Keduanya wajib di ketiga service. Service tetap berjalan walaupun Collector mati. Kegagalan kirim dicatat di _stdout_ sebagai `telemetry export failed`, lalu _span_ dan log yang gagal dikirim dibuang.
 
 ### _Correlation ID_ dan _trace context_
 
@@ -349,7 +349,7 @@ Setiap baris log yang ditulis dalam konteks _request_ atau _event_ membawa `corr
 {"level":"INFO","msg":"account mutated","number":"1111111111","type":"DEBIT",...,"correlation_id":"lab8-1","trace_id":"122d873a...","span_id":"c65886ff..."}
 ```
 
-_Probe_ (`/healthz`, `/readyz`) dan `/metrics` tidak di-_trace_. _Publish_ yang gagal karena Kafka mati tidak menghasilkan _span_; percobaan ulang setiap 500 ms tercatat di log `outbox publish failed` dan di `outbox_pending`.
+_Probe_ (`/healthz`, `/readyz`) dan `/metrics` tidak di-_trace_. _Publish_ yang gagal karena Kafka mati tidak menghasilkan _span_; _retry_ setiap 500 ms tercatat di log `outbox publish failed` dan di `outbox_pending`.
 
 Atribut _span_ untuk pencarian di Tempo (TraceQL):
 
@@ -365,7 +365,7 @@ _Fault injection_ di `account` menambah _event_ `fault injected: delay` atau `fa
 
 | _Metric_ | Service | Label | Isi |
 |---|---|---|---|
-| `http_server_request_duration_seconds` | Ketiganya | `method`, `route`, `status` | _Histogram_ durasi request REST; `route` = _pattern_ ServeMux (`/transfers/{id}`), `unmatched` untuk 404 dari ServeMux |
+| `http_server_request_duration_seconds` | Ketiganya | `method`, `route`, `status` | _Histogram_ durasi _request_ REST; `route` = _pattern_ ServeMux (`/transfers/{id}`), `unmatched` untuk 404 dari ServeMux |
 | `grpc_server_request_duration_seconds` | `account` | `method`, `code` | _Histogram_ durasi panggilan gRPC, termasuk delay _fault injection_ |
 | `transfers_total` | `transfer` | `status` | Transfer yang mencapai status akhir |
 | `circuit_breaker_state` | `transfer` | `target` | 0 `closed`, 1 `half-open`, 2 `open` |
@@ -432,23 +432,23 @@ Database dari Lab 7 tidak perlu di-_reset_: kolom `correlation_id` dan `trace_co
 
 ### _Image_
 
-Setiap service punya `Dockerfile` di direktorinya sendiri. _Build context_ adalah direktori `studi-kasus/`, bukan direktori service, karena `go.mod` `account` dan `transfer` mengarah ke `../proto` lewat _replace directive_. `notification` tidak memakai `proto` (_event_ dikirim sebagai JSON di Kafka), jadi `Dockerfile`-nya hanya menyalin `notification/`; _build context_-nya tetap sama agar ketiga _image_ dibangun dengan perintah yang sama.
+Setiap service memiliki `Dockerfile` di direktorinya sendiri. _Build context_-nya tetap direktori `studi-kasus/` karena `go.mod` `account` dan `transfer` mengarah ke `../proto` lewat _replace directive_. `notification` tidak menggunakan `proto` (_event_ dikirim sebagai JSON di Kafka), jadi `Dockerfile`-nya hanya menyalin `notification/`; _build context_-nya tetap sama agar ketiga _image_ di-_build_ dengan perintah yang sama.
 
 | Tahap | Isi |
 |---|---|
 | _Builder_ | `golang:1.27.2-alpine`, `GOWORK=off` (hanya modul service, ditambah `proto` untuk `account` dan `transfer`), `CGO_ENABLED=0 go build -trimpath -ldflags "-s -w"` |
 | Akhir | `FROM scratch`: _binary_ statis dan sertifikat CA, tanpa _shell_. Ukuran sekitar 8–9 MB terkompresi. Docker dengan _containerd image store_ (Docker Engine 29, Docker Desktop versi baru) menampilkan dua kolom di `docker images`: `CONTENT SIZE` sekitar 8–9 MB dan `DISK USAGE` sekitar 31–34 MB (terkompresi ditambah hasil ekstrak). _Image store_ klasik menampilkan satu kolom `SIZE` sekitar 21–23 MB |
-| _User_ | `65532:65532` (numerik). Tetap jalan dengan UID lain (OpenShift _restricted SCC_) dan _root filesystem_ _read-only_ |
+| _User_ | `65532:65532` (numerik). Tetap berjalan dengan UID lain (OpenShift _restricted SCC_) dan _root filesystem_ _read-only_ |
 
 ```
 make images VERSION=1.0.0     # studi-kasus/account:1.0.0, studi-kasus/transfer:1.0.0, studi-kasus/notification:1.0.0
 ```
 
-`VERSION` wajib diisi; tanpa `VERSION`, `make` berhenti dengan pesan error. `make` tidak mencegah _build_ ulang dengan _tag_ yang sudah ada, tetapi _image_ hasil _build_ ulang itu tidak pernah sampai ke _pod_: Deployment memakai `imagePullPolicy: IfNotPresent`, dan referensi _image_ yang tidak berubah tidak memicu _rollout_. Setiap perubahan kode mendapat `VERSION` baru (`1.0.1`, `1.0.2`, ...), lalu `make k3d-import` dengan `VERSION` itu dan `kubectl set image` atau `newTag` di `overlays/k3d/kustomization.yaml` (lihat Latihan).
+`VERSION` wajib diisi; tanpa `VERSION`, `make` berhenti dengan pesan error. `make` tidak mencegah _build_ ulang dengan _tag_ yang sudah ada, tetapi _image_ hasil _build_ ulang itu tidak pernah sampai ke _pod_: Deployment menggunakan `imagePullPolicy: IfNotPresent`, dan referensi _image_ yang tidak berubah tidak memicu _rollout_. Beri `VERSION` baru untuk setiap perubahan kode (`1.0.1`, `1.0.2`, ...), lalu `make k3d-import` dengan `VERSION` itu dan `kubectl set image` atau `newTag` di `overlays/k3d/kustomization.yaml` (lihat Latihan).
 
 ### Seluruh sistem di Docker Compose
 
-_Profile_ `apps` di `compose.yaml` menjalankan ketiga service sebagai _container_ dengan alamat _compose service_ (`db-account:5432`, `kafka:29092`, `hydra:4444`, `otel-lgtm:4317`) dan _root filesystem_ _read-only_. Hentikan service yang dijalankan dengan `make -C <service> run` lebih dulu karena port 8081–8083 sama.
+_Profile_ `apps` di `compose.yaml` menjalankan ketiga service sebagai _container_ dengan alamat _compose service_ (`db-account:5432`, `kafka:29092`, `hydra:4444`, `otel-lgtm:4317`) dan _root filesystem_ _read-only_. Hentikan service yang dijalankan dengan `make -C <service> run` terlebih dahulu karena port 8081–8083 sama.
 
 ```
 make infra-up
@@ -468,7 +468,7 @@ Hanya ketiga service yang berjalan di _cluster_. PostgreSQL, Kafka, Hydra, dan `
 | OTLP | `http://host.k3d.internal:4317` |
 | `account` gRPC | `account:9091` (Service di _namespace_ yang sama) |
 
-Kafka mendapat _listener_ ketiga karena _listener_ `localhost:9092` mengiklankan `localhost`, dan di dalam _pod_ `localhost` adalah _pod_ itu sendiri.
+Kafka mendapat _listener_ ketiga karena _listener_ `localhost:9092` di-_advertise_ dengan alamat `localhost`, dan dari dalam _pod_, `localhost` merujuk ke _pod_ itu sendiri.
 
 ```
 make infra-up
@@ -481,9 +481,9 @@ make k3d-down                      # hapus cluster
 
 Hentikan service yang berjalan di laptop (`make -C <service> run`) atau di _profile_ `apps` sebelum `make k8s-apply`. Kalau tidak, dua `notification` berbagi _partition_ dalam satu _consumer group_ dan dua _relay outbox_ membaca database yang sama.
 
-k3d menulis `host.k3d.internal` ke ConfigMap CoreDNS, tetapi CoreDNS baru menjawab nama itu setelah ConfigMap sampai ke _pod_-nya, sampai sekitar satu menit kemudian. `make k3d-up` menunggu sampai nama itu terjawab, sehingga `make k8s-apply` sesudahnya tidak menghasilkan _restart_.
+k3d menulis `host.k3d.internal` ke ConfigMap CoreDNS, tetapi CoreDNS baru menjawab nama itu setelah ConfigMap sampai ke _pod_-nya, hingga sekitar satu menit kemudian. `make k3d-up` menunggu hingga nama itu terjawab, sehingga `make k8s-apply` sesudahnya tidak menghasilkan _restart_.
 
-Setelah Docker atau laptop di-_restart_, _container_ cluster berjalan lagi tanpa `host.k3d.internal` di DNS cluster. _Pod_ masuk `CrashLoopBackOff` dengan log `lookup host.k3d.internal ... no such host`. Jalankan `k3d cluster stop bank` lalu `k3d cluster start bank`: k3d menulis nama itu lagi, dan _pod_ berjalan normal setelah satu sampai dua menit tanpa perintah tambahan.
+Setelah Docker atau laptop di-_restart_, _container_ _cluster_ berjalan lagi tanpa `host.k3d.internal` di DNS _cluster_. _Pod_ masuk `CrashLoopBackOff` dengan log `lookup host.k3d.internal ... no such host`. Jalankan `k3d cluster stop bank` lalu `k3d cluster start bank`: k3d menulis nama itu lagi, dan _pod_ berjalan normal setelah satu sampai dua menit tanpa perintah tambahan.
 
 ### Manifest
 
@@ -499,15 +499,15 @@ k8s/
 | Objek | Isi |
 |---|---|
 | ConfigMap | _Key_ yang sama di semua _environment_ di `base` (`HTTP_ADDR`, `GRPC_ADDR`, `ACCOUNT_GRPC_ADDR`, `OTEL_SERVICE_NAME`); alamat infrastruktur ditambahkan `overlays/k3d/config.yaml` |
-| Secret | Kosong di `base`; `DATABASE_URL` dan `OAUTH_CLIENT_SECRET` diisi `overlays/k3d/secrets.yaml`. Credential lab ini ikut di-_commit_ hanya karena tidak melindungi apa pun di luar laptop |
+| Secret | Kosong di `base`; `DATABASE_URL` dan `OAUTH_CLIENT_SECRET` diisi `overlays/k3d/secrets.yaml`. _Credential_ lab ini ikut di-_commit_ hanya karena tidak melindungi apa pun di luar laptop |
 | Deployment | 1 _replica_, `envFrom` ConfigMap + Secret, _readiness_ `/readyz`, _liveness_ `/healthz`, _resource request_ dan _limit_, _rolling update_ `maxSurge: 1`, `maxUnavailable: 0`, `preStop` _sleep_ 5 detik, `terminationGracePeriodSeconds` 30 (`transfer` 75) |
 | _Security context_ | `runAsNonRoot`, `seccompProfile: RuntimeDefault`, `allowPrivilegeEscalation: false`, `readOnlyRootFilesystem: true`, `capabilities.drop: [ALL]`, tanpa `runAsUser` |
 | Service | ClusterIP: `account` 8081 dan 9091, `transfer` 8082, `notification` 8083 |
 | Ingress | Hanya `transfer`, _path_ `/transfers`, `ingressClassName: traefik` |
 
-Saat _pod_ dihentikan (_rolling update_, _scale down_), Kubernetes mengeluarkan _pod_ dari _endpoint_ Service dan Ingress bersamaan dengan menghentikannya, bukan sebelumnya. Selama beberapa detik _request_ baru masih datang. `preStop` dengan aksi `sleep` (Kubernetes 1.30+, tidak butuh _shell_, yang memang tidak ada di _image_ `scratch`) menunda SIGTERM 5 detik sampai _pod_ tidak lagi menerima _request_ baru; setelah itu _graceful shutdown_ di `main.go` menyelesaikan _request_ yang sedang berjalan. `terminationGracePeriodSeconds` dihitung sejak `preStop` dimulai dan harus mencakup `preStop` + batas _shutdown_ service + _flush_ telemetri 5 detik: `account` dan `notification` 5 + 10 + 5 detik, `transfer` 5 + 60 + 5 detik (`shutdownGrace`, agar _saga_ tidak terpotong). Lewat dari batas itu _kubelet_ mengirim SIGKILL. Di _profile_ `apps`, `stop_grace_period: 70s` memberi `transfer` waktu yang sama di Docker Compose.
+Saat _pod_ dihentikan (_rolling update_, _scale down_), Kubernetes menghentikan _pod_ dan mengeluarkannya dari _endpoint_ Service dan Ingress secara bersamaan. Selama beberapa detik _request_ baru masih datang. `preStop` dengan aksi `sleep` (Kubernetes 1.30+, tidak memerlukan _shell_, yang memang tidak ada di _image_ `scratch`) menunda SIGTERM 5 detik hingga _pod_ tidak lagi menerima _request_ baru; setelah itu _graceful shutdown_ di `main.go` menyelesaikan _request_ yang sedang berjalan. `terminationGracePeriodSeconds` dihitung sejak `preStop` dimulai dan harus mencakup `preStop` + batas _shutdown_ service + _flush_ telemetri 5 detik: `account` dan `notification` 5 + 10 + 5 detik, `transfer` 5 + 60 + 5 detik (`shutdownGrace`, agar _saga_ tidak terpotong). Bila batas itu terlampaui, _kubelet_ mengirim SIGKILL. Di _profile_ `apps`, `stop_grace_period: 70s` memberi `transfer` waktu yang sama di Docker Compose.
 
-_Key_ yang tidak ada di ConfigMap maupun Secret menghentikan service saat _startup_ (`missing required environment variables: ...`); _pod_ masuk `CrashLoopBackOff`.
+Bila sebuah _key_ tidak ada di ConfigMap maupun Secret, service berhenti saat _startup_ (`missing required environment variables: ...`) dan _pod_ masuk `CrashLoopBackOff`.
 
 ```
 kubectl kustomize k8s/overlays/k3d    # hasil render tanpa apply
@@ -542,15 +542,15 @@ Perubahan ConfigMap atau Secret tidak dibaca _pod_ yang sedang berjalan karena _
 | Hal | Keterangan |
 |---|---|
 | _Metric_ | Prometheus di `otel-lgtm` hanya mengambil port 8081–8083 di laptop. _Metric_ _pod_ di k3d tidak terambil; _trace_ dan log tetap masuk lewat OTLP |
-| gRPC dan Service | ClusterIP menyeimbangkan koneksi, bukan panggilan. Setelah `account` di-_scale_, panggilan dari satu _pod_ `transfer` tetap ke _pod_ `account` yang sama |
-| _Circuit breaker_ | Per _pod_ `transfer`; tiap _replica_ punya status sendiri |
-| Secret | Disimpan di repository khusus untuk lab. _Production_ mengambil Secret dari _vault_ atau _secret operator_ |
+| gRPC dan Service | ClusterIP melakukan _load balancing_ saat koneksi dibuat, lalu semua panggilan di koneksi itu menuju _pod_ yang sama. Setelah `account` di-_scale_, panggilan dari satu _pod_ `transfer` tetap ke _pod_ `account` yang sama |
+| _Circuit breaker_ | Per _pod_ `transfer`; tiap _replica_ memiliki status sendiri |
+| Secret | Disimpan di repository khusus untuk lab. Di _production_, Secret berasal dari _vault_ atau _secret operator_ |
 
 Database dari Lab 8 tidak perlu di-_reset_. `make infra-up` membuka port 19092 untuk _listener_ Kafka `K3D`.
 
 ## CI/CD (Lab 10)
 
-Setiap service punya _pipeline_ sendiri. _Commit_ yang mengubah `account` hanya menjalankan _pipeline_ `account`.
+Setiap service memiliki _pipeline_ sendiri. _Commit_ yang mengubah `account` hanya menjalankan _pipeline_ `account`.
 
 | File | Fungsi |
 |---|---|
@@ -573,13 +573,13 @@ _Workflow_ hanya berisi _step_ `run:` tanpa `uses:`, sehingga setiap _step_ seta
 
 _Trigger_: _push_ ke `main` yang mengubah direktori service, `proto/` (khusus `account` dan `transfer`), `go.work`, `pipeline.mk`, atau file _workflow_ itu sendiri.
 
-Satu service hanya menjalankan satu _pipeline_ dalam satu waktu. _Workflow_ menggunakan `concurrency` dengan `cancel-in-progress: false`: _push_ berikutnya menunggu _pipeline_ yang sedang berjalan selesai. Di Jenkins padanannya `disableConcurrentBuilds()`.
+_Pipeline_ setiap service berjalan satu per satu. _Workflow_ menggunakan `concurrency` dengan `cancel-in-progress: false`: _push_ berikutnya menunggu _pipeline_ yang sedang berjalan selesai. Di Jenkins padanannya `disableConcurrentBuilds()`.
 
-Job Jenkins harus bertipe _Multibranch Pipeline_. Kondisi `when { branch 'main' }` membaca `BRANCH_NAME`, dan variabel ini hanya diisi oleh job _Multibranch_. Stage Test berhenti lebih dulu bila `GIT_COMMIT` kosong, sehingga tidak ada _image_ dengan _tag_ `null`.
+Job Jenkins harus bertipe _Multibranch Pipeline_. Kondisi `when { branch 'main' }` membaca `BRANCH_NAME`, dan variabel ini hanya diisi oleh job _Multibranch_. _Stage_ Test berhenti lebih awal bila `GIT_COMMIT` kosong, sehingga tidak ada _image_ dengan _tag_ `null`.
 
 ### Variabel
 
-Tidak ada nilai _default_. Variabel yang kosong menghentikan `make` dengan pesan `missing required variables: ...`.
+Tidak ada nilai _default_. Bila ada variabel yang kosong, `make` berhenti dengan pesan `missing required variables: ...`.
 
 | Variabel | Digunakan oleh | Sumber di _workflow_ | Sumber di Jenkins |
 |---|---|---|---|
@@ -592,24 +592,24 @@ Tidak ada nilai _default_. Variabel yang kosong menghentikan `make` dengan pesan
 
 Nama _image_: `<REGISTRY>/<IMAGE_OWNER>/<service>:<VERSION>`. Setiap _commit_ menghasilkan _tag_ baru, sehingga _tag_ lama tidak pernah tertimpa dan _image_ yang berjalan bisa ditelusuri ke _commit_-nya (_label_ `org.opencontainers.image.revision`).
 
-`push` menjalankan `docker login` dengan `DOCKER_CONFIG` sementara yang dihapus di akhir _step_, sehingga _token_ registry tidak tertinggal di `~/.docker/config.json` milik runner setelah job selesai. Langkah ini tidak mengisolasi peserta satu sama lain. Runner digunakan bersama dan memercayai semua peserta: siapa pun yang bisa mengubah _workflow_ bisa menjalankan perintah apa saja di host runner. Setelah _push_ berhasil, _image_ lokal dihapus agar disk runner tidak penuh oleh satu _image_ per _commit_ per peserta.
+`push` menjalankan `docker login` dengan `DOCKER_CONFIG` sementara yang dihapus di akhir _step_, sehingga _token_ registry tidak tertinggal di `~/.docker/config.json` milik runner setelah job selesai. Langkah ini tidak mengisolasi peserta satu sama lain. Runner digunakan bersama oleh semua peserta, dan siapa pun yang bisa mengubah _workflow_ bisa menjalankan perintah apa saja di host runner. Setelah _push_ berhasil, _image_ lokal dihapus agar disk runner tidak penuh oleh satu _image_ per _commit_ per peserta.
 
 `deploy` menjalankan `kubectl set image` lalu `kubectl rollout status`, sama seperti latihan _rolling update_ di Lab 9. Anotasi `kubernetes.io/change-cause` dipasang setelah `set image` dan mencatat versi di `kubectl rollout history`. _Rollout_ yang gagal menggagalkan _pipeline_; _pod_ lama tetap melayani (`maxUnavailable: 0`). _Rollback_ dilakukan manual dengan `kubectl rollout undo`.
 
-Bila Deployment service belum ada di _namespace_, `deploy` lebih dulu menjalankan target `apply`: _overlay_ `k8s/overlays/server` di-_apply_ dengan _namespace_ `NAMESPACE` dan _image_ `<REGISTRY>/<IMAGE_OWNER>/<service>:<VERSION>`, hanya untuk objek service itu (`kubectl apply -l app.kubernetes.io/name=<service>`). _Pipeline_ pertama setiap service membuat ConfigMap, Service, Deployment, dan Ingress-nya sendiri dari _namespace_ kosong.
+Bila Deployment service belum ada di _namespace_, `deploy` terlebih dahulu menjalankan _target_ `apply`: _overlay_ `k8s/overlays/server` di-_apply_ dengan _namespace_ `NAMESPACE` dan _image_ `<REGISTRY>/<IMAGE_OWNER>/<service>:<VERSION>`, hanya untuk objek service itu (`kubectl apply -l app.kubernetes.io/name=<service>`). _Pipeline_ pertama setiap service membuat ConfigMap, Service, Deployment, dan Ingress-nya sendiri dari _namespace_ kosong.
 
 ### Server pelatihan
 
 | Hal | Isi |
 |---|---|
 | _Cluster_ | Satu _node_, satu _namespace_ per peserta, _kubeconfig_ dengan RBAC terbatas pada _namespace_ itu |
-| _Image_ | Ditarik dari _container registry_ git server dengan Secret `registry-credentials` (`imagePullSecrets`) |
+| _Image_ | Di-_pull_ dari _container registry_ git server dengan Secret `registry-credentials` (`imagePullSecrets`) |
 | PostgreSQL | Bersama, database per peserta per service. `DATABASE_URL` ada di Secret yang dibuat instruktur, tidak di repository |
-| Kafka | Bersama, _topic_ dan _consumer group_ diberi awalan nama peserta |
+| Kafka | Bersama, _topic_ dan _consumer group_ diberi _prefix_ nama peserta |
 | OAuth2, OTLP | Bersama |
 | Ingress | _Host_ per peserta |
 
-`k8s/overlays/server` tidak berisi _namespace_ dan _tag image_. Keduanya berasal dari variabel _pipeline_, sehingga tidak perlu _apply_ manual sebelum _pipeline_ pertama. Instruktur menyiapkan _namespace_, _kubeconfig_, Secret service, dan Secret `registry-credentials`. Nilai `replace-me` di `config.yaml` dan `ingress.yaml` diisi peserta dengan alamat dari instruktur; `deploy` dan `k8s-apply-server` menolak berjalan selama masih ada `replace-me`.
+`k8s/overlays/server` tidak berisi _namespace_ dan _tag image_. Keduanya berasal dari variabel _pipeline_, sehingga tidak perlu _apply_ manual sebelum _pipeline_ pertama. Instruktur menyiapkan _namespace_, _kubeconfig_, Secret service, dan Secret `registry-credentials`. Nilai `replace-me` di `config.yaml` dan `ingress.yaml` diisi peserta dengan alamat dari instruktur; `deploy` dan `k8s-apply-server` tidak dapat dijalankan selama masih ada `replace-me`.
 
 Setelah Deployment ada, _pipeline_ hanya mengganti _image_. Perubahan `config.yaml` atau `ingress.yaml` dikirim ke _cluster_ dengan `k8s-apply-server`, satu service per perintah, dengan `VERSION` = _commit_ yang sedang berjalan:
 
@@ -619,11 +619,11 @@ make k8s-apply-server SERVICE=transfer VERSION=<sha> REGISTRY=<registry> IMAGE_O
 kubectl -n <namespace> rollout restart deployment/transfer     # pod membaca ConfigMap hanya saat start
 ```
 
-Selisih antara isi repository dan isi _cluster_ ini yang dihilangkan GitOps: perubahan _cluster_ hanya lewat repository.
+Perubahan manual seperti ini membuat isi _cluster_ berbeda dari isi repository (_drift_). GitOps menghilangkan _drift_ dengan mewajibkan setiap perubahan _cluster_ dilakukan lewat repository.
 
 ### Mencoba di laptop
 
-`pipeline-k3d` menjalankan tahapan _pipeline_ untuk satu service terhadap k3d dari Lab 9. `push` diganti `k3d image import` karena laptop tidak punya registry.
+`pipeline-k3d` menjalankan tahapan _pipeline_ untuk satu service terhadap k3d dari Lab 9. `push` diganti `k3d image import` karena laptop tidak memiliki registry.
 
 ```
 make infra-up                                 # infrastruktur di Docker Compose
@@ -637,7 +637,7 @@ kubectl -n bank rollout history deployment/transfer
 kubectl -n bank get deploy transfer -o jsonpath='{.spec.template.spec.containers[0].image}'
 ```
 
-Cluster yang dihentikan dengan `k3d cluster stop bank` dijalankan lagi dengan `k3d cluster start bank`. _Tag_ adalah _commit_ saat ini, sehingga `pipeline-k3d` menolak berjalan selama ada perubahan yang belum di-_commit_ di `studi-kasus/`. `make k8s-apply` setelahnya mengembalikan _image_ ke _tag_ di `overlays/k3d`.
+_Cluster_ yang dihentikan dengan `k3d cluster stop bank` dijalankan lagi dengan `k3d cluster start bank`. _Tag_ diambil dari _commit_ saat ini, sehingga `pipeline-k3d` tidak dapat dijalankan selama ada perubahan yang belum di-_commit_ di `studi-kasus/`. `make k8s-apply` setelahnya mengembalikan _image_ ke _tag_ di `overlays/k3d`.
 
 ### Status
 
@@ -646,12 +646,12 @@ Cluster yang dihentikan dengan `k3d cluster stop bank` dijalankan lagi dengan `k
 | _Target_ `image`, `push`, `deploy` | Siap |
 | `pipeline-k3d` | Siap |
 | _Workflow_ dan `Jenkinsfile` | Ditulis, belum dijalankan |
-| `apply` (Deployment pertama dari _namespace_ kosong) | Diuji di k3d pada Docker Engine Linux: _namespace_ kosong, _kubeconfig_ dengan RBAC satu _namespace_, _image_ ditarik dari registry dengan _basic auth_ lewat `registry-credentials`, lalu _deploy_ kedua (hanya `set image`) dan `k8s-apply-server`. Di server pelatihan belum |
+| `apply` (Deployment pertama dari _namespace_ kosong) | Diuji di k3d pada Docker Engine Linux: _namespace_ kosong, _kubeconfig_ dengan RBAC satu _namespace_, _image_ di-_pull_ dari registry dengan _basic auth_ lewat `registry-credentials`, lalu _deploy_ kedua (hanya `set image`) dan `k8s-apply-server`. Di server pelatihan belum |
 | Runner CI pusat dan server pelatihan | Belum tersedia. Nilai `replace-me` di `k8s/overlays/server` diisi setelah server siap |
 
 ## Checkpoint
 
-Tag `lab-01` … `lab-10` berisi kondisi kode di akhir setiap lab. Peserta yang tertinggal melanjutkan dari tag lab sebelumnya:
+_Tag_ `lab-01` … `lab-10` berisi kondisi kode di akhir setiap lab. Peserta yang tertinggal melanjutkan dari _tag_ lab sebelumnya:
 
 ```
 git checkout lab-03

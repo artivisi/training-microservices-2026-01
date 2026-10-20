@@ -7,7 +7,7 @@
 Setelah menyelesaikan lab ini, peserta mampu:
 
 - menjelaskan peran _authorization server_, _resource server_, dan _client_ pada OAuth2 _client credentials grant_;
-- memverifikasi JWT _access token_ di dalam service Go: tanda tangan dengan _public key_ dari JWKS, _issuer_, masa berlaku, dan _scope_;
+- memverifikasi JWT _access token_ di dalam service Go: _signature_ (tanda tangan digital) dengan _public key_ dari JWKS (_JSON Web Key Set_), _issuer_ (penerbit _token_), masa berlaku, dan _scope_;
 - menulis _middleware_ REST yang menjawab 401 atau 403 sesuai jenis penolakan;
 - menulis gRPC _unary server interceptor_ yang menjawab `Unauthenticated` atau `PermissionDenied`;
 - membuat service `transfer` mengambil _token_ sendiri dari _authorization server_ dan mengirimkannya di setiap panggilan gRPC ke `account`;
@@ -17,7 +17,7 @@ Setelah menyelesaikan lab ini, peserta mampu:
 
 Hingga Lab 6, siapa pun yang dapat menjangkau port 8082 bisa membuat transfer, dan siapa pun yang dapat menjangkau port 9091 bisa mendebit rekening. Lab ini menambahkan pemeriksaan identitas pemanggil di kedua pintu masuk tersebut.
 
-Identitas pemanggil dibuktikan dengan _access token_ berformat JWT (_JSON Web Token_). _Token_ diterbitkan oleh Ory Hydra, sebuah _authorization server_ OAuth2. Karena pemanggilnya adalah aplikasi (bukan manusia yang _login_), alur yang digunakan adalah _client credentials grant_: aplikasi mengirim _client ID_ dan _secret_ miliknya ke Hydra, lalu Hydra mengembalikan _token_ yang berlaku selama satu jam.
+Identitas pemanggil dibuktikan dengan _access token_ berformat JWT (_JSON Web Token_). _Token_ diterbitkan oleh Ory Hydra, sebuah _authorization server_ OAuth2. Pemanggilnya berupa aplikasi, bukan pengguna yang _login_, sehingga lab ini menggunakan alur _client credentials grant_: aplikasi mengirim _client ID_ dan _secret_ miliknya ke Hydra, lalu Hydra mengembalikan _token_ yang berlaku selama satu jam.
 
 ```text
               (1) POST /oauth2/token                  (3) POST /oauth2/token
@@ -41,14 +41,14 @@ Ada tiga peran dalam gambar di atas:
 #table(
   columns: (auto, 1fr, 2fr),
   [Peran OAuth2], [Komponen], [Tugas di Lab 7],
-  [_Authorization server_], [Hydra], [Menerbitkan dan menandatangani _token_; menerbitkan _public key_ di JWKS. Konfigurasinya sudah disediakan.],
-  [_Resource server_], [`account` (gRPC), `transfer` (REST)], [Memeriksa _token_ di setiap permintaan: tanda tangan, _issuer_, masa berlaku, dan _scope_.],
+  [_Authorization server_], [Hydra], [Menerbitkan dan menandatangani _token_, serta memublikasikan _public key_ di JWKS. Konfigurasinya sudah disediakan.],
+  [_Resource server_], [`account` (gRPC), `transfer` (REST)], [Memeriksa _token_ di setiap permintaan: _signature_, _issuer_, masa berlaku, dan _scope_.],
   [_Client_], [`curl` sebagai aplikasi _channel_, `transfer` saat memanggil `account`], [Meminta _token_ ke Hydra dan mengirimkannya di _header_ `Authorization`.],
 )
 
 Service `transfer` memegang dua peran sekaligus: _resource server_ bagi aplikasi _channel_ dan _client_ bagi `account`.
 
-Pemeriksaan _token_ berlangsung di dalam service tanpa bertanya ke Hydra untuk setiap permintaan. Hydra menandatangani _token_ dengan _private key_ RSA, sedangkan service memeriksa tanda tangan itu dengan _public key_ yang diunduh dari JWKS (_JSON Web Key Set_). Service cukup mengunduh JWKS sekali, lalu menyimpannya di memori. Akibatnya, setiap transfer tidak perlu menunggu jawaban Hydra.
+Pemeriksaan _token_ berlangsung di dalam service tanpa bertanya ke Hydra untuk setiap permintaan. Hydra menandatangani _token_ dengan _private key_ RSA, sedangkan service memeriksa _signature_ tersebut dengan _public key_ yang diunduh dari JWKS (_JSON Web Key Set_). Service cukup mengunduh JWKS sekali, lalu menyimpannya di memori. Akibatnya, setiap transfer tidak perlu menunggu jawaban Hydra.
 
 _Scope_ membatasi apa yang boleh dilakukan pemegang _token_. Lab ini menggunakan empat _scope_:
 
@@ -61,7 +61,7 @@ _Scope_ membatasi apa yang boleh dilakukan pemegang _token_. Lab ini menggunakan
   [`transfer` REST], [`GET /transfers/{id}`], [`transfer:read`],
 )
 
-Beberapa _endpoint_ tetap terbuka tanpa _token_: `/healthz`, `/readyz`, `/debug/circuit-breaker`, gRPC _health_ dan _reflection_, `/admin/fault`, serta REST `account` (`/accounts`). _Probe_ dipanggil oleh Kubernetes dan _load balancer_ yang tidak membawa _token_. REST `account` dibiarkan terbuka agar langkah pembuatan rekening di lab tetap singkat; di _production_, REST `account` mendapat _middleware_ yang sama dengan REST `transfer`.
+Beberapa _endpoint_ tetap terbuka tanpa _token_: `/healthz`, `/readyz`, `/debug/circuit-breaker`, gRPC _health_ dan _reflection_, `/admin/fault`, serta REST `account` (`/accounts`). _Probe_ dipanggil oleh Kubernetes dan _load balancer_ yang tidak membawa _token_. REST `account` dibiarkan terbuka agar langkah pembuatan rekening di lab tetap singkat. Di _production_, REST `account` dipasangi _middleware_ yang sama dengan REST `transfer`.
 
 Hasil pemeriksaan dibedakan menjadi dua jenis penolakan:
 
@@ -69,7 +69,7 @@ Hasil pemeriksaan dibedakan menjadi dua jenis penolakan:
   columns: (1fr, auto, auto),
   [Kondisi], [REST `transfer`], [gRPC `account`],
   [Tanpa _token_, atau _header_ bukan `Bearer`], [401], [`Unauthenticated`],
-  [_Token_ rusak, kedaluwarsa, _issuer_ lain, tanda tangan tidak cocok], [401], [`Unauthenticated`],
+  [_Token_ rusak, kedaluwarsa, _issuer_ lain, _signature_ tidak cocok], [401], [`Unauthenticated`],
   [_Token_ valid, tetapi _scope_ tidak mencukupi], [403], [`PermissionDenied`],
 )
 
@@ -88,7 +88,7 @@ git switch -c lab-07-kerja lab-06
 cd studi-kasus
 ```]
 
-Semua perintah di bab ini dijalankan dari folder `studi-kasus`, kecuali disebutkan lain. Database dari Lab 6 tidak perlu di-_reset_: lab ini tidak mengubah skema.
+Semua perintah di bab ini dijalankan dari folder `studi-kasus`, kecuali disebutkan lain. Database dari Lab 6 tidak perlu di-_reset_ karena lab ini tidak mengubah skema.
 
 Pastikan service lama sudah berhenti. Hentikan `account`, `transfer`, dan `notification` dengan Ctrl+C di terminal masing-masing.
 
@@ -139,20 +139,20 @@ Service kedua, `hydra-init`, berjalan sekali untuk mendaftarkan dua _client_ den
 make infra-up
 ```]
 
-Uji bahwa Hydra sudah menerbitkan _token_:
+Pastikan Hydra sudah menerbitkan _token_:
 
 #perintah[```bash
 TOKEN=$(make -s token)
 echo "$TOKEN"
 ```]
 
-Keluarannya berupa satu baris panjang yang terdiri atas tiga bagian dipisah titik (`header.payload.signature`). Bagian tengah berisi _claim_ dalam JSON berenkode base64url. Isinya dapat dibaca dengan:
+_Output_-nya berupa satu baris panjang yang terdiri atas tiga bagian dipisah titik (`header.payload.signature`). Bagian tengah berisi _claim_ dalam JSON yang di-_encode_ dengan base64url. Isinya dapat dibaca dengan:
 
 #perintah[```bash
 cut -d. -f2 <<<"$TOKEN" | base64 -d
 ```]
 
-Perintah `base64` dapat menampilkan error soal _padding_ di akhir keluaran; JSON-nya tetap terbaca. _Claim_ yang diperiksa oleh service di lab ini:
+Perintah `base64` dapat menampilkan error mengenai _padding_ di akhir _output_, tetapi JSON-nya tetap terbaca. _Claim_ yang diperiksa oleh service di lab ini:
 
 #table(
   columns: (auto, 1fr),
@@ -164,16 +164,16 @@ Perintah `base64` dapat menampilkan error soal _padding_ di akhir keluaran; JSON
 )
 
 #note[
-  *Format _scope_ berbeda antar _authorization server_.* Hydra menaruh _scope_ di _claim_ `scp` berupa _array_. Keycloak menaruhnya di _claim_ `scope` berupa satu _string_ yang dipisah spasi. Kode di lab ini khusus untuk format Hydra. Saat pindah ke _authorization server_ lain, bagian yang berubah hanya _struct_ `Claims`.
+  *Format _scope_ berbeda di setiap _authorization server_.* Hydra menaruh _scope_ di _claim_ `scp` berupa _array_. Keycloak menaruhnya di _claim_ `scope` berupa satu _string_ yang dipisah spasi. Kode di lab ini khusus untuk format Hydra. Saat pindah ke _authorization server_ lain, bagian yang berubah hanya _struct_ `Claims`.
 ]
 
 Hydra baru membuat _signing key_ untuk _access token_ saat menerima permintaan _token_ pertama. Perintah `make -s token` di atas sekaligus memastikan _key_ tersebut sudah ada.
 
 === Menambahkan _Dependency_
 
-Tiga _library_ baru digunakan:
+Lab ini menggunakan tiga _library_ baru:
 
-- `github.com/golang-jwt/jwt/v5`: mengurai JWT, memeriksa tanda tangan dan _claim_ standar;
+- `github.com/golang-jwt/jwt/v5`: mem-_parse_ JWT, memeriksa _signature_ dan _claim_ standar;
 - `github.com/MicahParks/keyfunc/v3`: mengunduh JWKS, menyimpannya di memori, dan mengunduh ulang saat menemukan _key ID_ (`kid`) yang belum dikenal;
 - `golang.org/x/time/rate`: membatasi frekuensi unduh ulang JWKS.
 
@@ -191,7 +191,7 @@ Setelah semua kode di bab ini selesai ditulis, `go mod tidy` di setiap modul mer
 
 === Konfigurasi OAuth2 di `account`
 
-`account` membutuhkan dua nilai: _issuer_ yang diharapkan dan alamat JWKS. Sesuai aturan studi kasus, keduanya wajib diisi dan tidak punya nilai bawaan. Tambahkan dua _field_ ke `Config` di `account/config.go`:
+`account` membutuhkan dua nilai: _issuer_ yang diharapkan dan alamat JWKS. Sesuai aturan studi kasus, keduanya wajib diisi dan tidak memiliki nilai _default_. Tambahkan dua _field_ ke `Config` di `account/config.go`:
 
 ```go
 type Config struct {
@@ -224,19 +224,19 @@ Tambahkan nilainya untuk laptop di target `run` pada `account/Makefile`, sebelum
 
 === Memeriksa JWT dengan `Verifier`
 
-Pemeriksaan _token_ dipisahkan dari _transport_. Paket baru `account/internal/auth` berisi `Verifier` yang hanya tahu soal JWT, sedangkan _interceptor_ gRPC di langkah berikutnya hanya tahu soal _metadata_ gRPC. Pemisahan ini membuat `Verifier` yang sama dapat digunakan ulang di _middleware_ REST `transfer`.
+Pemeriksaan _token_ dipisahkan dari _transport_. Paket baru `account/internal/auth` berisi `Verifier` yang hanya menangani JWT, sedangkan _interceptor_ gRPC di langkah berikutnya hanya menangani _metadata_ gRPC. Pemisahan ini membuat `Verifier` yang sama dapat digunakan ulang di _middleware_ REST `transfer`.
 
 Hal-hal yang diperiksa `Verifier`, beserta alasannya:
 
-- *Algoritma tanda tangan dikunci ke RS256.* JWT membawa nama algoritmanya di _header_. Bila service menerima algoritma apa pun yang tertulis di _header_, penyerang dapat mengirim _token_ dengan `alg: none` (tanpa tanda tangan) atau menandatangani dengan HS256 menggunakan _public key_ sebagai _secret_.
+- *Algoritma _signature_ dibatasi pada RS256.* JWT membawa nama algoritmanya di _header_. Bila service menerima algoritma apa pun yang tertulis di _header_, penyerang dapat mengirim _token_ dengan `alg: none` (tanpa _signature_) atau menandatangani dengan HS256 menggunakan _public key_ sebagai _secret_.
 - *_Issuer_ harus sama persis*, termasuk garis miring di akhir. _Token_ dari _authorization server_ lain, atau dari _environment_ lain, ditolak.
 - *`exp` wajib ada.* _Token_ tanpa `exp` berlaku selamanya.
-- *Toleransi jam 30 detik* (_leeway_) untuk selisih jam antar server.
+- *_Leeway_ 30 detik* untuk menoleransi selisih jam antarserver.
 - *_Audience_ (`aud`) tidak diperiksa* di lab ini, karena _token_ _client credentials_ dari Hydra tidak membawa `aud` kecuali diminta. Di _production_, setiap _resource server_ didaftarkan sebagai _audience_ tersendiri dan `aud` diperiksa, sehingga _token_ untuk satu service tidak dapat digunakan di service lain.
 
 JWKS diunduh oleh `keyfunc` saat _startup_ dan diperbarui setiap jam. Bila _token_ datang dengan `kid` yang belum dikenal (Hydra baru dibuat ulang, atau _key_ dirotasi), `keyfunc` mengunduh ulang JWKS. Unduh ulang ini dibatasi paling sering sekali per 5 detik. Tanpa batas tersebut, penyerang yang mengirim _token_ sampah dengan `kid` acak akan membuat service membanjiri Hydra dengan permintaan JWKS.
 
-Kegagalan mengunduh JWKS saat _startup_ hanya dicatat di log, tidak menghentikan service. `account` tetap berjalan ketika Hydra mati; hanya pemeriksaan _token_ yang gagal hingga _key_ berhasil diunduh.
+Kegagalan mengunduh JWKS saat _startup_ hanya dicatat di log, tidak menghentikan service. `account` tetap berjalan ketika Hydra mati, dan hanya pemeriksaan _token_ yang gagal sampai _key_ berhasil diunduh.
 
 Buat _file_ `account/internal/auth/verifier.go`:
 
@@ -337,19 +337,19 @@ func (v *Verifier) Verify(token string) (Claims, error) {
 
 === _Interceptor_ gRPC di `account`
 
-_Interceptor_ membaca _token_ dari _metadata_ gRPC. _Metadata_ gRPC berjalan sebagai _header_ HTTP/2, sehingga nama _key_-nya selalu huruf kecil: `authorization`, bukan `Authorization`.
+_Interceptor_ membaca _token_ dari _metadata_ gRPC. _Metadata_ gRPC dikirim sebagai _header_ HTTP/2, sehingga nama _key_-nya selalu huruf kecil: `authorization`, bukan `Authorization`.
 
 Urutan pemeriksaan di _interceptor_:
 
 + Metode publik (gRPC _health_ dan _reflection_) langsung diteruskan tanpa _token_.
-+ Metode yang tidak terdaftar di peta _scope_ ditolak dengan `PermissionDenied`. Dengan begitu, RPC _unary_ baru yang ditambahkan ke `AccountService` tanpa _scope_ otomatis tertutup, bukan terbuka.
++ Metode yang tidak terdaftar di _map_ `scopes` ditolak dengan `PermissionDenied`. Dengan begitu, RPC _unary_ baru yang ditambahkan ke `AccountService` tanpa _scope_ otomatis tertutup (_fail closed_).
 + _Token_ tidak ada atau tidak valid: `Unauthenticated`.
 + _Token_ valid tetapi _scope_ kurang: `PermissionDenied`.
 + Lolos semua pemeriksaan: _claim_ disimpan di `context` agar _handler_ dapat membaca `client_id` pemanggil.
 
-Sifat "otomatis tertutup" ini hanya berlaku untuk panggilan yang melewati _interceptor_ dan tidak termasuk metode publik. Ada dua celah yang perlu diingat. Pertama, _interceptor_ ini hanya untuk RPC _unary_. RPC _streaming_ tidak pernah melewatinya, dan service ini tidak memasang _stream interceptor_, sehingga metode _streaming_ akan terbuka. Kedua, `account/main.go` menganggap semua metode di luar `AccountService` sebagai metode publik. Service gRPC lain yang kelak didaftarkan di server yang sama otomatis terbuka. Sebelum menambah service seperti itu, persempit fungsi penentu metode publik agar hanya meloloskan _health_ dan _reflection_.
+Sifat _fail closed_ ini hanya berlaku untuk panggilan yang melewati _interceptor_ dan tidak termasuk metode publik. Ada dua celah yang perlu diingat. Pertama, _interceptor_ ini hanya untuk RPC _unary_. RPC _streaming_ tidak pernah melewatinya, dan service ini tidak memasang _stream interceptor_, sehingga metode _streaming_ akan terbuka. Kedua, `account/main.go` menganggap semua metode di luar `AccountService` sebagai metode publik. Service gRPC lain yang kelak didaftarkan di server yang sama otomatis terbuka. Sebelum menambah service seperti itu, persempit fungsi penentu metode publik agar hanya meloloskan _health_ dan _reflection_.
 
-Detail penolakan (kedaluwarsa, _issuer_ salah, tanda tangan tidak cocok) hanya ditulis ke log `grpc call rejected`. Pemanggil hanya menerima `invalid token`. Informasi seperti "_issuer_ yang diharapkan adalah X" membantu penyerang, bukan pemanggil yang sah.
+Detail penolakan (kedaluwarsa, _issuer_ salah, _signature_ tidak cocok) hanya ditulis ke log `grpc call rejected`. Pemanggil hanya menerima `invalid token`. Informasi seperti "_issuer_ yang diharapkan adalah X" tidak berguna bagi pemanggil yang sah, tetapi membantu penyerang.
 
 Buat _file_ `account/internal/auth/grpc.go`:
 
@@ -439,11 +439,11 @@ func bearerFromMetadata(ctx context.Context) (string, error) {
 }
 ```
 
-Kunci `claimsKey` sengaja berupa tipe privat. Paket lain tidak dapat membuat kunci yang sama, sehingga tidak ada kode lain yang bisa menimpa _claim_ di `context`.
+_Key_ `claimsKey` sengaja berupa tipe privat. Paket lain tidak dapat membuat _key_ yang sama, sehingga tidak ada kode lain yang bisa menimpa _claim_ di `context`.
 
-=== Peta _Scope_ dan Log Pemanggil
+=== _Scope_ per RPC dan Log Pemanggil
 
-Peta _scope_ diletakkan di paket `account`, di samping `GRPCServer`, karena paket tersebut yang tahu arti setiap RPC. Tambahkan di `account/internal/account/grpc.go`, tepat sebelum deklarasi `type GRPCServer struct`:
+_Map_ `GRPCScopes` diletakkan di paket `account`, di samping `GRPCServer`, karena paket tersebut yang tahu arti setiap RPC. Tambahkan di `account/internal/account/grpc.go`, tepat sebelum deklarasi `type GRPCServer struct`:
 
 ```go
 // GRPCScopes is the OAuth2 scope each RPC requires (Lab 7). Reading and moving
@@ -456,7 +456,7 @@ var GRPCScopes = map[string]string{
 }
 ```
 
-Konstanta `..._FullMethodName` dihasilkan oleh `protoc-gen-go-grpc` di Lab 4. Menggunakan konstanta ini lebih aman dibandingkan menulis _string_ `"/account.v1.AccountService/Debit"` secara manual: salah ketik langsung menjadi error kompilasi.
+Konstanta `..._FullMethodName` dihasilkan oleh `protoc-gen-go-grpc` di Lab 4. Menggunakan konstanta ini lebih aman dibandingkan menulis _string_ `"/account.v1.AccountService/Debit"` secara manual, karena salah ketik langsung terdeteksi sebagai error kompilasi.
 
 Tambahkan juga _import_ paket `auth` di _file_ yang sama:
 
@@ -515,7 +515,7 @@ Tambahkan _import_ `.../account/internal/auth`, lalu buat `Verifier` sebelum `gr
 
 Urutan _interceptor_ di `ChainUnaryInterceptor` menentukan urutan eksekusi: yang pertama membungkus yang berikutnya.
 
-- *Logging di posisi pertama* agar log `grpc request` mencatat kode hasil akhir, termasuk `Unauthenticated` dari _auth_ dan `Unavailable` dari _fault injector_.
+- *_Interceptor_ `Logging` di posisi pertama* agar log `grpc request` mencatat kode hasil akhir, termasuk `Unauthenticated` dari _auth_ dan `Unavailable` dari _fault injector_.
 - *_Auth_ sebelum _fault injector_* agar pemanggil tanpa _token_ valid ditolak sebelum menerima _delay_ simulasi. Di sistem sungguhan, prinsipnya sama: permintaan yang tidak sah tidak boleh menghabiskan sumber daya.
 
 === _Resource Server_ di `transfer`
@@ -527,11 +527,11 @@ mkdir -p transfer/internal/auth
 cp account/internal/auth/verifier.go transfer/internal/auth/verifier.go
 ```]
 
-Ubah komentar paket di baris pertama agar menyebut `transfer`. Setiap service memiliki salinannya sendiri, bukan modul _library_ bersama. Modul bersama mengikat jadwal rilis semua service: perubahan kecil di _library_ memaksa semua service ikut di-_build_ ulang dan di-_deploy_. Tim yang memilih _library_ bersama perlu memberinya versi seperti _dependency_ eksternal lainnya.
+Ubah komentar paket di baris pertama agar menyebut `transfer`. Setiap service sengaja memiliki salinan sendiri dan tidak berbagi modul _library_. Modul bersama mengikat jadwal rilis semua service, karena perubahan kecil di _library_ memaksa semua service ikut di-_build_ ulang dan di-_deploy_. Tim yang memilih _library_ bersama perlu memberinya versi seperti _dependency_ eksternal lainnya.
 
 ==== _Middleware_ REST
 
-_Middleware_ ini padanan _interceptor_ gRPC di `account` untuk REST: penolakan dinyatakan dengan status HTTP dan _header_. RFC 6750 mengatur cara _resource server_ memberi tahu alasan penolakan melalui _header_ `WWW-Authenticate`:
+_Middleware_ ini merupakan padanan REST untuk _interceptor_ gRPC di `account`. Bedanya, penolakan dinyatakan melalui status HTTP dan _header_. RFC 6750 mengatur cara _resource server_ memberi tahu alasan penolakan melalui _header_ `WWW-Authenticate`:
 
 - tanpa _token_: `Bearer`;
 - _token_ tidak valid: `Bearer error="invalid_token"`;
@@ -619,7 +619,7 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 
 ==== Memasang _Middleware_ per _Route_
 
-_Scope_ ditentukan per _route_, jadi _middleware_ dipasang per _route_, bukan membungkus seluruh `ServeMux`. Agar paket `transfer` tidak bergantung pada paket `auth`, `Routes` menerima sebuah fungsi dengan bentuk yang didefinisikan paket `transfer` sendiri. `main.go` mengisinya dengan _middleware_ JWT, sedangkan _unit test_ mengisinya dengan fungsi yang meloloskan semua permintaan.
+_Scope_ ditentukan per _route_, jadi _middleware_ dipasang per _route_, bukan membungkus seluruh `ServeMux`. Agar paket `transfer` tidak bergantung pada paket `auth`, `Routes` menerima fungsi bertipe `RequireScope` yang didefinisikan paket `transfer` sendiri. `main.go` mengisinya dengan _middleware_ JWT, sedangkan _unit test_ mengisinya dengan fungsi yang meloloskan semua permintaan.
 
 Di `transfer/internal/transfer/http.go`, ganti fungsi `Routes` menjadi:
 
@@ -648,11 +648,11 @@ func (h *Handler) Routes(requireScope RequireScope) *http.ServeMux {
 }
 ```
 
-Method `(*Middleware).Require` memiliki _signature_ yang sama dengan `RequireScope`, sehingga `Require` dapat langsung dioper sebagai nilai fungsi.
+_Method_ `(*Middleware).Require` memiliki _signature_ yang sama dengan `RequireScope`, sehingga `Require` dapat langsung diteruskan sebagai nilai fungsi.
 
 === `transfer` sebagai _Client_ OAuth2
 
-Sekarang sisi pemanggil. Setiap panggilan gRPC dari `transfer` ke `account` harus membawa _token_ `transfer-service`.
+Bagian ini membahas sisi pemanggil. Setiap panggilan gRPC dari `transfer` ke `account` harus membawa _token_ `transfer-service`.
 
 ==== Konfigurasi
 
@@ -694,13 +694,13 @@ Tambahkan nilainya di target `run` pada `transfer/Makefile`, sebelum `go run .`:
 
 ==== `PerRPCCredentials`
 
-gRPC menyediakan antarmuka `credentials.PerRPCCredentials` untuk menempelkan _metadata_ ke setiap panggilan. gRPC memanggil `GetRequestMetadata` sebelum setiap percobaan, termasuk percobaan ulang oleh _retry_ failsafe-go, sehingga setiap percobaan membawa _token_.
+gRPC menyediakan _interface_ `credentials.PerRPCCredentials` untuk menempelkan _metadata_ ke setiap panggilan. gRPC memanggil `GetRequestMetadata` sebelum setiap percobaan, termasuk percobaan ulang oleh _retry_ failsafe-go, sehingga setiap percobaan membawa _token_.
 
-grpc-go sudah menyediakan implementasi siap pakai di paket `credentials/oauth`. Implementasi tersebut tidak digunakan di sini karena menolak mengirim _token_ lewat koneksi tanpa TLS, sedangkan koneksi gRPC di lab berjalan tanpa TLS. Penolakan itu benar untuk _production_: _bearer token_ yang terkirim tanpa enkripsi dapat disalin dan digunakan ulang oleh siapa pun yang melihat lalu lintas jaringan. Implementasi di lab ini mengembalikan `false` dari `RequireTransportSecurity`, dan komentar di kode mencatat bahwa _production_ wajib menggunakan TLS.
+grpc-go sudah menyediakan implementasi siap pakai di paket `credentials/oauth`. Implementasi tersebut tidak digunakan di sini karena hanya mengirim _token_ lewat koneksi TLS, sedangkan koneksi gRPC di lab berjalan tanpa TLS. Pembatasan itu tepat untuk _production_: _bearer token_ yang terkirim tanpa enkripsi dapat disalin dan digunakan ulang oleh siapa pun yang melihat lalu lintas jaringan. Implementasi di lab ini mengembalikan `false` dari `RequireTransportSecurity`, dan komentar di kode mencatat bahwa _production_ wajib menggunakan TLS.
 
 Tiga keputusan desain di dalam `tokenCredentials`:
 
-- *_Token_ disimpan dan digunakan ulang* hingga 10 detik sebelum kedaluwarsa (`oauth2.Token.Valid()`). Hydra menerima satu permintaan per masa berlaku _token_, bukan satu permintaan per transfer.
+- *_Token_ disimpan dan digunakan ulang* hingga 10 detik sebelum kedaluwarsa (`oauth2.Token.Valid()`). Selama masa berlaku satu _token_, Hydra hanya menerima satu permintaan, berapa pun jumlah transfernya.
 - *Gagal mengambil _token_ menghasilkan `Unauthenticated`*, bukan `Unavailable`. Kebijakan _retry_ dari Lab 4 hanya mengulang `Unavailable` (dan `DeadlineExceeded` sejak Lab 5), dan _circuit breaker_ hanya menghitung error infrastruktur. Hydra yang mati tidak berarti `account` bermasalah, jadi _circuit breaker_ ke `account` tidak boleh terbuka karenanya. Error ini dibuat sebagai tipe tersendiri, `tokenFetchError`, agar dapat dibedakan dari `Unauthenticated` yang dikirim oleh `account`. Panggilan gRPC yang gagal mendapat _token_ tidak pernah keluar dari `transfer`. Bila ini terjadi saat `Debit`, transfer berakhir `FAILED` dengan kode HTTP 502.
 - *_Token_ yang ditolak `account` diganti sekali.* _Token_ bisa ditolak sebelum kedaluwarsa, misalnya karena Hydra merotasi _signing key_. Hydra di lab mendapat _key_ baru setiap kali di-_restart_. Tanpa mekanisme ini, setiap panggilan gagal hingga _token_ lama kedaluwarsa, paling lama satu jam. Penggantian hanya dilakukan bila penolakan datang dari `account`. Kegagalan mengambil _token_ (`tokenFetchError`) tidak diulang, karena percobaan kedua dalam panggilan yang sama hanya menghubungi Hydra sekali lagi. Mengulang `Debit` atau `Credit` aman karena keduanya sudah _idempotent_ berdasarkan `reference` sejak Lab 5.
 
@@ -799,9 +799,9 @@ func (c *tokenCredentials) refreshOnUnauthenticated(ctx context.Context, method 
 }
 ```
 
-`c.tok.Valid()` aman dipanggil walaupun `c.tok` masih `nil`: method `Valid` pada `*oauth2.Token` memeriksa `nil` terlebih dahulu dan mengembalikan `false`.
+`c.tok.Valid()` aman dipanggil walaupun `c.tok` masih `nil`: _method_ `Valid` pada `*oauth2.Token` memeriksa `nil` terlebih dahulu dan mengembalikan `false`.
 
-grpc-go meneruskan error yang memiliki method `GRPCStatus` apa adanya ke pemanggil. Karena itu, `refreshOnUnauthenticated` dapat memeriksa dua hal sekaligus: `status.Code(err)` tetap `Unauthenticated` bagi kebijakan _retry_ dan _circuit breaker_, sedangkan `errors.As` mengenali bahwa error tersebut berasal dari `tokenFetchError`, bukan dari `account`.
+grpc-go meneruskan error yang memiliki _method_ `GRPCStatus` apa adanya ke pemanggil. Karena itu, `refreshOnUnauthenticated` dapat memeriksa dua hal sekaligus: `status.Code(err)` tetap `Unauthenticated` bagi kebijakan _retry_ dan _circuit breaker_, sedangkan `errors.As` mengenali bahwa error tersebut berasal dari `tokenFetchError`, bukan dari `account`.
 
 ==== Memasang _Credentials_ di `accountclient.New`
 
@@ -890,7 +890,7 @@ Ganti pembuatan `accounts` dan `mux` menjadi:
 	mux.HandleFunc("GET /debug/circuit-breaker", accounts.ServeCircuitBreaker)
 ```
 
-Client `transfer-service` terdaftar dengan _scope_ `account:read` dan `account:write`, tetapi `transfer` hanya meminta `account:write` karena hanya memanggil `Debit` dan `Credit`. _Token_ yang bocor hanya membawa hak yang memang dibutuhkan (_least privilege_).
+_Client_ `transfer-service` terdaftar dengan _scope_ `account:read` dan `account:write`, tetapi `transfer` hanya meminta `account:write` karena hanya memanggil `Debit` dan `Credit`. _Token_ yang bocor hanya membawa hak yang memang dibutuhkan (_least privilege_).
 
 `tokenCfg.Token` adalah _method value_ bertipe `func(context.Context) (*oauth2.Token, error)`, sama dengan tipe `FetchToken`. _Token_ baru diambil saat panggilan gRPC pertama, bukan saat _startup_. `transfer` tetap bisa menyala dan lolos _readiness probe_ walaupun Hydra sedang mati.
 
@@ -904,7 +904,7 @@ Hingga Lab 6, `failure_reason` berisi teks error apa adanya, misalnya:
 debit failed: rpc error: code = Unavailable desc = connection error: desc = "transport: Error while dialing: dial tcp 127.0.0.1:9091: connect: connection refused"
 ```
 
-Teks ini sekarang sampai ke aplikasi _channel_ yang memegang _token_ `transfer:read`, dan juga ikut terkirim di _event_ Kafka. Alamat IP, port, dan pesan error dari _library_ internal tidak berguna bagi pemanggil, tetapi berguna bagi penyerang yang memetakan jaringan. API hanya perlu menyebut hasil bisnis; detail teknisnya cukup ada di log.
+Teks ini sekarang sampai ke aplikasi _channel_ yang memegang _token_ `transfer:read`, dan juga ikut terkirim di _event_ Kafka. Alamat IP, port, dan pesan error dari _library_ internal tidak berguna bagi pemanggil, tetapi berguna bagi penyerang yang memetakan jaringan. API cukup menyebut hasil bisnis, sedangkan detail teknisnya dicatat di log.
 
 Tambahkan fungsi berikut di `transfer/internal/transfer/service.go`, misalnya tepat sebelum `func (s *Service) Get`:
 
@@ -942,7 +942,7 @@ reason := "credit failed: " + publicReason(cause)
 reason = reason + "; reversal failed: " + publicReason(err)
 ```
 
-Cabang _reversal_ gagal tetap mengembalikan error yang membungkus `ErrReversalFailed` dari Lab 5, sehingga transfer `COMPENSATION_FAILED` tetap dijawab 500. Yang berubah hanya teks `reason`.
+Cabang untuk _reversal_ yang gagal tetap mengembalikan error yang membungkus `ErrReversalFailed` dari Lab 5, sehingga transfer `COMPENSATION_FAILED` tetap dijawab 500. Yang berubah hanya teks `reason`.
 
 `publicReason` menaruh pesan _sentinel_ (misalnya `insufficient funds`) di akhir teks. Fungsi `replayOutcome` dari Lab 6 bergantung pada sifat ini: kode HTTP untuk _replay_ ditentukan dari akhiran `failure_reason`. Teks lama sebelum Lab 7 (`debit failed: debit 1111111111: insufficient funds`) juga berakhir dengan pesan yang sama, jadi _replay_ untuk transfer lama tetap menghasilkan kode yang sama. Perbarui komentar di atas `replayOutcome` agar menyebut kedua format tersebut:
 
@@ -1011,7 +1011,7 @@ Pastikan `account` dan `transfer` tidak berhenti dengan pesan `missing required 
 
 === Empat Skenario REST
 
-Siapkan dua _token_: satu dengan kedua _scope_, satu lagi hanya-baca:
+Siapkan dua _token_: satu dengan kedua _scope_, satu lagi _read-only_ (hanya `transfer:read`):
 
 #perintah[```bash
 TOKEN=$(make -s token)
@@ -1035,7 +1035,7 @@ Www-Authenticate: Bearer
 
 Go menulis nama _header_ dengan huruf besar di awal setiap kata (`Www-Authenticate`). Nama _header_ HTTP tidak membedakan huruf besar dan kecil.
 
-*_Token_ hanya-baca untuk operasi tulis: 403.*
+*_Token read-only_ untuk operasi tulis: 403.*
 
 #perintah[```bash
 curl -i -X POST localhost:8082/transfers -H "Authorization: Bearer $RO" \
@@ -1059,7 +1059,7 @@ curl -i -X POST localhost:8082/transfers -H "Authorization: Bearer $TOKEN" \
 
 Respons berstatus `201 Created` dengan `"status":"COMPLETED"` dan _header_ `Location: /transfers/...`.
 
-*_Token_ hanya-baca untuk operasi baca: 200.* Ganti `ID` dengan nilai `id` dari respons sebelumnya:
+*_Token read-only_ untuk operasi baca: 200.* Ganti `ID` dengan nilai `id` dari respons sebelumnya:
 
 #perintah[```bash
 curl -i -H "Authorization: Bearer $RO" localhost:8082/transfers/ID
@@ -1101,33 +1101,33 @@ curl -i -X POST localhost:8082/transfers -H "Authorization: Bearer $TOKEN" \
   -d '{"from_account":"1111111111","to_account":"2222222222","amount":"100000"}'
 ```]
 
-Respons berstatus `502 Bad Gateway` dan berisi `"status":"FAILED"` serta `"failure_reason":"debit failed: account service error"`, tanpa alamat `127.0.0.1:9091`. Alamat tersebut tetap ada di log `transfer not completed` pada _field_ `error`. Bila percobaan diulang hingga _circuit breaker_ terbuka, respons berubah menjadi `503 Service Unavailable` dengan `failure_reason` `debit failed: account service unavailable`: tidak ada uang yang berpindah dan permintaan aman diulang. Jalankan lagi `make -C account run` setelah selesai.
+Respons berstatus `502 Bad Gateway` dan berisi `"status":"FAILED"` serta `"failure_reason":"debit failed: account service error"`, tanpa alamat `127.0.0.1:9091`. Alamat tersebut tetap ada di log `transfer not completed` pada _field_ `error`. Bila percobaan diulang hingga _circuit breaker_ terbuka, respons berubah menjadi `503 Service Unavailable` dengan `failure_reason` `debit failed: account service unavailable`. Artinya, tidak ada uang yang berpindah dan permintaan aman diulang. Jalankan lagi `make -C account run` setelah selesai.
 
 Format baru hanya berlaku untuk transfer yang dibuat setelah kode Lab 7 berjalan. Transfer yang tersimpan sebelumnya tetap menampilkan `failure_reason` lama yang memuat pesan asli, misalnya `debit failed: debit 1111111111: rpc error: ...`. Untuk melihat format baru, selalu periksa transfer gagal yang baru dibuat. _Replay_ dengan `Idempotency-Key` milik transfer lama tetap menghasilkan kode HTTP yang sama seperti permintaan aslinya.
 
 == Masalah Umum
 
-*Semua permintaan dengan _token_ dijawab 401.* Periksa log `request rejected` di `transfer`. Bila error-nya menyebut _issuer_ (`token has invalid issuer`), nilai `OAUTH_ISSUER` tidak sama persis dengan _claim_ `iss`. Hydra menerbitkan `http://localhost:4444/` dengan garis miring di akhir; `http://localhost:4444` tanpa garis miring dianggap _issuer_ lain. Log _startup_ `transfer` menampilkan nilai `oauth_issuer` yang sedang digunakan.
+*Semua permintaan dengan _token_ dijawab 401.* Periksa log `request rejected` di `transfer`. Bila error-nya menyebut _issuer_ (`token has invalid issuer`), nilai `OAUTH_ISSUER` tidak sama persis dengan _claim_ `iss`. Hydra menerbitkan `http://localhost:4444/` dengan garis miring di akhir, sedangkan `http://localhost:4444` tanpa garis miring dianggap _issuer_ lain. Log _startup_ `transfer` menampilkan nilai `oauth_issuer` yang sedang digunakan.
 
-*`make -s token` gagal dengan `invalid_client`.* Hydra menyimpan _client_ di memori. Setelah _container_ Hydra di-_restart_ (termasuk setelah Docker atau laptop di-_restart_), _client_ hilang. Jalankan `make infra-up` lagi; target ini menjalankan `hydra-init` yang menghapus lalu membuat ulang kedua _client_.
+*`make -s token` gagal dengan `invalid_client`.* Hydra menyimpan _client_ di memori. Setelah _container_ Hydra di-_restart_ (termasuk setelah Docker atau laptop di-_restart_), _client_ hilang. Jalankan `make infra-up` lagi. Target ini menjalankan `hydra-init` yang menghapus lalu membuat ulang kedua _client_.
 
 *_Token_ di variabel `TOKEN` tiba-tiba ditolak dengan `invalid token`.* Ada dua kemungkinan: _token_ sudah lebih dari satu jam (kedaluwarsa), atau Hydra sudah di-_restart_ sehingga _signing key_-nya berganti dan `transfer` sudah mengunduh JWKS yang baru. Ambil _token_ baru dengan `TOKEN=$(make -s token)`. Log `request rejected` menyebut penyebab persisnya.
 
-*Permintaan pertama setelah Hydra di-_restart_ lambat, sekitar setengah detik.* Hydra yang baru menyala membuat _signing key_ baru saat permintaan _token_ pertama. Service yang sudah berjalan mengunduh ulang JWKS saat bertemu `kid` yang belum dikenal. Unduh ulang dibatasi sekali per 5 detik, dan permintaan yang menunggu batas tersebut paling lama menunggu 5 detik sebelum dijawab 401.
+*Permintaan pertama setelah Hydra di-_restart_ lambat, sekitar setengah detik.* Hydra yang baru menyala membuat _signing key_ baru saat permintaan _token_ pertama. Service yang sudah berjalan mengunduh ulang JWKS saat menerima _token_ dengan `kid` yang belum dikenal. Unduh ulang dibatasi sekali per 5 detik, dan permintaan yang menunggu batas tersebut paling lama menunggu 5 detik sebelum dijawab 401.
 
 *Log `fetching signing keys failed` saat _startup_.* Hydra belum berjalan ketika service menyala. Service tetap berjalan, tetapi semua pemeriksaan _token_ gagal hingga Hydra tersedia. Jalankan `make infra-up`, lalu ulangi permintaan.
 
-*Transfer dijawab 502, `FAILED` dengan alasan `debit failed: account service error`, padahal `account` berjalan.* Lihat log `transfer not completed` di `transfer`. Bila isinya `get access token`, `transfer` gagal mengambil _token_ dari Hydra: periksa `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET`, `OAUTH_TOKEN_URL`, dan pastikan `hydra-init` sudah berjalan. Panggilan ini tidak pernah sampai ke `account`, tidak diulang, dan tidak membuka _circuit breaker_ ke `account`; `make breaker` tetap menunjukkan `closed`.
+*Transfer dijawab 502, `FAILED` dengan alasan `debit failed: account service error`, padahal `account` berjalan.* Lihat log `transfer not completed` di `transfer`. Bila isinya `get access token`, `transfer` gagal mengambil _token_ dari Hydra. Periksa `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET`, `OAUTH_TOKEN_URL`, dan pastikan `hydra-init` sudah berjalan. Panggilan ini tidak pernah sampai ke `account`, tidak diulang, dan tidak membuka _circuit breaker_ ke `account`, sehingga `make breaker` tetap menunjukkan `closed`.
 
 *Kompilasi gagal di _test_ dengan pesan `cannot use log (variable of type *slog.Logger) as FetchToken value in argument to New` atau `not enough arguments in call to ....Routes`.* _Test_ lama belum diganti. Jalankan perintah `git checkout lab-07 -- ...` di langkah Memperbarui _Unit Test_.
 
-*Service lama masih menggunakan port 8081 atau 8082.* Hentikan berdasarkan port, misalnya `kill $(lsof -t -i :8081)`. Biner hasil `go run` di macOS berada di folder _cache_ Go, sehingga pencarian berdasarkan nama proses sering tidak menemukannya.
+*Service lama masih menggunakan port 8081 atau 8082.* Hentikan berdasarkan port, misalnya `kill $(lsof -t -i :8081)`. _Binary_ hasil `go run` di macOS berada di folder _cache_ Go, sehingga pencarian berdasarkan nama proses sering tidak menemukannya.
 
 == Eksplorasi Mandiri
 
-+ *Rotasi _signing key_.* Pastikan sudah ada satu transfer berhasil sejak `transfer` dijalankan, agar `transfer` menyimpan _token_ `transfer-service` di _cache_. Jalankan `docker compose restart hydra` lalu `docker compose run --rm hydra-init`; Hydra kini memiliki _signing key_ baru. Me-_restart_ Hydra saja belum memicu penolakan: `account` masih menyimpan _key_ lama di JWKS yang sudah diunduh (diperbarui setiap jam), sehingga _token_ lama di `transfer` tetap diterima. Karena itu, jalankan ulang `account` (Ctrl+C, lalu `make -C account run`) agar `account` hanya mengenal _key_ baru. Buat transfer dengan _token_ `channel-app` baru dari `make -s token`. Amati log `account`: muncul `grpc call rejected` dengan error `key not found` dan `grpc request` dengan `code=Unauthenticated`, lalu `Debit` yang diulang berhasil. Jelaskan komponen mana yang mengganti _token_ dan komponen mana yang mengunduh ulang JWKS. Mengapa mengulang `Debit` setelah `Unauthenticated` aman?
++ *Rotasi _signing key_.* Pastikan sudah ada satu transfer berhasil sejak `transfer` dijalankan, agar `transfer` menyimpan _token_ `transfer-service` di _cache_. Jalankan `docker compose restart hydra` lalu `docker compose run --rm hydra-init`. Setelah itu, Hydra memiliki _signing key_ baru. Me-_restart_ Hydra saja belum memicu penolakan: `account` masih menyimpan _key_ lama di JWKS yang sudah diunduh (diperbarui setiap jam), sehingga _token_ lama di `transfer` tetap diterima. Karena itu, jalankan ulang `account` (Ctrl+C, lalu `make -C account run`) agar `account` hanya mengenal _key_ baru. Buat transfer dengan _token_ `channel-app` baru dari `make -s token`. Amati log `account`: muncul `grpc call rejected` dengan error `key not found` dan `grpc request` dengan `code=Unauthenticated`, lalu `Debit` yang diulang berhasil. Jelaskan komponen mana yang mengganti _token_ dan komponen mana yang mengunduh ulang JWKS. Mengapa mengulang `Debit` setelah `Unauthenticated` aman?
 + *_Issuer_ yang salah.* Hapus garis miring di akhir `OAUTH_ISSUER` pada `transfer/Makefile`, jalankan ulang `transfer`, lalu kirim permintaan dengan _token_ valid. Temukan baris log yang menjelaskan penolakan. Kembalikan dengan `git checkout -- transfer/Makefile` atau perbaiki secara manual.
-+ *Hak minimal.* Ubah `Scopes` di `tokenCfg` menjadi `account:read` saja, jalankan ulang `transfer`, lalu buat transfer. Kode gRPC apa yang diterima `transfer`, apakah dihitung _circuit breaker_, dan apa isi `failure_reason`? Kembalikan ke `account:write` setelah selesai.
++ *_Least privilege_.* Ubah `Scopes` di `tokenCfg` menjadi `account:read` saja, jalankan ulang `transfer`, lalu buat transfer. Kode gRPC apa yang diterima `transfer`, apakah dihitung _circuit breaker_, dan apa isi `failure_reason`? Kembalikan ke `account:write` setelah selesai.
 + *Hydra mati.* Hentikan Hydra dengan `docker compose stop hydra`, jalankan ulang `transfer`, lalu periksa `/readyz` dan buat transfer dengan _token_ lama yang belum kedaluwarsa. Bandingkan perilaku `transfer` sebagai _resource server_ (JWKS sudah tersimpan atau belum) dengan perilakunya sebagai _client_ (perlu _token_ baru). Nyalakan kembali dengan `make infra-up`.
 
 == Checkpoint

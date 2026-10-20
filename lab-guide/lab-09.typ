@@ -14,15 +14,15 @@ Setelah menyelesaikan lab ini, peserta mampu:
 
 == Gambaran
 
-Hingga Lab 8, ketiga service dijalankan langsung di laptop dengan `make -C <service> run`, sedangkan infrastruktur (PostgreSQL, Kafka, Hydra, `otel-lgtm`) berjalan di Docker Compose. Cara tersebut cocok untuk pengembangan, tetapi tidak mewakili cara aplikasi dijalankan di _server_: di _server_, aplikasi dikemas sebagai _image_ lalu dijalankan oleh _container platform_ seperti Kubernetes atau OpenShift.
+Hingga Lab 8, ketiga service dijalankan langsung di laptop dengan `make -C <service> run`, sedangkan infrastruktur (PostgreSQL, Kafka, Hydra, `otel-lgtm`) berjalan di Docker Compose. Cara tersebut cocok untuk pengembangan, tetapi tidak mewakili cara aplikasi dijalankan di _server_, tempat aplikasi dikemas sebagai _image_ lalu dijalankan oleh _container platform_ seperti Kubernetes atau OpenShift.
 
 Lab ini memindahkan ketiga service ke dalam _container_ dalam tiga tahap:
 
 + Setiap service mendapat `Dockerfile`. _Image_ yang dihasilkan hanya berisi _binary_ dan sertifikat CA, tanpa _shell_ maupun _package manager_.
-+ _Profile_ `apps` di `compose.yaml` menjalankan ketiga _image_ tersebut di Docker Compose. Tahap ini memeriksa _image_ sebelum masuk ke Kubernetes.
++ _Profile_ `apps` di `compose.yaml` menjalankan ketiga _image_ tersebut di Docker Compose. Di tahap ini, _image_ diperiksa terlebih dahulu sebelum dijalankan di Kubernetes.
 + _Cluster_ k3d menjalankan ketiga service sebagai Deployment. Infrastruktur tetap di Docker Compose, dan _pod_ menjangkaunya melalui nama `host.k3d.internal`.
 
-_Manifest_ Kubernetes untuk tahap ketiga sudah disediakan di _checkpoint_ `lab-09`. Peserta tidak menulisnya dari awal: peserta menyalin _manifest_ tersebut, membaca bagian pentingnya, menerapkannya ke _cluster_, lalu mengubahnya melalui beberapa latihan.
+_Manifest_ Kubernetes untuk tahap ketiga sudah disediakan di _checkpoint_ `lab-09`. Peserta tidak perlu menulisnya dari awal, cukup menyalin _manifest_ tersebut, membaca bagian pentingnya, menerapkannya ke _cluster_, lalu mengubahnya melalui beberapa latihan.
 
 Susunan sistem di akhir lab:
 
@@ -81,7 +81,7 @@ Infrastruktur di Docker Compose tetap berjalan.
 
 === _Dockerfile_ untuk Service `account`
 
-_Image_ yang dibangun di lab ini harus memenuhi tiga syarat:
+_Image_ yang di-_build_ di lab ini harus memenuhi tiga syarat:
 
 - *Kecil dan minim isi.* _Image_ akhir hanya berisi _binary_ dan sertifikat CA. Tanpa _shell_ dan _package manager_, tidak ada komponen lain yang perlu di-_patch_ dan tidak ada _tools_ yang dapat digunakan penyerang di dalam _container_.
 - *_Binary_ statis.* `CGO_ENABLED=0` menghasilkan _binary_ yang tidak bergantung pada `libc`, sehingga dapat berjalan di _image_ `scratch` yang kosong.
@@ -89,7 +89,7 @@ _Image_ yang dibangun di lab ini harus memenuhi tiga syarat:
 
 _Multi-stage build_ memisahkan tahap kompilasi dari _image_ akhir. Tahap pertama (`build`) menggunakan `golang:1.27.2-alpine` yang berisi _compiler_; tahap kedua (`FROM scratch`) hanya menyalin hasil kompilasi dari tahap pertama.
 
-_Build context_ adalah direktori `studi-kasus/`, satu tingkat di atas direktori service. Alasannya, `go.mod` service `account` dan `transfer` memiliki _replace directive_ ke `../proto`, sehingga modul `proto` harus ikut masuk ke _build context_. `notification` tidak menggunakan `proto`, tetapi tetap dibangun dengan _build context_ yang sama agar ketiga _image_ dibangun dengan perintah yang sama.
+_Build context_ adalah direktori `studi-kasus/`, satu tingkat di atas direktori service. Alasannya, `go.mod` service `account` dan `transfer` memiliki _replace directive_ ke `../proto`, sehingga modul `proto` harus ikut masuk ke _build context_. `notification` tidak menggunakan `proto`, tetapi tetap di-_build_ dengan _build context_ yang sama agar ketiga _image_ di-_build_ dengan perintah yang sama.
 
 Buat _file_ `account/Dockerfile`:
 
@@ -145,13 +145,13 @@ ENTRYPOINT ["/account"]
 
 Beberapa hal yang perlu diperhatikan dari _file_ tersebut:
 
-- *Urutan `COPY`.* `go.mod` dan `go.sum` disalin dan `go mod download` dijalankan sebelum kode program disalin. Docker menyimpan setiap _layer_ di _cache_; selama `go.mod` tidak berubah, _layer_ unduhan dependensi digunakan ulang dan _build_ setelah perubahan kode hanya mengulang kompilasi.
+- *Urutan `COPY`.* `go.mod` dan `go.sum` disalin dan `go mod download` dijalankan sebelum kode program disalin. Docker menyimpan setiap _layer_ di _cache_. Selama `go.mod` tidak berubah, _layer_ hasil `go mod download` digunakan ulang, sehingga _build_ setelah perubahan kode hanya mengulang kompilasi.
 - *`GOWORK=off`.* Di laptop, `go.work` menggabungkan ketiga modul. Di dalam _image_, setiap service dikompilasi hanya dengan `go.mod` miliknya, sehingga _image_ satu service tidak terpengaruh perubahan dependensi service lain.
-- *Tanpa _shell_.* `docker exec -it ... sh` tidak dapat digunakan pada _image_ ini. Untuk _debugging_ di Kubernetes, gunakan `kubectl debug` dengan _ephemeral container_ (lihat Eksplorasi Mandiri).
+- *Tanpa _shell_.* `docker exec -it ... sh` tidak dapat digunakan pada _image_ ini. Untuk _debugging_ di Kubernetes, gunakan `kubectl debug` dengan _ephemeral container_, yaitu _container_ sementara yang ditambahkan ke _pod_ yang sedang berjalan (lihat Eksplorasi Mandiri).
 
 === _Dockerfile_ untuk `transfer` dan `notification`
 
-Kedua service lain menggunakan struktur yang sama; yang berbeda hanya nama direktori, nama _binary_, dan port. Salin _file_ milik `account`, lalu ganti nama service:
+Kedua service lain menggunakan struktur yang sama dan hanya berbeda pada nama direktori, nama _binary_, dan port. Salin _file_ milik `account`, lalu ganti nama service:
 
 #perintah[```bash
 sed 's/account/transfer/g' account/Dockerfile > transfer/Dockerfile
@@ -207,7 +207,7 @@ Bagian sesudahnya (`RUN go build ...` hingga `ENTRYPOINT`) tetap sama dengan has
 
 === _File_ `.dockerignore`
 
-Saat `docker build` dijalankan, seluruh isi _build context_ dikirim ke _builder_. Direktori `k8s/`, `observability/`, dan dokumentasi tidak dibutuhkan untuk kompilasi; jika ikut terkirim, setiap perubahan pada _file_ tersebut juga membatalkan _cache_. Buat `studi-kasus/.dockerignore`:
+Saat `docker build` dijalankan, seluruh isi _build context_ dikirim ke _builder_. Direktori `k8s/`, `observability/`, dan dokumentasi tidak dibutuhkan untuk kompilasi; jika ikut terkirim, setiap perubahan pada _file_ tersebut juga membuat _cache_ tidak berlaku lagi. Buat `studi-kasus/.dockerignore`:
 
 #perintah[```
 # Build context is studi-kasus/ (make images, compose profile apps). Only Go
@@ -249,9 +249,9 @@ images:
 
 Baris perintah di bawah target diawali karakter _tab_, bukan spasi. Tambahkan juga `images` ke daftar `.PHONY` di bagian atas `Makefile`. Variabel `SERVICES` sudah ada sejak lab sebelumnya (`account transfer notification`).
 
-`make` tidak mencegah _build_ ulang dengan _tag_ yang sudah ada. Referensi _image_ di Deployment tidak berubah, sehingga tidak ada _rollout_; _pod_ yang sedang berjalan tetap memakai _image_ lama, sedangkan _pod_ yang dibuat kemudian (setelah `make k3d-import` ulang) memakai _image_ baru dengan _tag_ yang sama. Dua _build_ berbeda dapat berjalan bersamaan dengan satu _tag_ tanpa terlihat. Karena itu setiap perubahan kode mendapat `VERSION` baru (`1.0.1`, `1.0.2`, dan seterusnya), seperti di latihan _rolling update_.
+`make` tidak mencegah _build_ ulang dengan _tag_ yang sudah ada. Referensi _image_ di Deployment tidak berubah, sehingga tidak terjadi _rollout_. _Pod_ yang sedang berjalan tetap menggunakan _image_ lama, sedangkan _pod_ yang dibuat kemudian (setelah `make k3d-import` ulang) menggunakan _image_ baru dengan _tag_ yang sama. Akibatnya, dua _pod_ dengan _tag_ yang sama dapat menjalankan hasil _build_ yang berbeda tanpa disadari. Karena itu setiap perubahan kode mendapat `VERSION` baru (`1.0.1`, `1.0.2`, dan seterusnya), seperti di latihan _rolling update_.
 
-Bangun ketiga _image_:
+_Build_ ketiga _image_:
 
 #perintah[```bash
 make images VERSION=1.0.0
@@ -271,7 +271,7 @@ Pastikan _image_ dapat berjalan dengan UID sembarang dan _root filesystem_ _read
 docker run --rm --user 1000690000:0 --read-only studi-kasus/account:1.0.0
 ```]
 
-Keluaran yang diharapkan berupa satu baris log JSON:
+_Output_ yang diharapkan berupa satu baris log JSON:
 
 #perintah[```
 {"time":"...","level":"ERROR","msg":"account service stopped","error":"missing required environment variables: HTTP_ADDR, GRPC_ADDR, DATABASE_URL, OAUTH_ISSUER, OAUTH_JWKS_URL, OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_SERVICE_NAME"}
@@ -310,7 +310,7 @@ Karena itu Kafka membutuhkan _listener_ ketiga yang meng-_advertise_ `host.k3d.i
       - "19092:19092"
 ```]
 
-Terapkan perubahan tersebut. Docker Compose membuat ulang _container_ `kafka` karena konfigurasinya berubah; data _topic_ tetap tersimpan di _volume_:
+Terapkan perubahan tersebut. Docker Compose membuat ulang _container_ `kafka` karena konfigurasinya berubah, sedangkan data _topic_ tetap tersimpan di _volume_:
 
 #perintah[```bash
 make infra-up
@@ -323,7 +323,7 @@ Kolom `PORTS` menampilkan `9092` dan `19092`.
 
 Sebelum masuk ke Kubernetes, _image_ diuji terlebih dahulu di Docker Compose. Tahap ini memisahkan dua jenis masalah: masalah pada _image_ (_binary_ gagal dijalankan, ada yang menulis ke _filesystem_) muncul di sini, sedangkan masalah jaringan k3d baru muncul di tahap berikutnya.
 
-Alamat yang digunakan berubah. Di dalam _container_, `localhost` adalah _container_ itu sendiri, sehingga setiap alamat infrastruktur diganti dengan nama _compose service_ (`db-account:5432`, `kafka:29092`, `hydra:4444`, `otel-lgtm:4317`). Pengecualiannya `OAUTH_ISSUER`: nilainya tetap `http://localhost:4444/`, karena Hydra selalu menulis _issuer_ yang dikonfigurasi (`URLS_SELF_ISSUER`) ke _claim_ `iss`, dari alamat mana pun _token_ diminta. Jika `OAUTH_ISSUER` diubah menjadi `http://hydra:4444/`, setiap _token_ ditolak karena nilai `iss` tidak cocok.
+Alamat yang digunakan berubah. Di dalam _container_, `localhost` merujuk ke _container_ itu sendiri, sehingga setiap alamat infrastruktur diganti dengan nama _compose service_ (`db-account:5432`, `kafka:29092`, `hydra:4444`, `otel-lgtm:4317`). Pengecualiannya `OAUTH_ISSUER`: nilainya tetap `http://localhost:4444/`, karena Hydra selalu menulis _issuer_ yang dikonfigurasi (`URLS_SELF_ISSUER`) ke _claim_ `iss`, apa pun alamat yang digunakan untuk meminta _token_. Jika `OAUTH_ISSUER` diubah menjadi `http://hydra:4444/`, setiap _token_ ditolak karena nilai `iss` tidak cocok.
 
 `read_only: true` menerapkan _root filesystem_ _read-only_ yang sama dengan `readOnlyRootFilesystem` di Kubernetes. Service yang mencoba menulis _file_ akan gagal di sini lebih dahulu.
 
@@ -435,7 +435,7 @@ Tambahkan ketiga service berikut di `compose.yaml`, di bawah `hydra-init` dan se
         condition: service_healthy
 ```]
 
-`stop_grace_period: 70s` pada `transfer` mengikuti batas waktu _graceful shutdown_ `transfer`. Setelah menerima `SIGTERM`, `transfer` menunggu transfer yang sedang berjalan hingga 60 detik agar tidak ada _saga_ yang terpotong di antara _debit_ dan _credit_. Batas ini adalah konstanta `shutdownGrace` di `transfer/main.go` pada _checkpoint_ `lab-08`. Nilainya menutup durasi terburuk satu _saga_: _debit_ dan _credit_ masing-masing 11,75 detik (4 percobaan × 2 detik + 3 _backoff_), _reversal_ 32 detik, ditambah beberapa detik untuk penulisan ke database. Jika `transfer/main.go` hasil kerja peserta masih memakai `10*time.Second` sebagai batas waktu `srv.Shutdown`, tambahkan konstanta berikut di atas `func main()`:
+`stop_grace_period: 70s` pada `transfer` mengikuti _timeout_ _graceful shutdown_ `transfer`. Setelah menerima `SIGTERM`, `transfer` menunggu transfer yang sedang berjalan hingga 60 detik agar tidak ada _saga_ yang terpotong di antara _debit_ dan _credit_. Batas ini ditetapkan oleh konstanta `shutdownGrace` di `transfer/main.go` pada _checkpoint_ `lab-08`. Nilainya mencakup durasi terburuk satu _saga_: _debit_ dan _credit_ masing-masing 11,75 detik (4 percobaan × 2 detik + 3 jeda _backoff_ × 1,25 detik), _reversal_ 32 detik, ditambah beberapa detik untuk penulisan ke database. Jika `transfer/main.go` hasil kerja peserta masih menggunakan `10*time.Second` sebagai _timeout_ `srv.Shutdown`, tambahkan konstanta berikut di atas `func main()`:
 
 ```go
 // shutdownGrace is how long the HTTP server waits on SIGTERM for transfers in
@@ -458,7 +458,7 @@ lalu ganti `10*time.Second` pada `context.WithTimeout` sebelum `srv.Shutdown` de
 
 Docker secara _default_ mengirim `SIGKILL` 10 detik setelah `SIGTERM`, sehingga tanpa pengaturan ini _saga_ yang sedang berjalan dapat terhenti di tengah.
 
-_Profile_ `apps` membuat ketiga service tersebut tidak ikut berjalan saat `make infra-up`; service baru berjalan jika _profile_ tersebut diaktifkan. Sisipkan kedua target berikut tepat di bawah komentar `# Lab 9 helpers.` di `Makefile`, sebelum `IMAGE_REPO :=`, dan tambahkan keduanya ke daftar `.PHONY`:
+Karena berada di _profile_ `apps`, ketiga service tersebut tidak ikut berjalan saat `make infra-up` dan baru berjalan jika _profile_ tersebut diaktifkan. Sisipkan kedua target berikut tepat di bawah komentar `# Lab 9 helpers.` di `Makefile`, sebelum `IMAGE_REPO :=`, dan tambahkan keduanya ke daftar `.PHONY`:
 
 #perintah[```makefile
 # The three services as containers next to the infrastructure (compose profile
@@ -523,7 +523,7 @@ k8s/
     secrets.yaml
 ```]
 
-_Base_ berisi apa yang sama di semua _environment_: k3d di laptop, _server_ latihan bersama di Lab 10, dan _production_. _Base_ tidak dapat di-_deploy_ sendiri, karena alamat infrastruktur, _credential_, _tag image_, dan _namespace_ datang dari _overlay_. Jika _overlay_ lupa mengisi satu _key_, service berhenti saat _startup_ dengan pesan `missing required environment variables: ...`, dan _pod_ masuk status `CrashLoopBackOff`. Perilaku ini lebih mudah didiagnosis dibandingkan service yang berjalan dengan nilai tebakan.
+_Base_ berisi konfigurasi yang berlaku sama di semua _environment_: k3d di laptop, _server_ latihan bersama di Lab 10, dan _production_. _Base_ tidak dapat di-_deploy_ sendiri, karena alamat infrastruktur, _credential_, _tag image_, dan _namespace_ diisi di _overlay_. Jika ada _key_ yang tidak diisi di _overlay_, service berhenti saat _startup_ dengan pesan `missing required environment variables: ...`, dan _pod_ masuk status `CrashLoopBackOff`. Perilaku ini lebih mudah didiagnosis dibandingkan service yang berjalan dengan nilai tebakan.
 
 Hasil gabungan _base_ dan _overlay_ dapat dilihat tanpa menerapkannya ke _cluster_:
 
@@ -560,7 +560,7 @@ Kutipan dari `k8s/base/account/deployment.yaml`:
 
 - *_Readiness probe_* (`/readyz`) memeriksa database milik service. _Pod_ yang gagal dikeluarkan dari daftar _endpoint_ Service sehingga tidak menerima _request_, tetapi tidak di-_restart_. `transfer` tidak memeriksa `account` maupun Kafka di _readiness probe_: gangguan pada keduanya sudah ditangani _circuit breaker_ dan _outbox_.
 - *_Liveness probe_* (`/healthz`) hanya memeriksa bahwa proses masih melayani HTTP. Pemeriksaan dependensi sengaja tidak dilakukan di sini. Jika database mati dan _liveness probe_ ikut gagal, Kubernetes me-_restart_ semua _pod_ sekaligus, padahal _restart_ tidak memperbaiki database.
-- *`maxSurge: 1`, `maxUnavailable: 0`.* Saat _rolling update_, Kubernetes membuat satu _pod_ baru terlebih dahulu dan baru menghentikan _pod_ lama setelah _pod_ baru lolos _readiness probe_. _Image_ yang gagal berjalan menghentikan proses _rollout_, sementara _pod_ lama tetap melayani.
+- *`maxSurge: 1`, `maxUnavailable: 0`.* Saat _rolling update_, Kubernetes membuat satu _pod_ baru terlebih dahulu dan baru menghentikan _pod_ lama setelah _pod_ baru lolos _readiness probe_. Jika _image_ baru gagal berjalan, _rollout_ terhenti dan _pod_ lama tetap melayani _request_.
 
 ==== Deployment: Menghentikan _Pod_ dengan Aman
 
@@ -577,11 +577,11 @@ Kutipan lain dari `k8s/base/account/deployment.yaml`:
                 seconds: 5
 ```]
 
-Saat _pod_ dihentikan (_rolling update_, _scale down_), Kubernetes mengeluarkan _pod_ dari daftar _endpoint_ Service dan dari Traefik pada saat yang sama dengan dimulainya penghentian _pod_. Akibatnya, selama beberapa detik _request_ baru masih dikirim ke _pod_ tersebut. Tanpa jeda, server di dalam _pod_ sudah mulai ditutup dan menolak _request_ tersebut.
+Saat _pod_ dihentikan (_rolling update_, _scale down_), Kubernetes mengeluarkan _pod_ dari daftar _endpoint_ Service dan dari Traefik bersamaan dengan saat _pod_ mulai dihentikan. Akibatnya, selama beberapa detik _request_ baru masih dikirim ke _pod_ tersebut. Tanpa jeda, server di dalam _pod_ sudah mulai ditutup dan menolak _request_ tersebut.
 
-_Hook_ `preStop` dijalankan kubelet sebelum `SIGTERM`. Aksi `sleep` menunda `SIGTERM` selama 5 detik, cukup lama hingga _pod_ tidak lagi menerima _request_ baru. Setelah itu, _graceful shutdown_ di `main.go` menyelesaikan _request_ yang sedang diproses. Aksi `sleep` bawaan Kubernetes (tersedia sejak versi 1.30) tidak membutuhkan _shell_. Bentuk `exec` dengan perintah `sleep 5` tidak dapat digunakan, karena _image_ `scratch` tidak memiliki _shell_ maupun _binary_ `sleep`.
+_Hook_ `preStop` dijalankan kubelet sebelum `SIGTERM`. Aksi `sleep` menunda `SIGTERM` selama 5 detik untuk memberi waktu hingga _pod_ tidak lagi menerima _request_ baru. Setelah itu, _graceful shutdown_ di `main.go` menyelesaikan _request_ yang sedang diproses. Aksi `sleep` bawaan Kubernetes (tersedia sejak versi 1.30) tidak membutuhkan _shell_. Bentuk `exec` dengan perintah `sleep 5` tidak dapat digunakan, karena _image_ `scratch` tidak memiliki _shell_ maupun _binary_ `sleep`.
 
-`terminationGracePeriodSeconds` dihitung sejak `preStop` dimulai. Setelah batas tersebut lewat, kubelet mengirim `SIGKILL`. Nilainya harus mencakup jeda `preStop`, batas waktu _shutdown_ service, dan 5 detik untuk mengirim sisa telemetri:
+`terminationGracePeriodSeconds` dihitung sejak `preStop` dimulai. Setelah batas tersebut lewat, kubelet mengirim `SIGKILL`. Nilainya harus mencakup jeda `preStop`, _timeout_ _shutdown_ service, dan 5 detik untuk mengirim sisa telemetri:
 
 #table(
   columns: (auto, auto, 1fr),
@@ -612,13 +612,13 @@ Kombinasi ini sesuai dengan _Pod Security Standard_ `restricted` di Kubernetes d
 
 ==== Service dan Koneksi gRPC
 
-Service `account` (`k8s/base/account/service.yaml`) membuka dua port: 8081 untuk REST dan 9091 untuk gRPC. ConfigMap `transfer` mengisi `ACCOUNT_GRPC_ADDR` dengan `account:9091`; DNS _cluster_ menerjemahkan nama pendek `account` ke Service di _namespace_ yang sama.
+Service `account` (`k8s/base/account/service.yaml`) membuka dua port: 8081 untuk REST dan 9091 untuk gRPC. ConfigMap `transfer` mengisi `ACCOUNT_GRPC_ADDR` dengan `account:9091`, dan DNS _cluster_ me-_resolve_ nama pendek `account` ke Service di _namespace_ yang sama.
 
-Service bertipe ClusterIP menyeimbangkan beban per koneksi TCP. gRPC menggunakan satu koneksi HTTP/2 jangka panjang per klien, sehingga semua panggilan dari satu _pod_ `transfer` tetap menuju _pod_ `account` yang sama, walaupun `account` di-_scale_ menjadi beberapa _replica_. Pembagian beban per panggilan membutuhkan _headless Service_ dengan _load balancing_ `round_robin` di sisi klien, atau _service mesh_.
+Service bertipe ClusterIP melakukan _load balancing_ per koneksi TCP. gRPC menggunakan satu koneksi HTTP/2 yang terus terbuka per klien, sehingga semua panggilan dari satu _pod_ `transfer` tetap menuju _pod_ `account` yang sama, walaupun `account` di-_scale_ menjadi beberapa _replica_. _Load balancing_ per panggilan membutuhkan _headless Service_ dengan _load balancing_ `round_robin` di sisi klien, atau _service mesh_.
 
 ==== Ingress
 
-`k8s/base/transfer/ingress.yaml` meneruskan _path_ `/transfers` ke Service `transfer`. k3s menyertakan Traefik sebagai _ingress controller_, dan `make k3d-up` memetakan port 8080 di laptop ke port 80 Traefik. Hanya `/transfers` yang diteruskan; _probe_, `/metrics`, dan `/debug/circuit-breaker` tetap berada di dalam _cluster_ dan dijangkau dengan `kubectl port-forward`. OpenShift menggunakan objek Route untuk keperluan yang sama, tetapi juga menerima Ingress dan membuat Route dari objek tersebut.
+`k8s/base/transfer/ingress.yaml` meneruskan _path_ `/transfers` ke Service `transfer`. k3s menyertakan Traefik sebagai _ingress controller_, dan `make k3d-up` memetakan port 8080 di laptop ke port 80 Traefik. Hanya `/transfers` yang diteruskan, sedangkan _probe_, `/metrics`, dan `/debug/circuit-breaker` tetap berada di dalam _cluster_ dan dijangkau dengan `kubectl port-forward`. OpenShift menggunakan objek Route untuk keperluan yang sama, tetapi juga menerima Ingress dan membuat Route dari objek tersebut.
 
 ==== _Overlay_ k3d: Alamat Infrastruktur
 
@@ -651,7 +651,7 @@ data:
   [gRPC `account`], [`account:9091`, Service di _namespace_ yang sama],
 )
 
-Alasan `OAUTH_ISSUER` tetap `http://localhost:4444/` sama dengan di _profile_ `apps`: nilai tersebut dibandingkan dengan _claim_ `iss`, dan Hydra menulis _issuer_ yang dikonfigurasi, dari alamat mana pun _token_ diminta. Yang berubah hanya alamat untuk mengambil _key_ (JWKS) dan _token_.
+Alasan `OAUTH_ISSUER` tetap `http://localhost:4444/` sama dengan di _profile_ `apps`: nilai tersebut dibandingkan dengan _claim_ `iss`, dan Hydra menulis _issuer_ yang dikonfigurasi, apa pun alamat yang digunakan untuk meminta _token_. Yang berubah hanya alamat untuk mengambil _key_ (JWKS) dan _token_.
 
 _Trace_ dan log tetap masuk ke `otel-lgtm` melalui OTLP. _Metric_ dari _pod_ tidak terambil, karena Prometheus di `otel-lgtm` mengambil data dari port 8081–8083 di laptop, sedangkan _pod_ tidak membuka port di laptop.
 
@@ -673,7 +673,7 @@ images:
     newTag: "1.0.0"
 ```]
 
-Deployment di _base_ hanya menyebut nama _image_ (`studi-kasus/account`) dengan `imagePullPolicy: IfNotPresent`. _Image_ dimasukkan langsung ke _cluster_ dengan `k3d image import`, sehingga kubelet menggunakan _image_ yang sudah ada dan tidak mencoba mengunduh dari _registry_.
+Deployment di _base_ hanya menyebut nama _image_ (`studi-kasus/account`) dengan `imagePullPolicy: IfNotPresent`. _Image_ dimasukkan langsung ke _cluster_ dengan `k3d image import`, sehingga kubelet menggunakan _image_ yang sudah ada dan tidak mencoba melakukan _pull_ dari _registry_.
 
 === Target `make` untuk k3d
 
@@ -713,13 +713,13 @@ k3d-down:
 	k3d cluster delete $(CLUSTER)
 ```]
 
-_Image_ k3s di-_pin_ ke `rancher/k3s:v1.36.5-k3s1`. k3d mengunduh sendiri _image_ pendukungnya (`k3d-proxy` untuk _load balancer_ dan `k3d-tools` untuk `image import`) dengan versi yang sama dengan _binary_ k3d.
+_Image_ k3s di-_pin_ ke `rancher/k3s:v1.36.5-k3s1`. k3d me-_pull_ sendiri _image_ pendukungnya (`k3d-proxy` untuk _load balancer_ dan `k3d-tools` untuk `image import`) dengan versi yang sama dengan _binary_ k3d.
 
 Bagian kedua `k3d-up` menunggu DNS _cluster_. k3d menulis nama `host.k3d.internal` ke ConfigMap CoreDNS, tetapi CoreDNS baru menjawab nama tersebut setelah perubahan ConfigMap dimuat oleh _pod_ CoreDNS, hingga sekitar satu menit kemudian. _Pod_ yang dijalankan sebelum itu berhenti dengan pesan `lookup host.k3d.internal ... no such host` dan di-_restart_ berulang kali. Perulangan di atas menanyakan nama tersebut ke DNS _cluster_ (alamat _default_ k3s `10.43.0.10`) dari _container node_ k3d setiap 2 detik, dan berhenti dengan pesan _error_ jika nama tersebut belum dapat di-_resolve_ setelah 180 detik.
 
 === Menjalankan Sistem di k3d
 
-Pastikan infrastruktur berjalan dan _image_ sudah dibangun, lalu buat _cluster_, masukkan _image_, dan terapkan _manifest_:
+Pastikan infrastruktur berjalan dan _image_ sudah di-_build_, lalu buat _cluster_, masukkan _image_, dan terapkan _manifest_:
 
 #perintah[```bash
 make infra-up
@@ -767,7 +767,7 @@ curl -i -X POST localhost:8080/transfers -H "Authorization: Bearer $TOKEN" \
   -d '{"from_account":"1111111111","to_account":"2222222222","amount":"100000"}'
 ```]
 
-`make -s token` meminta _token_ ke Hydra di `localhost:4444` dari laptop, sehingga _claim_ `iss` bernilai `http://localhost:4444/`, nilai yang sama dengan `OAUTH_ISSUER` di _pod_. Respons yang diharapkan:
+`make -s token` meminta _token_ ke Hydra di `localhost:4444` dari laptop, sehingga _claim_ `iss` bernilai `http://localhost:4444/`, sama dengan nilai `OAUTH_ISSUER` di _pod_. Respons yang diharapkan:
 
 #perintah[```
 HTTP/1.1 201 Created
@@ -802,7 +802,7 @@ docker compose exec kafka /opt/kafka/bin/kafka-consumer-groups.sh \
   --bootstrap-server localhost:9092 --describe --group notification
 ```]
 
-Setelah _rebalance_ selesai, setiap _partition_ (0, 1, 2) memiliki `CONSUMER-ID` yang berbeda. Ulangi dengan `--replicas=4`: satu _pod_ tidak mendapat _partition_ dan tidak memproses _event_ apa pun, walaupun statusnya `Running` dan _ready_. Jumlah _partition_ menjadi batas atas paralelisme sebuah _consumer group_.
+Setelah _rebalance_ selesai, setiap _partition_ (0, 1, 2) memiliki `CONSUMER-ID` yang berbeda. Ulangi dengan `--replicas=4`: satu _pod_ tidak mendapat _partition_ dan tidak memproses _event_ apa pun, walaupun statusnya `Running` dan _ready_. Paralelisme _consumer group_ dibatasi oleh jumlah _partition_.
 
 Kembalikan ke satu _replica_ setelah selesai:
 
@@ -814,7 +814,7 @@ kubectl -n bank scale deployment/notification --replicas=1
 
 ==== Mengubah Konfigurasi
 
-_Environment variable_ hanya dibaca saat proses dimulai. Perubahan ConfigMap tidak terlihat oleh _pod_ yang sedang berjalan; _pod_ baru harus dibuat dengan `kubectl rollout restart`.
+_Environment variable_ hanya dibaca saat proses dimulai. Perubahan ConfigMap tidak terlihat oleh _pod_ yang sedang berjalan, sehingga _pod_ baru harus dibuat dengan `kubectl rollout restart`.
 
 Latihan ini sengaja membuat konfigurasi salah untuk mengamati perlindungan `maxUnavailable: 0`. Hapus baris `KAFKA_GROUP_ID: notification` dari ConfigMap `notification` di `k8s/overlays/k3d/config.yaml`, lalu terapkan dan _restart_:
 
@@ -848,11 +848,11 @@ kubectl -n bank rollout status deployment/notification
 
 Setiap `kubectl apply -k k8s/overlays/k3d` melaporkan Secret sebagai `configured`, walaupun isinya tidak berubah. Penyebabnya bagian `stringData` di _overlay_: API _server_ memindahkan isinya ke `data`, sehingga `kubectl apply` selalu melihat perbedaan. Laporan tersebut tidak menandakan masalah.
 
-#note[*Mengapa latihan ini mengubah ConfigMap, bukan Secret.* `kubectl apply` menghapus _key_ yang dihilangkan dari bagian `data` ConfigMap. Untuk Secret yang ditulis dengan `stringData`, hal tersebut tidak terjadi: API _server_ menyimpan isinya di bagian `data` dalam bentuk base64, sehingga _key_ yang dihapus dari `stringData` tetap ada di Secret yang berjalan. Untuk menghapus _key_ dari Secret, hapus objek Secret-nya (`kubectl -n bank delete secret notification`), lalu _apply_ lagi.]
+#note[*Mengapa latihan ini mengubah ConfigMap, bukan Secret.* `kubectl apply` menghapus _key_ yang dihilangkan dari bagian `data` ConfigMap. Untuk Secret yang ditulis dengan `stringData`, hal tersebut tidak terjadi: API _server_ menyimpan isinya di bagian `data` dalam bentuk base64, sehingga _key_ yang dihapus dari `stringData` tetap ada di objek Secret yang tersimpan di _cluster_. Untuk menghapus _key_ dari Secret, hapus objek Secret-nya (`kubectl -n bank delete secret notification`), lalu _apply_ lagi.]
 
 ==== _Rolling Update_ dengan _Tag_ Baru
 
-Setiap versi aplikasi mendapat _tag image_ sendiri. Bangun _image_ dengan _tag_ `1.0.1`, masukkan ke _cluster_, lalu ganti _image_ Deployment `transfer`:
+Setiap versi aplikasi mendapat _tag image_ sendiri. _Build_ _image_ dengan _tag_ `1.0.1`, masukkan ke _cluster_, lalu ganti _image_ Deployment `transfer`:
 
 #perintah[```bash
 make images VERSION=1.0.1
@@ -868,7 +868,7 @@ kubectl -n bank rollout history deployment/transfer
 kubectl -n bank get deployment transfer -o jsonpath='{.spec.template.spec.containers[0].image}'
 ```]
 
-Cara lain yang lebih sesuai dengan prinsip _manifest_ sebagai _source of truth_ (acuan tunggal kondisi _cluster_): ubah `newTag` milik `studi-kasus/transfer` di `k8s/overlays/k3d/kustomization.yaml` menjadi `"1.0.1"`, lalu jalankan `kubectl apply -k k8s/overlays/k3d`. `kubectl set image` mengubah objek di _cluster_ tanpa mengubah _file_; `make k8s-apply` berikutnya mengembalikan _tag_ ke nilai di `kustomization.yaml`.
+Cara lain yang lebih sesuai dengan prinsip _manifest_ sebagai _source of truth_ (acuan tunggal kondisi _cluster_): ubah `newTag` milik `studi-kasus/transfer` di `k8s/overlays/k3d/kustomization.yaml` menjadi `"1.0.1"`, lalu jalankan `kubectl apply -k k8s/overlays/k3d`. `kubectl set image` mengubah objek di _cluster_ tanpa mengubah _file_, sehingga `make k8s-apply` berikutnya mengembalikan _tag_ ke nilai di `kustomization.yaml`.
 
 ==== _Rollback_
 
@@ -902,7 +902,7 @@ Jalankan pemeriksaan berikut dari direktori `studi-kasus/` dengan _cluster_ `ban
   #perintah[```bash
   docker run --rm --user 1000690000:0 --read-only studi-kasus/transfer:1.0.0
   ```]
-+ _Manifest_ dapat di-_render_ tanpa _error_, dan Deployment hasil _render_ tidak memuat `runAsUser`. Perintah kedua tidak menghasilkan keluaran apa pun:
++ _Manifest_ dapat di-_render_ tanpa _error_, dan Deployment hasil _render_ tidak memuat `runAsUser`. Perintah kedua tidak menghasilkan _output_ apa pun:
   #perintah[```bash
   kubectl kustomize k8s/overlays/k3d > /dev/null && echo OK
   kubectl kustomize k8s/overlays/k3d | grep runAsUser
@@ -911,7 +911,7 @@ Jalankan pemeriksaan berikut dari direktori `studi-kasus/` dengan _cluster_ `ban
   #perintah[```bash
   kubectl -n bank get pods,ingress
   ```]
-+ Transfer melalui Ingress menghasilkan `201 Created` dan `"status":"COMPLETED"`; tanpa _header_ `Authorization`, respons `401 Unauthorized`:
++ Transfer melalui Ingress menghasilkan `201 Created` dan `"status":"COMPLETED"`, sedangkan _request_ tanpa _header_ `Authorization` mendapat respons `401 Unauthorized`:
   #perintah[```bash
   TOKEN=$(make -s token)
   curl -s -X POST localhost:8080/transfers -H "Authorization: Bearer $TOKEN" \
@@ -931,11 +931,11 @@ Jalankan pemeriksaan berikut dari direktori `studi-kasus/` dengan _cluster_ `ban
 
 == Masalah Umum
 
-*_Pod_ berstatus `ErrImagePull` atau `ImagePullBackOff`.* _Image_ dengan _tag_ yang diminta tidak ada di _cluster_, sehingga kubelet mencoba mengunduhnya dari Docker Hub. Penyebabnya `make k3d-import` belum dijalankan, dijalankan dengan `VERSION` yang berbeda, atau _cluster_ dibuat ulang setelah _import_. Jalankan `make k3d-import VERSION=<tag>` dengan _tag_ yang sama dengan `newTag` di `kustomization.yaml`, lalu hapus _pod_ yang gagal agar dibuat ulang.
+*_Pod_ berstatus `ErrImagePull` atau `ImagePullBackOff`.* _Image_ dengan _tag_ yang diminta tidak ada di _cluster_, sehingga kubelet mencoba melakukan _pull_ dari Docker Hub. Penyebabnya `make k3d-import` belum dijalankan, dijalankan dengan `VERSION` yang berbeda, atau _cluster_ dibuat ulang setelah _import_. Jalankan `make k3d-import VERSION=<tag>` dengan _tag_ yang sama dengan `newTag` di `kustomization.yaml`, lalu hapus _pod_ yang gagal agar dibuat ulang.
 
 *_Pod_ berstatus `CrashLoopBackOff` setelah Docker atau laptop di-_restart_.* _Container_ k3d berjalan lagi tanpa nama `host.k3d.internal` di DNS _cluster_, dan log _pod_ memuat `lookup host.k3d.internal ... no such host`. Jalankan `k3d cluster stop bank`, lalu `k3d cluster start bank`. k3d menulis nama tersebut lagi, dan _pod_ berjalan normal dalam satu hingga dua menit tanpa perintah tambahan.
 
-*_Pod_ berstatus `CrashLoopBackOff`.* Baca lognya dengan `kubectl -n bank logs <pod> --previous`. Pesan `missing required environment variables` berarti ada _key_ yang belum diisi di ConfigMap atau Secret _overlay_. Pesan koneksi database atau Kafka yang gagal berarti `host.k3d.internal` tidak menjangkau port di laptop; pastikan `make infra-up` sudah berjalan dan `docker compose ps` menampilkan port yang dibutuhkan.
+*_Pod_ berstatus `CrashLoopBackOff`.* Baca lognya dengan `kubectl -n bank logs <pod> --previous`. Pesan `missing required environment variables` berarti ada _key_ yang belum diisi di ConfigMap atau Secret _overlay_. Pesan koneksi database atau Kafka yang gagal berarti port di laptop tidak dapat dijangkau melalui `host.k3d.internal`; pastikan `make infra-up` sudah berjalan dan `docker compose ps` menampilkan port yang dibutuhkan.
 
 *_Pod_ `Running` tetapi `READY` bernilai `0/1`.* _Readiness probe_ gagal karena database milik service tidak dapat dijangkau. Jalankan `kubectl -n bank describe pod <pod>` dan baca bagian `Events`.
 
@@ -956,9 +956,9 @@ Jalankan pemeriksaan berikut dari direktori `studi-kasus/` dengan _cluster_ `ban
 == Eksplorasi Mandiri
 
 + *_Scale_ `account` dan koneksi gRPC.* Jalankan `kubectl -n bank scale deployment/account --replicas=3`, kirim sepuluh transfer, lalu bandingkan log ketiga _pod_ `account` (`kubectl -n bank logs <pod>`). Semua panggilan gRPC dari satu _pod_ `transfer` tetap menuju satu _pod_ `account`. Jelaskan penyebabnya dan cari tahu cara mengubahnya dengan _headless Service_ serta konfigurasi `round_robin` di klien gRPC. Perhatikan juga bahwa `make fault-slow` melalui `port-forward` hanya mengenai satu _pod_ `account`, karena _fault injection_ disimpan di memori setiap _pod_.
-+ *_Debugging_ tanpa _shell_.* _Image_ `scratch` tidak memiliki _shell_. Masukkan _image_ `golang:1.27.2-alpine` (yang sudah diunduh untuk _build_ dan memiliki _shell_) ke _cluster_ dengan `k3d image import -c bank golang:1.27.2-alpine`, lalu jalankan perintah berikut untuk menambahkan _ephemeral container_ ke _pod_ tersebut: `echo '{"securityContext":{"runAsUser":65532}}' > /tmp/debug.json`, kemudian `kubectl -n bank debug -it <pod-transfer> --image=golang:1.27.2-alpine --target=transfer --custom=/tmp/debug.json -- sh`. `runAsNonRoot: true` di _security context_ _pod_ juga berlaku untuk _ephemeral container_, sedangkan `golang:1.27.2-alpine` tidak memiliki instruksi `USER` sehingga berjalan sebagai `root`; tanpa _profile_ `--custom` tersebut, kubelet menolak menjalankan _container_ dengan status `CreateContainerConfigError`. Dari dalamnya, coba `wget -qO- localhost:8082/readyz`. _Ephemeral container_ berbagi _network namespace_ dengan _pod_ target, sehingga `localhost` di dalamnya adalah _pod_ `transfer`.
++ *_Debugging_ tanpa _shell_.* _Image_ `scratch` tidak memiliki _shell_. Masukkan _image_ `golang:1.27.2-alpine` (yang sudah di-_pull_ untuk _build_ dan memiliki _shell_) ke _cluster_ dengan `k3d image import -c bank golang:1.27.2-alpine`, lalu jalankan perintah berikut untuk menambahkan _ephemeral container_ ke _pod_ tersebut: `echo '{"securityContext":{"runAsUser":65532}}' > /tmp/debug.json`, kemudian `kubectl -n bank debug -it <pod-transfer> --image=golang:1.27.2-alpine --target=transfer --custom=/tmp/debug.json -- sh`. `runAsNonRoot: true` di _security context_ _pod_ juga berlaku untuk _ephemeral container_, sedangkan `golang:1.27.2-alpine` tidak memiliki instruksi `USER` sehingga berjalan sebagai `root`; tanpa _profile_ `--custom` tersebut, kubelet menolak menjalankan _container_ dengan status `CreateContainerConfigError`. Dari dalamnya, coba `wget -qO- localhost:8082/readyz`. _Ephemeral container_ berbagi _network namespace_ dengan _pod_ target, sehingga `localhost` di dalamnya adalah _pod_ `transfer`.
 + *Simulasi UID OpenShift.* Tambahkan _patch_ di _overlay_ k3d yang mengisi `runAsUser: 1000690000` pada `securityContext` _pod_ `transfer`, terapkan, dan pastikan _pod_ tetap _ready_. Setelah itu, coba _image_ dengan `USER root` (atau tanpa `USER`) dan amati pesan kubelet ketika `runAsNonRoot: true` menolak _image_ tersebut (`kubectl describe pod`).
-+ *Dua _replica_ `transfer`.* _Scale_ `transfer` menjadi 2, kirim beberapa transfer, lalu pastikan dengan `make outbox` bahwa setiap baris _outbox_ hanya diterbitkan sekali, karena _relay_ mengunci baris dengan `for update skip locked`. Aktifkan `make fault-error RATE=1` dan amati `/debug/circuit-breaker` di setiap _pod_ `transfer` (dengan `kubectl port-forward pod/<nama> 8082:8082`): setiap _replica_ memiliki status _circuit breaker_ sendiri.
++ *Dua _replica_ `transfer`.* _Scale_ `transfer` menjadi 2, kirim beberapa transfer, lalu pastikan dengan `make outbox` bahwa setiap baris _outbox_ hanya dikirim sekali ke Kafka, karena _relay_ mengunci baris dengan `for update skip locked`. Aktifkan `make fault-error RATE=1` dan amati `/debug/circuit-breaker` di setiap _pod_ `transfer` (dengan `kubectl port-forward pod/<nama> 8082:8082`): setiap _replica_ memiliki status _circuit breaker_ sendiri.
 
 == Checkpoint
 

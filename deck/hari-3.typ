@@ -46,8 +46,8 @@
       - _Timeout_, _retry_, dan _circuit breaker_ di _interceptor_ klien
     ],
     card("Celah yang ditutup hari ini", accent: amber)[
-      - Debit berhasil, credit gagal: saldo sumber hilang tanpa dikembalikan
-      - Debit belum idempoten, jadi _timeout_ belum boleh di-_retry_
+      - Bila debit berhasil tetapi credit gagal, saldo rekening sumber berkurang tanpa dikembalikan
+      - Debit belum _idempotent_, jadi _timeout_ belum boleh di-_retry_
       - Siapa pun di jaringan internal dapat memanggil Debit
     ],
   )
@@ -102,7 +102,7 @@
     at(720pt, 70pt, box(width: 140pt, text(size: 10.5pt, fill: slate)[_Consumer group_ `notification` membagi _partition_ di antara anggotanya])),
   )
   #bullets(size: 13pt,
-    [_Topic_ `transfer-events` terdiri atas 3 _partition_; setiap _partition_ berupa _log_ yang hanya ditambah di ujungnya],
+    [_Topic_ `transfer-events` terdiri atas 3 _partition_, dan setiap _partition_ berupa _log_ yang hanya ditambah di ujungnya],
     [_Offset_ menandai posisi baca _consumer group_ di setiap _partition_, dan _broker_ menyimpannya per _group_],
     [Satu _partition_ hanya dibaca oleh satu anggota _group_, sehingga jumlah anggota yang aktif maksimal sama dengan jumlah _partition_],
   )
@@ -113,7 +113,7 @@
     [
       #bullets(size: 14pt,
         [_Producer_ mengirim _message_ dengan _key_ `transfer_id`],
-        [Semua _message_ dengan _key_ yang sama masuk ke _partition_ yang sama, asalkan `kafka.Writer` diberi `Balancer: &kafka.Hash{}`; _balancer_ _default_ kafka-go adalah _round-robin_ yang mengabaikan _key_],
+        [Semua _message_ dengan _key_ yang sama masuk ke _partition_ yang sama, asalkan `kafka.Writer` diberi `Balancer: &kafka.Hash{}`. Tanpa pengaturan ini, kafka-go menggunakan _balancer_ _default_ _round-robin_ yang mengabaikan _key_],
         [Urutan hanya dijamin di dalam satu _partition_, tidak di seluruh _topic_],
         [Akibatnya, event milik transfer yang sama selalu dibaca berurutan],
       )
@@ -138,9 +138,9 @@
   #table(
     columns: (auto, 1.3fr, 1.3fr),
     [Jaminan], [Cara kerja di sisi _consumer_], [Akibat saat _consumer_ mati di tengah proses],
-    [_At-most-once_], [_Commit offset_ dulu, lalu proses], [Event hilang dan tidak pernah diproses],
-    [_At-least-once_], [Proses dulu, lalu _commit offset_], [Event diproses ulang, sehingga muncul duplikat],
-    [_Exactly-once_], [Transaksi Kafka, hanya berlaku dari Kafka ke Kafka], [Tidak mencakup tulis ke PostgreSQL milik service],
+    [_At-most-once_], [_Commit offset_ terlebih dahulu, lalu proses], [Event hilang dan tidak pernah diproses],
+    [_At-least-once_], [Proses terlebih dahulu, lalu _commit offset_], [Event diproses ulang, sehingga muncul duplikat],
+    [_Exactly-once_], [Transaksi Kafka, hanya berlaku dari Kafka ke Kafka], [Tidak mencakup penulisan ke PostgreSQL milik service],
   )
   #v(12pt)
   #note[Studi kasus memilih _at-least-once_. Kehilangan notifikasi transfer tidak dapat diterima, sedangkan duplikat dapat dicegah di sisi penerima dengan _idempotent consumer_ (Lab 6).]
@@ -150,8 +150,8 @@
   side: [
     - `FetchMessage` tidak melakukan _commit_ otomatis
     - _Offset_ di-_commit_ setelah baris notifikasi tersimpan di database
-    - _Consumer_ mati sebelum _commit_: event yang sama dibaca lagi setelah _restart_
-    - Di Lab 5 _handler_ ini sengaja belum idempoten
+    - Bila _consumer_ mati sebelum _commit_, event yang sama dibaca lagi setelah _restart_
+    - Di Lab 5 _handler_ ini sengaja belum _idempotent_
   ],
 )[
 ```go
@@ -186,8 +186,8 @@ for {
       #bullets(size: 14pt,
         [Debit dan credit dijalankan oleh account, sedangkan status transfer tersimpan di db-transfer],
         [Tidak ada satu transaksi database yang mencakup keduanya],
-        [_Two-phase commit_ (2PC) mengikat semua service: satu peserta lambat menahan _lock_ di peserta lain],
-        [Pengganti 2PC: rangkaian transaksi lokal yang masing-masing langsung di-_commit_],
+        [_Two-phase commit_ (2PC) mengikat semua service, sehingga satu service yang lambat ikut menahan _lock_ di service lain],
+        [Sebagai pengganti 2PC, saga menjalankan rangkaian transaksi lokal yang masing-masing langsung di-_commit_],
       )
     ],
     [
@@ -205,14 +205,14 @@ for {
     card([_Orchestration_])[
       - Satu service (_orchestrator_) menentukan langkah berikutnya
       - Status saga tersimpan di satu tempat dan mudah ditelusuri
-      - _Orchestrator_ mengetahui semua peserta
+      - _Orchestrator_ mengetahui semua service yang terlibat
       - Studi kasus: *transfer* menjadi _orchestrator_
     ],
     card([_Choreography_], accent: amber)[
       - Setiap service bereaksi terhadap event service lain
       - Tidak ada koordinator pusat
       - Alur hanya terlihat dengan menggabungkan log semua service
-      - Cocok untuk alur pendek dengan sedikit peserta
+      - Cocok untuk alur pendek dengan sedikit service yang terlibat
     ],
   )
   #v(10pt)
@@ -243,13 +243,13 @@ for {
     columns: (1.6fr, auto, 1.3fr),
     [Hasil Saga], [HTTP], [Arti bagi Channel],
     [`COMPLETED`], [`201`], [Selesai],
-    [Rekening tidak ada atau saldo kurang, termasuk `COMPENSATED` karena rekening tujuan tidak ada], [`422`], [Tidak ada uang yang berpindah. Data yang sama memberi hasil yang sama],
+    [Rekening tidak ada atau saldo kurang, termasuk `COMPENSATED` karena rekening tujuan tidak ada], [`422`], [Tidak ada uang yang berpindah. Mengirim ulang data yang sama tetap menghasilkan `422`],
     [_Circuit breaker_ terbuka saat debit (`FAILED`), atau saat credit lalu debit dikembalikan (`COMPENSATED`)], [`503`], [Tidak ada uang yang berpindah, aman diulang setelah jeda],
     [_Dependency_ gagal (`FAILED` atau `COMPENSATED`)], [`502`], [Periksa `GET /transfers/{id}`],
     [`COMPENSATION_FAILED`], [`500`], [Dana tertahan di sisi transfer, ditangani petugas],
   )
   #v(8pt)
-  #note[Berbeda dengan Lab 3 dan Lab 4: _breaker_ yang terbuka di antara debit dan credit kini menghasilkan `503`, karena debit sudah dikembalikan dan tidak ada uang yang berpindah.]
+  #note[Berbeda dengan Lab 3 dan Lab 4, _breaker_ yang terbuka di antara debit dan credit kini menghasilkan `503` karena debit sudah dikembalikan dan tidak ada uang yang berpindah.]
 ]
 
 #slide(kicker: "Saga", title: "Kompensasi berupa transaksi baru")[
@@ -262,20 +262,20 @@ for {
   )
   #v(14pt)
   #bullets(size: 13.5pt,
-    [Kompensasi tidak menghapus mutasi debit; account mencatat mutasi credit baru dengan _reference_ `<transfer_id>:reversal`. Riwayat mutasi tetap lengkap untuk audit],
-    [Credit yang `DeadlineExceeded` diulang lebih dulu dengan _reference_ yang sama, karena credit sudah idempoten. Bila semua percobaan berakhir _timeout_, hasilnya tidak pasti: lab tetap menjalankan kompensasi, sedangkan sistem _production_ menambahkan _reconciliation job_],
+    [Kompensasi tidak menghapus mutasi debit. Account mencatat mutasi credit baru dengan _reference_ `<transfer_id>:reversal`, sehingga riwayat mutasi tetap lengkap untuk audit],
+    [Credit yang `DeadlineExceeded` diulang terlebih dahulu dengan _reference_ yang sama, karena credit sudah _idempotent_. Bila semua percobaan berakhir _timeout_, hasilnya tidak pasti. Lab tetap menjalankan kompensasi, sedangkan sistem _production_ menambahkan _reconciliation job_],
     [Kompensasi juga bisa gagal atau _timeout_, jadi kompensasi wajib aman untuk diulang. Kompensasi yang gagal berakhir di `COMPENSATION_FAILED`],
   )
   #v(4pt)
-  #note[Kompensasi membalik efek bisnis, tidak membalik transaksi database. Istilahnya _semantic undo_.]
+  #note[Kompensasi membalik efek bisnis tanpa membatalkan transaksi database yang sudah di-_commit_. Istilahnya _semantic undo_.]
 ]
 
 #code-slide(kicker: "Saga", title: [_Reversal_ dengan _policy_ sendiri tanpa _circuit breaker_],
   side: [
     - Credit biasanya gagal karena account mati atau _breaker_ baru terbuka. Bila _reversal_ lewat _breaker_ yang sama, _reversal_ langsung ditolak dan transfer berakhir `COMPENSATION_FAILED`
-    - _Reversal_ berjalan di koneksi gRPC kedua: _retry_ dengan _backoff_ 200 ms–5 detik selama paling lama 30 detik
+    - _Reversal_ berjalan di koneksi gRPC kedua dengan _retry_ dan _backoff_ 200 ms–5 detik, paling lama 30 detik
     - Setiap percobaan membawa _reference_ yang sama, sehingga saldo tidak bertambah dua kali
-    - Log `retrying reversal` menandai setiap percobaan ulang
+    - Log `retrying reversal` menandai setiap _retry_
   ],
 )[
 ```go
@@ -315,20 +315,20 @@ reversalRetry := retrypolicy.NewBuilder[any]().
         [Langkah], [Durasi],
         [Debit: 4 percobaan × 2 detik + 3 _backoff_ × 1,25 detik], [11,75 detik],
         [Credit, dengan perhitungan yang sama], [11,75 detik],
-        [_Reversal_: jendela 30 detik + 1 percobaan terakhir], [32 detik],
+        [_Reversal_: paling lama 30 detik + 1 percobaan terakhir], [32 detik],
         [*Total*], [*55,5 detik*],
       )
     ],
     card([Akibatnya], accent: gold.darken(15%))[
       - `shutdownGrace` transfer = 60 detik. `TestShutdownGrace` gagal bila _policy_ bertambah panjang melewati angka ini
-      - Platform harus memberi waktu yang cukup sebelum `SIGKILL`: `terminationGracePeriodSeconds` di Kubernetes (Hari 4), `stop_grace_period` di Docker Compose
+      - Platform harus memberi waktu yang cukup sebelum `SIGKILL`, melalui `terminationGracePeriodSeconds` di Kubernetes (Hari 4) dan `stop_grace_period` di Docker Compose
     ],
   )
   #v(10pt)
-  #note(kind: "warn")[Celah yang tersisa: proses yang mati paksa (`SIGKILL`, _crash_) di antara dua langkah meninggalkan baris `PENDING` atau `DEBITED` yang tidak dilanjutkan siapa pun. Sistem _production_ menambahkan _recovery job_ yang melanjutkan atau mengompensasi baris tersebut.]
+  #note(kind: "warn")[Masih ada satu celah. Bila proses mati paksa (`SIGKILL`, _crash_) di antara dua langkah, baris `PENDING` atau `DEBITED` tertinggal tanpa ada yang melanjutkan. Sistem _production_ menambahkan _recovery job_ yang melanjutkan atau mengompensasi baris tersebut.]
 ]
 
-#slide(kicker: "Saga", title: "Mutasi account dibuat idempoten")[
+#slide(kicker: "Saga", title: [Mutasi account dibuat _idempotent_])[
   #two-col(
     [
       ```sql
@@ -342,13 +342,13 @@ reversalRetry := retrypolicy.NewBuilder[any]().
       ```
       #v(6pt)
       #bullets(size: 13pt,
-        [Tidak ada baris yang masuk: _reference_ sudah pernah diterapkan. Account membaca saldo dalam transaksi yang sama, menjawab sukses tanpa mutasi baru, dan mencatat log `mutation already applied, not repeated`],
-        [_Reference_ debit = `transfer_id`, _reference_ reversal = `transfer_id:reversal`],
+        [Bila tidak ada baris yang masuk, berarti mutasi dengan _reference_ tersebut sudah pernah dicatat. Account lalu membaca saldo dalam transaksi yang sama, menjawab sukses tanpa mutasi baru, dan mencatat log `mutation already applied, not repeated`],
+        [_Reference_ debit = `transfer_id`, _reference_ _reversal_ = `transfer_id:reversal`],
       )
     ],
     [
       #card("Dampak ke klien gRPC di transfer")[
-        Sejak Hari 2, _retry_ hanya dilakukan untuk `Unavailable`. Setelah mutasi idempoten, `DeadlineExceeded` juga boleh di-_retry_.
+        Sejak Hari 2, _retry_ hanya dilakukan untuk `Unavailable`. Setelah mutasi dibuat _idempotent_, `DeadlineExceeded` juga boleh di-_retry_.
 
         #v(4pt)
         Debit yang ternyata sudah diproses sebelum _timeout_ tidak akan dijalankan dua kali.
@@ -357,7 +357,7 @@ reversalRetry := retrypolicy.NewBuilder[any]().
     ratio: (1.2fr, 1fr),
   )
   #v(8pt)
-  #note(kind: "warn")[Lab 5 dimulai dengan `make infra-reset` lalu `make infra-up`. Database dari Lab 1–4 dapat berisi _reference_ ganda; _unique index_ gagal dibuat dan account berhenti saat _startup_ dengan _error_ `apply schema`.]
+  #note(kind: "warn")[Lab 5 dimulai dengan `make infra-reset` lalu `make infra-up`. Database dari Lab 1–4 dapat berisi _reference_ ganda, sehingga _unique index_ gagal dibuat dan account berhenti saat _startup_ dengan _error_ `apply schema`.]
 ]
 
 // ── 03 Outbox ──────────────────────────────────────────────────────────────
@@ -402,7 +402,7 @@ reversalRetry := retrypolicy.NewBuilder[any]().
     edge((780pt, 170pt), (780pt, 86pt)),
   )
   #bullets(size: 13pt,
-    [Perubahan status transfer dan baris outbox ditulis dalam *satu transaksi database*: keduanya tersimpan, atau keduanya batal],
+    [Perubahan status transfer dan baris outbox ditulis dalam *satu transaksi database*, sehingga keduanya tersimpan bersama atau batal bersama],
     [_Relay_ membaca outbox secara terpisah lalu mengirim ke Kafka],
   )
 ]
@@ -410,7 +410,7 @@ reversalRetry := retrypolicy.NewBuilder[any]().
 #code-slide(kicker: "Outbox", title: "Status dan event dalam satu transaksi",
   side: [
     - `tx.Rollback` setelah `Commit` tidak berpengaruh, jadi aman di-`defer`
-    - `and status = @from` menjaga urutan status: transfer yang sudah dipindahkan proses lain tidak ditimpa (`ErrStaleState`)
+    - `and status = @from` menjaga urutan status, sehingga transfer yang statusnya sudah diubah proses lain tidak ditimpa (`ErrStaleState`)
     - Tabel `outbox`: `id`, `aggregate_id`, `event_type`, `payload` (jsonb), `created_at`, `published_at`
     - Event hanya untuk status akhir: `TransferCompleted`, `TransferFailed`, `TransferCompensated`
   ],
@@ -444,10 +444,10 @@ func (s *PostgresStore) Transition(ctx context.Context,
 
 #code-slide(kicker: "Outbox", title: [_Relay_ dari outbox ke Kafka],
   side: [
-    - `for update skip locked`: beberapa _replica_ transfer dapat menjalankan _relay_ tanpa mengambil baris yang sama
+    - Dengan `for update skip locked`, beberapa _replica_ transfer dapat menjalankan _relay_ tanpa mengambil baris yang sama
     - _Key_ `transfer_id` dengan `Balancer: &kafka.Hash{}` di `kafka.Writer`, _header_ `event_type` dan `event_id`
-    - Proses mati setelah _publish_ dan sebelum `published_at` diisi: event dikirim ulang
-    - Itulah sebabnya outbox menghasilkan _at-least-once_
+    - Bila proses mati setelah _publish_ dan sebelum `published_at` diisi, event dikirim ulang
+    - Karena itu, outbox hanya menjamin _at-least-once delivery_
   ],
 )[
 ```go
@@ -508,15 +508,15 @@ _, err = tx.Exec(ctx, `update outbox
       - JSON yang tidak dapat dibaca
       - `event_id` atau `transfer_id` yang bukan UUID 36 karakter
       - Ditolak PostgreSQL dengan SQLSTATE kelas 22 (data tidak valid, misalnya `22P02`) atau 23 (_constraint_, misalnya `23502`)
-      - _Offset_ tetap di-_commit_, sehingga _event_ berikutnya di _partition_ yang sama tidak tertahan
+      - _Offset_ tetap di-_commit_, sehingga event berikutnya di _partition_ yang sama tidak tertahan
     ],
     card([Diulang sampai berhasil], accent: gold.darken(15%))[
       - Database atau Kafka mati, koneksi putus, _timeout_
-      - _Error_ skema (kelas 42, misalnya tabel tidak ada): semua _event_ gagal dengan cara yang sama. Melewatinya berarti membuang semua notifikasi, sedangkan mengulangnya hanya menahan konsumsi sampai perbaikan di-_deploy_
+      - _Error_ skema (kelas 42, misalnya tabel tidak ada) membuat semua event gagal dengan cara yang sama. Melewatinya berarti membuang semua notifikasi, sedangkan mengulangnya hanya menunda pemrosesan event hingga perbaikan di-_deploy_
     ],
   )
   #v(10pt)
-  #note[_Event_ yang terus gagal tanpa batas memblokir seluruh _partition_. Di _production_, _event_ seperti ini dikirim ke _dead-letter topic_ untuk diperiksa petugas.]
+  #note[Event yang terus gagal tanpa batas memblokir seluruh _partition_. Di _production_, event seperti ini dikirim ke _dead-letter topic_ untuk diperiksa petugas.]
 ]
 
 #slide(kicker: "Lab 5", title: "Transfer sebagai saga dengan outbox dan Kafka")[
@@ -526,8 +526,8 @@ _, err = tx.Exec(ctx, `update outbox
     ],
     card("Yang dikerjakan", accent: gold.darken(15%))[
       - Kafka dan db-notification di `compose.yaml`
-      - Mutasi account idempoten berdasarkan _reference_
-      - Saga di transfer, termasuk reversal
+      - Mutasi account _idempotent_ berdasarkan _reference_
+      - Saga di transfer, termasuk _reversal_
       - Outbox dan _relay_ ke _topic_ `transfer-events`
       - Service notification sebagai _consumer_
     ],
@@ -538,7 +538,7 @@ _, err = tx.Exec(ctx, `update outbox
     [Uji kompensasi: transfer ke `to_account` yang tidak terdaftar menghasilkan `COMPENSATED` dan dua mutasi di db-account. Dengan `make fault-error RATE=0.6` dan ±20 transfer bersamaan, sebagian transfer menampilkan log `retrying reversal` lalu berakhir `COMPENSATED` dengan HTTP `503`],
     [Uji duplikat: hentikan notification, jalankan `make replay`, lalu lihat notifikasi ganda],
   )
-  #note(kind: "tip")[Langkah lengkap: Panduan Lab, bab Lab 5. Titik awal: tag `lab-04`; hasil akhir: tag `lab-05`.]
+  #note(kind: "tip")[Langkah lengkap ada di Panduan Lab, bab Lab 5. Lab ini dimulai dari tag `lab-04` dan berakhir di tag `lab-05`.]
 ]
 
 // ── 04 Idempotency ─────────────────────────────────────────────────────────
@@ -550,21 +550,21 @@ _, err = tx.Exec(ctx, `update outbox
     columns: (1fr, 1.4fr),
     [Sumber], [Kejadian],
     [_Relay_ outbox], [Proses mati setelah _publish_, sebelum `published_at` tersimpan],
-    [_Consumer_ Kafka], [Proses mati setelah tulis ke database, sebelum _commit offset_],
+    [_Consumer_ Kafka], [Proses mati setelah menulis ke database, sebelum _commit offset_],
     [_Rebalance_ _consumer group_], [_Partition_ pindah ke anggota lain sebelum _offset_ terakhir di-_commit_],
     [_Replay_], [_Offset_ sengaja dikembalikan ke awal untuk memproses ulang],
     [Klien API], [Aplikasi kanal mengirim ulang `POST /transfers` karena _timeout_],
   )
   #v(10pt)
-  #note[Duplikat tidak bisa dicegah di sisi pengirim. Pertahanannya ada di sisi penerima: penerima harus mengenali permintaan yang sudah pernah diproses.]
+  #note[Duplikat tidak bisa dicegah di sisi pengirim. Karena itu, sisi penerima harus mengenali permintaan yang sudah pernah diproses.]
 ]
 
 #code-slide(kicker: "Lab 6", title: [_Idempotent consumer_ di notification],
   side: [
     - Tabel `processed_event` dengan `event_id` sebagai _primary key_
     - Tanda \"sudah diproses\" dan notifikasi ditulis dalam satu transaksi
-    - Duplikat dilaporkan ke _consumer_ (`inserted` = `false`), dicatat di log `duplicate event skipped`, lalu dilewati; _offset_ tetap di-_commit_
-    - Setelah ini, `make replay` tidak lagi menghasilkan notifikasi ganda; `make duplicates` menampilkan daftar kosong
+    - Untuk duplikat, _consumer_ menerima `inserted` = `false`, mencatat log `duplicate event skipped`, lalu melewati event tersebut, tetapi _offset_ tetap di-_commit_
+    - Setelah ini, `make replay` tidak lagi menghasilkan notifikasi ganda, dan `make duplicates` menampilkan daftar kosong
   ],
 )[
 ```go
@@ -624,7 +624,7 @@ func (s *PostgresStore) Insert(ctx context.Context,
   #v(8pt)
   #bullets(size: 13pt,
     [_Key_ dibuat oleh aplikasi kanal dan disimpan dengan _unique index_ di db-transfer. _Replay_ transfer yang selesai menjawab `201`, bukan `200`],
-    [Kode yang sama membuat klien yang kehilangan respons pertama mengambil keputusan yang sama. Penyebab `FAILED` dan `COMPENSATED` dibaca ulang dari teks `failure_reason`; desain _production_ menyimpannya di kolom kode tersendiri],
+    [Karena kode HTTP-nya sama dengan respons pertama, klien yang kehilangan respons pertama tetap mengambil keputusan yang sama. Penyebab `FAILED` dan `COMPENSATED` dibaca ulang dari teks `failure_reason`, sedangkan desain _production_ menyimpannya di kolom kode tersendiri],
     [Baris `PENDING` atau `DEBITED` yang tertinggal karena _crash_ tidak dilanjutkan, sehingga _replay_-nya terus menjawab `202`],
   )
 ]
@@ -648,7 +648,7 @@ func (s *PostgresStore) Insert(ctx context.Context,
     ],
     card("Yang dikerjakan", accent: gold.darken(15%))[
       - Tabel `processed_event` di db-notification
-      - _Handler_ notification yang idempoten
+      - _Handler_ notification yang _idempotent_
       - _Header_ `Idempotency-Key` di `POST /transfers`
       - _Test_ untuk duplikat dan _body_ berbeda
     ],
@@ -656,10 +656,10 @@ func (s *PostgresStore) Insert(ctx context.Context,
   #v(10pt)
   #enum(
     [Hentikan notification, tunggu 10–30 detik hingga sesi _consumer group_ berakhir, jalankan `make replay`, lalu jalankan notification kembali. `make replay` yang terlalu cepat gagal dengan pesan `group ... is Stable`],
-    [`make duplicates` menampilkan daftar kosong: tidak ada _event_ dengan lebih dari satu notifikasi],
-    [Kirim `POST /transfers` dua kali dengan _key_ yang sama: jawaban kedua `201` dengan `Idempotent-Replayed: true`, saldo kedua rekening hanya berubah satu kali. Dengan _body_ berbeda: `422`],
+    [`make duplicates` menampilkan daftar kosong, artinya tidak ada event dengan lebih dari satu notifikasi],
+    [Kirim `POST /transfers` dua kali dengan _key_ yang sama. Jawaban kedua berupa `201` dengan `Idempotent-Replayed: true`, dan saldo kedua rekening hanya berubah satu kali. Bila _body_ berbeda, jawabannya `422`],
   )
-  #note(kind: "tip")[Langkah lengkap: Panduan Lab, bab Lab 6. Titik awal: tag `lab-05`; hasil akhir: tag `lab-06`.]
+  #note(kind: "tip")[Langkah lengkap ada di Panduan Lab, bab Lab 6. Lab ini dimulai dari tag `lab-05` dan berakhir di tag `lab-06`.]
 ]
 
 // ── 05 Security ────────────────────────────────────────────────────────────
@@ -682,7 +682,7 @@ func (s *PostgresStore) Insert(ctx context.Context,
     ],
   )
   #v(12pt)
-  #note[Prinsip ini dikenal sebagai _zero trust_: setiap panggilan diperiksa, termasuk panggilan dari dalam jaringan sendiri.]
+  #note[Prinsip ini disebut _zero trust_. Setiap panggilan wajib diperiksa, termasuk panggilan dari dalam jaringan sendiri.]
 ]
 
 #slide(kicker: "OAuth2", title: [Alur _client credentials_])[
@@ -698,7 +698,7 @@ func (s *PostgresStore) Insert(ctx context.Context,
     edge((75pt, 56pt), (75pt, 130pt), label: "REST + Bearer", label-dx: -70pt, label-dy: -6pt),
   )
   #bullets(size: 13pt,
-    [Tidak ada pengguna yang _login_: service mengautentikasi dirinya sendiri dengan `client_id` dan `client_secret`],
+    [Alur ini tidak melibatkan _login_ pengguna. Service mengautentikasi dirinya sendiri dengan `client_id` dan `client_secret`],
     [Account memeriksa token secara lokal dengan _public key_ dari JWKS, tanpa memanggil Hydra di setiap _request_],
   )
 ]
@@ -728,19 +728,19 @@ func (s *PostgresStore) Insert(ctx context.Context,
         [`kid` (_header_)], [Memilih _public key_ dari JWKS],
         [`iss`], [Token berasal dari _issuer_ yang dipercaya],
         [`exp`], [Token belum kedaluwarsa],
-        [`scp`], [Pemanggil punya _scope_ untuk operasi ini],
+        [`scp`], [Pemanggil memiliki _scope_ untuk operasi ini],
       )
     ],
     ratio: (1.25fr, 1fr),
   )
   #v(8pt)
-  #note(kind: "warn")[JWT hanya ditandatangani, tidak dienkripsi. Siapa pun yang memegang token dapat membaca isinya, jadi data rahasia tidak boleh dimasukkan ke _claim_.]
+  #note(kind: "warn")[JWT hanya di-_sign_, tidak dienkripsi. Siapa pun yang memegang token dapat membaca isinya, jadi data rahasia tidak boleh dimasukkan ke _claim_.]
 ]
 
 #code-slide(kicker: "JWT", title: "Validasi token dengan keyfunc dan golang-jwt",
   side: [
-    - keyfunc mengambil JWKS saat _startup_ dan setiap jam. Token dengan `kid` yang belum dikenal memicu unduhan baru, paling sering sekali per 5 detik
-    - Tanda tangan, `iss`, dan `exp` diperiksa oleh _parser_ `jwt`
+    - keyfunc mengambil JWKS saat _startup_ dan setiap jam. Token dengan `kid` yang belum dikenal memicu pengambilan JWKS baru, paling sering sekali per 5 detik
+    - _Signature_, `iss`, dan `exp` diperiksa oleh _parser_ `jwt`
     - `WithValidMethods` menolak token dengan `alg` lain, termasuk `none`
     - _Scope_ diperiksa oleh pemanggil `Verify`, karena setiap operasi membutuhkan _scope_ berbeda
   ],
@@ -777,7 +777,7 @@ func (v *Verifier) Verify(token string) (Claims, error) {
     - `POST /transfers` butuh `transfer:write`, `GET /transfers/{id}` butuh `transfer:read`
     - Token tidak ada atau tidak valid: `401` dengan _header_ `WWW-Authenticate`
     - Token valid tanpa _scope_: `403`
-    - `/healthz` dan `/readyz` terbuka untuk _probe_; `/debug/circuit-breaker` terbuka hanya untuk keperluan lab dan di _production_ tidak diekspos keluar
+    - `/healthz` dan `/readyz` terbuka untuk _probe_. `/debug/circuit-breaker` terbuka hanya untuk keperluan lab dan tidak diekspos keluar di _production_
   ],
 )[
 ```go
@@ -813,10 +813,10 @@ func (m *Middleware) Require(scope string,
 #code-slide(kicker: "Lab 7", title: [_Interceptor_ JWT di gRPC account],
   side: [
     - Token dibaca dari _metadata_ `authorization`
-    - Predikat `public` meloloskan _method_ di luar `AccountService` (_health_, _reflection_) tanpa token
-    - _Method_ `AccountService` tanpa _scope_ di peta ditolak (_fail closed_)
+    - Fungsi `public` meloloskan _method_ di luar `AccountService` (_health_, _reflection_) tanpa token
+    - _Method_ `AccountService` tanpa _scope_ di _map_ `scopes` ditolak (_fail closed_)
     - Kode gRPC: `Unauthenticated` dan `PermissionDenied`
-    - Batasannya: hanya panggilan _unary_. RPC _streaming_ dan service lain yang kelak didaftarkan tidak terlindungi
+    - _Interceptor_ ini hanya menangani panggilan _unary_, sehingga RPC _streaming_ dan service lain yang kelak didaftarkan tidak terlindungi
   ],
 )[
 ```go
@@ -853,7 +853,7 @@ return func(ctx context.Context, req any,
 #code-slide(kicker: "Lab 7", title: "Token dikirim otomatis oleh klien gRPC",
   side: [
     - Transfer meminta _scope_ `account:write` saja, sesuai kebutuhannya (_least privilege_)
-    - `tokenCredentials` menyimpan token sampai 10 detik sebelum kedaluwarsa, lalu meminta token baru ke Hydra
+    - `tokenCredentials` menyimpan token hingga 10 detik sebelum kedaluwarsa, lalu meminta token baru ke Hydra
     - Satu _cache_ token digunakan bersama oleh koneksi utama dan koneksi _reversal_
     - Di _production_, koneksi gRPC wajib TLS dan `RequireTransportSecurity` mengembalikan `true`
   ],
@@ -892,9 +892,9 @@ func (*tokenCredentials) RequireTransportSecurity() bool {
 
 #code-slide(kicker: "Lab 7", title: "Token yang ditolak account diganti satu kali",
   side: [
-    - Token dapat ditolak sebelum kedaluwarsa, misalnya Hydra mengganti _signing key_. Token di _cache_ dibuang dan panggilan diulang sekali dengan token baru
-    - Gagal mengambil token (Hydra mati) menghasilkan `tokenFetchError` dengan kode `Unauthenticated`. Panggilan tidak sampai ke account, tidak diulang, tidak dihitung _circuit breaker_; transfer berakhir `FAILED` dengan `502`
-    - _Interceptor_ ini dipasang paling luar, sebelum _policy_ resiliency, di kedua koneksi
+    - Token dapat ditolak sebelum kedaluwarsa, misalnya karena Hydra mengganti _signing key_. Bila itu terjadi, token di _cache_ dibuang dan panggilan diulang sekali dengan token baru
+    - Bila token gagal diambil (Hydra mati), klien menghasilkan `tokenFetchError` dengan kode `Unauthenticated`. Panggilan tidak sampai ke account, tidak diulang, dan tidak dihitung oleh _circuit breaker_, sehingga transfer berakhir `FAILED` dengan `502`
+    - _Interceptor_ ini dipasang paling luar, sebelum _policy_ _resiliency_, di kedua koneksi
   ],
 )[
 ```go
@@ -940,7 +940,7 @@ grpc.WithChainUnaryInterceptor(
     ],
     card("Tetap dikerjakan service", accent: gold.darken(15%))[
       - Validasi JWT dan _scope_ di setiap service
-      - _Gateway_ tidak menggantikan pemeriksaan di service: panggilan antar service tidak melewati _gateway_
+      - _Gateway_ tidak menggantikan pemeriksaan di service, karena panggilan antarservice tidak melewati _gateway_
     ],
   )
   #v(8pt)
@@ -956,7 +956,7 @@ grpc.WithChainUnaryInterceptor(
         1111111111: rpc error: code = Unavailable
         desc = dial tcp 10.0.3.7:9091: ..."}
       ```
-      Alamat internal dan detail error gRPC terbaca oleh klien.
+      Klien dapat membaca alamat internal dan detail _error_ gRPC.
     ],
     card("Sesudah Lab 7", accent: gold.darken(15%))[
       ```json
@@ -968,10 +968,10 @@ grpc.WithChainUnaryInterceptor(
     ],
   )
   #v(10pt)
-  #note(kind: "tip")[Klien cukup tahu kategori kegagalan. Penelusuran penyebab dilakukan dari log, dan Hari 4 menambahkan _correlation ID_ serta _trace_ untuk mempercepatnya.]
+  #note(kind: "tip")[Klien cukup tahu kategori kegagalan. Penyebabnya ditelusuri dari log, dan Hari 4 menambahkan _correlation ID_ serta _trace_ untuk mempercepat penelusuran tersebut.]
 ]
 
-#slide(kicker: "Lab 7", title: "Mengamankan transfer dan account dengan JWT")[
+#slide(kicker: "Lab 7", title: "Transfer dan account diamankan dengan JWT")[
   #two-col(
     card("Tujuan")[
       Account hanya melayani panggilan dengan token yang valid dan _scope_ yang sesuai, dan REST transfer hanya melayani aplikasi kanal yang memegang token.
@@ -986,10 +986,10 @@ grpc.WithChainUnaryInterceptor(
   )
   #v(8pt)
   #bullets(size: 13pt,
-    [Konfigurasi wajib: `OAUTH_ISSUER`, `OAUTH_JWKS_URL`, `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET`, `OAUTH_TOKEN_URL`; service berhenti saat _startup_ bila salah satunya kosong],
+    [Konfigurasi wajib berupa `OAUTH_ISSUER`, `OAUTH_JWKS_URL`, `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET`, dan `OAUTH_TOKEN_URL`. Service berhenti saat _startup_ bila salah satunya kosong],
     [`make token` mencetak token `channel-app` untuk dicoba dengan curl],
   )
-  #note(kind: "tip")[Langkah lengkap: Panduan Lab, bab Lab 7. Titik awal: tag `lab-06`; hasil akhir: tag `lab-07`.]
+  #note(kind: "tip")[Langkah lengkap ada di Panduan Lab, bab Lab 7. Lab ini dimulai dari tag `lab-06` dan berakhir di tag `lab-07`.]
 ]
 
 // ── 06 Observability ───────────────────────────────────────────────────────
@@ -1001,8 +1001,8 @@ grpc.WithChainUnaryInterceptor(
     columns: (auto, 1.2fr, 1fr, auto),
     [Pilar], [Pertanyaan yang dijawab], [Contoh di studi kasus], [_Tools_],
     [Log], [Apa yang terjadi pada satu _request_ tertentu?], [`notification sent`, `duplicate event skipped`], [slog],
-    [Metrik], [Seberapa sering, seberapa cepat, dan apa trennya?], [`transfers_total{status}`, latensi p95], [Prometheus],
-    [_Trace_], [Di service mana waktu habis dalam satu transfer?], [_Span_ transfer, account, notification], [OpenTelemetry],
+    [Metrik], [Seberapa sering, seberapa cepat, dan apa trennya?], [`transfers_total{status}`, _latency_ p95], [Prometheus],
+    [_Trace_], [Service mana yang menghabiskan waktu paling lama dalam satu transfer?], [_Span_ transfer, account, notification], [OpenTelemetry],
   )
   #v(12pt)
   #note[Ketiganya ditampilkan di Grafana. Pada monolith satu _stack trace_ cukup untuk menjelaskan kegagalan, sedangkan pada microservices satu transfer melewati tiga service dan sebuah _broker_.]
@@ -1026,9 +1026,9 @@ grpc.WithChainUnaryInterceptor(
   )
   #v(10pt)
   #bullets(size: 13.5pt,
-    [ID yang sama ikut di setiap _hop_: _header_ HTTP, _metadata_ gRPC, dan _header_ Kafka],
+    [ID yang sama dibawa di setiap _hop_ melalui _header_ HTTP, _metadata_ gRPC, dan _header_ Kafka],
     [Untuk jalur asinkron, _trace context_ disimpan di baris outbox saat ditulis, sehingga _relay_ dapat meneruskannya],
-    [Hasilnya: satu transfer terlihat sebagai satu _trace_ di Grafana, dari REST hingga notifikasi],
+    [Dengan begitu, satu transfer tampil sebagai satu _trace_ di Grafana, dari REST hingga notifikasi],
   )
 ]
 
@@ -1047,10 +1047,10 @@ grpc.WithChainUnaryInterceptor(
     ..bar(164pt, 536pt, 18pt, [transfer `insert outbox`], depth: 1),
   )
   #bullets(size: 13pt,
-    [Setiap baris adalah satu _span_; baris yang menjorok berada di bawah _span_ induknya (_parent_/_child_)],
-    [Panjang _bar_ menunjukkan durasi. `Credit` di account menghabiskan hampir seluruh waktu transfer, jadi penyelidikan dimulai dari account],
+    [Setiap baris menggambarkan satu _span_, dan baris yang menjorok adalah _child span_ dari _parent span_ di atasnya],
+    [Panjang _bar_ menunjukkan durasi. `Credit` di account menghabiskan hampir seluruh waktu transfer, sehingga account yang diperiksa lebih dahulu],
   )
-  #note(kind: "tip")[Ilustrasi. Demo sesi ini dijalankan instruktur dari tag `lab-08`, karena `otel-lgtm` baru ditambahkan ke `compose.yaml` di Lab 8.]
+  #note(kind: "tip")[Diagram di atas hanya ilustrasi. Demo sesi ini dijalankan instruktur dari tag `lab-08`, karena `otel-lgtm` baru ditambahkan ke `compose.yaml` di Lab 8.]
 ]
 
 #slide(kicker: "Demo Grafana", title: [Dari baris log ke _trace_])[
@@ -1062,11 +1062,11 @@ grpc.WithChainUnaryInterceptor(
   ```
   #v(6pt)
   #enum(
-    [Di Grafana _Explore_, pilih Loki lalu saring log dengan `correlation_id` yang dikembalikan transfer di _header_ `X-Correlation-ID`],
+    [Di Grafana _Explore_, pilih Loki lalu _filter_ log berdasarkan `correlation_id` yang dikembalikan transfer di _header_ `X-Correlation-ID`],
     [Semua baris log dari transfer, account, dan notification untuk _request_ tersebut tampil berurutan menurut waktu],
     [Nilai `trace_id` pada baris log membuka _trace_ yang sama di Tempo],
   )
-  #note[_Correlation ID_ digunakan untuk mencari log satu _request_; `trace_id` menghubungkan log tersebut ke _span_ yang menunjukkan durasi setiap langkah.]
+  #note[_Correlation ID_ digunakan untuk mencari log satu _request_, sedangkan `trace_id` menghubungkan log tersebut ke _span_ yang menunjukkan durasi setiap langkah.]
 ]
 
 #slide(kicker: "Demo Grafana", title: [Membaca metrik dengan PromQL])[
@@ -1078,9 +1078,9 @@ grpc.WithChainUnaryInterceptor(
   )
   #v(10pt)
   #bullets(size: 13.5pt,
-    [`rate(...[5m])` mengubah _counter_ yang terus naik menjadi laju per detik dalam jendela 5 menit],
-    [p95 dihitung dari _bucket_ histogram: 95% _request_ selesai di bawah angka tersebut],
-    [Kenaikan `FAILED` atau `COMPENSATED` bersamaan dengan naiknya p95 mengarahkan penyelidikan ke _trace_ pada rentang waktu yang sama],
+    [`rate(...[5m])` mengubah _counter_ yang terus naik menjadi laju per detik dalam rentang 5 menit],
+    [p95 dihitung dari _bucket_ histogram dan berarti 95% _request_ selesai di bawah angka tersebut],
+    [Bila `FAILED` atau `COMPENSATED` naik bersamaan dengan p95, periksa _trace_ pada rentang waktu yang sama],
   )
 ]
 
@@ -1110,10 +1110,10 @@ grpc.WithChainUnaryInterceptor(
     [Pola], [Masalah yang diselesaikan], [Layak digunakan ketika],
     [Saga (_orchestration_)], [Transaksi bisnis lintas database], [Proses bisnis menyentuh lebih dari satu service dan butuh status yang jelas],
     [Kompensasi], [Langkah yang sudah di-_commit_ harus dibatalkan], [Ada langkah saga yang bisa gagal setelah langkah lain berhasil],
-    [_Transactional outbox_], [Tulis DB dan _publish_ event tidak atomik], [Event wajib terkirim jika dan hanya jika data tersimpan],
+    [_Transactional outbox_], [Penulisan ke DB dan _publish_ event tidak atomik], [Event wajib terkirim jika dan hanya jika data tersimpan],
     [_Idempotent consumer_], [Duplikat dari _at-least-once delivery_], [_Consumer_ mengubah data atau memicu efek ke luar],
     [_Idempotency-Key_], [Klien mengirim ulang _request_], [_Endpoint_ membuat transaksi finansial],
-    [OAuth2 _client credentials_ + JWT], [Panggilan antar service tanpa identitas], [Setiap service internal yang mengubah data],
+    [OAuth2 _client credentials_ + JWT], [Panggilan antarservice tanpa identitas], [Setiap service internal yang mengubah data],
   )
 ]
 

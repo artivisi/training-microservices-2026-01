@@ -7,7 +7,7 @@
 Setelah menyelesaikan lab ini, peserta mampu:
 
 - mensimulasikan `account` _service_ yang lambat atau sering gagal dengan _fault injector_;
-- memasang _timeout_ per percobaan, _retry_ dengan _backoff_, dan _circuit breaker_ pada HTTP _client_ menggunakan failsafe-go;
+- memasang _timeout_ per percobaan, _retry_ dengan _backoff_ (jeda antarpercobaan yang makin panjang), dan _circuit breaker_ pada HTTP _client_ menggunakan failsafe-go;
 - menentukan jenis kegagalan yang aman untuk di-_retry_ dan jenis kegagalan yang harus dihitung oleh _circuit breaker_;
 - membaca perubahan status _circuit breaker_ (_closed_, _open_, _half-open_) dari _log_ dan dari _endpoint_ `GET /debug/circuit-breaker`;
 - menguji ketiga _policy_ tersebut dengan `net/http/httptest` tanpa menjalankan `account` _service_.
@@ -16,17 +16,17 @@ Setelah menyelesaikan lab ini, peserta mampu:
 
 Pada akhir Lab 2, `transfer` _service_ memanggil `account` _service_ dengan `http.Client` tanpa _timeout_. Kode tersebut mengandung dua masalah yang baru terlihat ketika `account` bermasalah:
 
-- Bila `account` lambat, setiap transfer ikut menunggu tanpa batas sampai `account` menjawab. _Goroutine_ dan koneksi di `transfer` menumpuk, sehingga `transfer` ikut lambat walaupun database milik `transfer` sehat.
-- Bila `account` mati atau kewalahan, setiap transfer tetap mengirim _request_ ke `account`. Setiap _request_ tersebut gagal, dan beban tambahan tersebut memperlambat `account` saat sedang berusaha kembali aktif.
+- Bila `account` lambat, setiap transfer ikut menunggu tanpa batas hingga `account` menjawab. _Goroutine_ dan koneksi di `transfer` menumpuk, sehingga `transfer` ikut lambat walaupun database milik `transfer` sehat.
+- Bila `account` mati atau kewalahan, setiap transfer tetap mengirim _request_ ke `account`. Setiap _request_ tersebut gagal, dan beban tambahan tersebut membuat `account` makin lama kembali aktif.
 
-Lab ini membungkus HTTP _client_ di paket `transfer/internal/accountclient` dengan tiga _policy_ dari pustaka failsafe-go.
+Lab ini membungkus HTTP _client_ di paket `transfer/internal/accountclient` dengan tiga _policy_ dari _library_ failsafe-go.
 
 #table(
   columns: (auto, 1fr, 1.3fr),
   [_Policy_], [Pengaturan], [Alasan],
   [_Timeout_], [2 detik untuk setiap percobaan], [Membatasi lama transfer menunggu `account`. Batas ini berlaku per percobaan, sehingga setiap _retry_ mendapat jatah waktu sendiri.],
   [_Retry_], [Maksimal 3 kali, _backoff_ 100 ms hingga 1 detik dengan _jitter_], [Hanya untuk kegagalan yang pasti belum diproses `account`: koneksi gagal dibuka dan HTTP 503. _Timeout_ tidak pernah di-_retry_.],
-  [_Circuit breaker_], [Beralih ke _open_ setelah 5 gagal dari 10 panggilan terakhir, menunggu 10 detik, lalu butuh 3 panggilan uji berhasil], [Menghentikan panggilan ke `account` yang sedang bermasalah. Selama _open_, transfer langsung ditolak (_fail fast_) tanpa _request_ ke `account`.],
+  [_Circuit breaker_], [Beralih ke _open_ setelah 5 gagal dari 10 panggilan terakhir, menunggu 10 detik, lalu memerlukan 3 panggilan uji yang berhasil], [Menghentikan panggilan ke `account` yang sedang bermasalah. Selama _open_, transfer langsung ditolak (_fail fast_) tanpa _request_ ke `account`.],
 )
 
 Ketiga _policy_ dipasang sebagai `http.RoundTripper`, yaitu komponen di dalam `http.Client` yang benar-benar mengirim _request_. Kode pemanggil (`Debit` dan `Credit`) tidak berubah: kode tersebut tetap memanggil `c.http.Do(req)`, dan _round tripper_ menjalankan ketiga _policy_ di setiap panggilan.
@@ -47,7 +47,7 @@ transfer service
                                                    /accounts...
 ```
 
-Urutan pembungkusan menentukan perilakunya. _Retry_ berada paling luar sehingga setiap percobaan ulang melewati _circuit breaker_ dan _timeout_ lagi. _Timeout_ berada paling dalam sehingga batas 2 detik berlaku untuk setiap percobaan, dan _circuit breaker_ ikut mencatat _timeout_ sebagai kegagalan.
+Urutan ketiga _policy_ menentukan perilaku _round tripper_. _Retry_ berada paling luar sehingga setiap percobaan ulang melewati _circuit breaker_ dan _timeout_ lagi. _Timeout_ berada paling dalam sehingga batas 2 detik berlaku untuk setiap percobaan, dan _circuit breaker_ ikut mencatat _timeout_ sebagai kegagalan.
 
 Setelah lab ini, `POST /transfers` menjawab dengan kode HTTP berikut.
 
@@ -64,7 +64,7 @@ Setelah lab ini, `POST /transfers` menjawab dengan kode HTTP berikut.
 Pembagian kode 503 dan 502 di atas menjadi pegangan bagi aplikasi pemanggil. Kode 503 hanya digunakan bila belum ada saldo yang berubah, sehingga pemanggil boleh mengirim ulang _request_ yang sama nanti. Setelah _debit_ berhasil, setiap kegagalan _credit_ dijawab 502, walaupun penyebabnya _circuit breaker_ atau rekening tujuan yang tidak ada. Bila kegagalan tersebut dijawab 503 atau 422, pemanggil dapat mengira transfer aman diulang, dan pengulangan tersebut memotong saldo sumber untuk kedua kalinya.
 
 #note[
-  *Pengaturan _policy_ ditulis di kode.* Angka _timeout_, _retry_, dan _circuit breaker_ tidak dibaca dari _environment variable_. Perubahan angka tersebut adalah keputusan desain yang perlu melewati _review_ dan _unit test_ seperti perubahan kode lainnya. _Unit test_ menggunakan angka yang lebih kecil agar selesai dalam hitungan milidetik.
+  *Pengaturan _policy_ ditulis di kode.* Angka _timeout_, _retry_, dan _circuit breaker_ tidak dibaca dari _environment variable_. Angka tersebut merupakan bagian dari desain, sehingga setiap perubahannya perlu melewati _review_ dan _unit test_ seperti perubahan kode lainnya. _Unit test_ menggunakan angka yang lebih kecil agar selesai dalam hitungan milidetik.
 ]
 
 == Titik Awal
@@ -86,7 +86,7 @@ Seluruh perintah di lab ini dijalankan dari folder `studi-kasus`, kecuali disebu
 
 === Langkah 1: _Fault Injector_ pada `account`
 
-Perilaku _timeout_, _retry_, dan _circuit breaker_ hanya terlihat ketika `account` lambat atau gagal. Untuk itu `account` diberi _fault injector_, yaitu _middleware_ yang menambahkan jeda atau menjawab HTTP 503 sesuai konfigurasi. Konfigurasi tersebut diubah saat `account` berjalan melalui _endpoint_ `/admin/fault`, tanpa _restart_.
+Perilaku _timeout_, _retry_, dan _circuit breaker_ hanya terlihat ketika `account` lambat atau gagal. Untuk itu `account` diberi _fault injector_, yaitu _middleware_ yang menambahkan jeda atau menjawab HTTP 503 sesuai konfigurasi. Selama `account` berjalan, konfigurasi tersebut dapat diubah melalui _endpoint_ `/admin/fault` tanpa _restart_.
 
 _Fault injector_ hanya sarana latihan, sehingga kodenya tidak perlu diketik. Peserta yang mengerjakan Lab 2 sendiri mengambil paket `fault` (beserta _unit test_) dan `account/main.go` yang memasang paket tersebut dari _checkpoint_ `lab-02`:
 
@@ -98,7 +98,7 @@ git checkout lab-02 -- account/internal/fault account/main.go
 
 Penjelasan isi kode tersebut ada di bawah ini.
 
-Dua keputusan pada _fault injector_ berpengaruh ke pengamatan nanti:
+Dua keputusan pada _fault injector_ berpengaruh pada hasil pengamatan di bagian Verifikasi:
 
 - Jawaban 503 dikirim *sebelum* _request_ diproses. Saldo tidak berubah, sehingga 503 aman di-_retry_.
 - Bila pemanggil membatalkan _request_ selama jeda berlangsung (misalnya karena _timeout_ di sisi `transfer`), _fault injector_ berhenti dan tidak meneruskan _request_ ke _handler_. Akibatnya _debit_ yang terkena _timeout_ tidak mengubah saldo. Langkah 6 membahas mengapa perilaku ini tidak boleh dijadikan dasar untuk me-_retry_ _timeout_.
@@ -196,7 +196,7 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 
 Konfigurasi disimpan dalam `atomic.Pointer` karena _handler_ `PUT /admin/fault` dan _request_ ke `/accounts` berjalan di _goroutine_ berbeda secara bersamaan. Setiap _request_ membaca konfigurasi utuh sekali di awal, sehingga perubahan konfigurasi tidak pernah terbaca setengah jadi.
 
-_Fault injector_ hanya dipasang pada `/accounts` dan turunannya. _Health check_ (`/healthz`, `/readyz`) dan `/admin/fault` tetap cepat, sehingga _fault_ dapat dimatikan lagi kapan pun. Pemasangannya ada di fungsi `run()` pada `account/main.go`, setelah `defer store.Close()`:
+_Fault injector_ hanya dipasang pada `/accounts` dan seluruh _path_ di bawahnya. _Health check_ (`/healthz`, `/readyz`) dan `/admin/fault` tetap cepat, sehingga _fault_ dapat dimatikan lagi kapan pun. Pemasangannya ada di fungsi `run()` pada `account/main.go`, setelah `defer store.Close()`:
 
 ```go
 	// Faults apply to the account API only; probes and the admin endpoints stay fast.
@@ -219,7 +219,7 @@ Pola `/accounts/` (diakhiri garis miring) pada `ServeMux` mencakup seluruh _path
 
 === Langkah 2: Target `make` untuk Mengatur _Fault_
 
-Mengetik `curl` lengkap setiap kali mengubah _fault_ rawan salah ketik. `Makefile` di `studi-kasus` diberi beberapa target pembantu. Tambahkan dua variabel berikut di bawah baris `SERVICES := account transfer`, lalu perbarui baris `.PHONY`.
+Perintah `curl` lengkap rawan salah ketik bila harus diketik setiap kali _fault_ diubah. Karena itu `Makefile` di `studi-kasus` diberi beberapa target pembantu. Tambahkan dua variabel berikut di bawah baris `SERVICES := account transfer`, lalu perbarui baris `.PHONY`.
 
 ```make
 # Fault injection on the account service (Lab 3). Faults apply to /accounts*
@@ -253,7 +253,7 @@ breaker:
 	curl -sS $(TRANSFER_URL)/debug/circuit-breaker
 ```
 
-Target `fault-error` sengaja tidak memiliki nilai bawaan untuk `RATE`. Bila `RATE` tidak diisi, target tersebut berhenti dengan pesan error, sesuai prinsip konfigurasi di studi kasus ini: nilai yang wajib harus disebutkan secara eksplisit.
+Target `fault-error` sengaja tidak memiliki nilai _default_ untuk `RATE`. Bila `RATE` tidak diisi, target tersebut berhenti dengan pesan error, sesuai prinsip konfigurasi di studi kasus ini: nilai yang wajib harus disebutkan secara eksplisit.
 
 === Langkah 3: Menambahkan Dependensi failsafe-go
 
@@ -275,7 +275,7 @@ Setelah perintah tersebut, `transfer/go.mod` memuat baris `github.com/failsafe-g
 Paket `transfer` (domain) tidak boleh bergantung pada failsafe-go. Paket tersebut cukup mengenal dua kondisi baru:
 
 - `account` sedang tidak tersedia, dan panggilan ditolak tanpa dikirim;
-- _debit_ sudah diterapkan, tetapi _credit_ gagal, sehingga transfer tidak lagi aman diulang.
+- _debit_ sudah diproses, tetapi _credit_ gagal, sehingga transfer tidak lagi aman diulang.
 
 Tambahkan dua variabel berikut di blok `var` pada `transfer/internal/transfer/transfer.go`, tepat setelah `ErrInsufficientFunds`.
 
@@ -289,7 +289,7 @@ Tambahkan dua variabel berikut di blok `var` pada `transfer/internal/transfer/tr
 	ErrCreditFailed = errors.New("credit failed after debit")
 ```
 
-Paket `accountclient` menerjemahkan error milik failsafe-go menjadi `ErrAccountUnavailable` (Langkah 8). Dengan cara ini, _handler_ HTTP dapat memilih kode 503 tanpa mengetahui pustaka apa yang digunakan di bawahnya. `Service.Execute` (Langkah 9) membungkus setiap kegagalan _credit_ dengan `ErrCreditFailed`, apa pun penyebabnya.
+Paket `accountclient` menerjemahkan error milik failsafe-go menjadi `ErrAccountUnavailable` (Langkah 8). Dengan cara ini, _handler_ HTTP dapat memilih kode 503 tanpa mengetahui _library_ apa yang digunakan di bawahnya. `Service.Execute` (Langkah 9) membungkus setiap kegagalan _credit_ dengan `ErrCreditFailed`, apa pun penyebabnya.
 
 === Langkah 5: Pengaturan _Policy_
 
@@ -364,18 +364,18 @@ Arti setiap angka:
 
 === Langkah 6: Menentukan Kegagalan yang Di-_retry_ dan Dihitung
 
-Bagian ini adalah inti keputusan desain di lab ini. Ada dua pertanyaan yang jawabannya berbeda.
+Langkah ini memuat inti keputusan desain di lab ini. Ada dua pertanyaan yang jawabannya berbeda.
 
 *Pertanyaan pertama: kegagalan mana yang aman untuk di-_retry_?* _Debit_ belum _idempotent_. Bila _debit_ yang sama dikirim dua kali dan keduanya diproses, saldo terpotong dua kali. Karena itu _retry_ hanya boleh dilakukan bila _request_ dipastikan *belum diproses* oleh `account`:
 
 - Koneksi gagal dibuka (_connection refused_, _host_ tidak dikenal). _Request_ belum terkirim sama sekali.
 - HTTP 503. Di studi kasus ini, 503 berarti `account` menolak _request_ sebelum memprosesnya.
 
-_Timeout_ tidak termasuk. Saat _timeout_ terjadi, `transfer` tidak tahu apakah `account` sudah menerapkan _debit_ dan hanya jawabannya yang terlambat. Di lab ini saldo memang tidak berubah ketika _timeout_ terjadi, tetapi hal tersebut hanya karena _fault injector_ berhenti saat pemanggil membatalkan _request_ (Langkah 1). Database yang lambat di sistem sungguhan dapat saja sudah melakukan _commit_ atas _debit_ tersebut. HTTP 500 juga tidak di-_retry_ dengan alasan yang sama: _request_ bisa saja sudah setengah diproses.
+_Timeout_ tidak termasuk. Saat _timeout_ terjadi, `transfer` tidak tahu apakah `account` sudah memproses _debit_ dan hanya jawabannya yang terlambat. Di lab ini saldo memang tidak berubah ketika _timeout_ terjadi, tetapi hal tersebut hanya karena _fault injector_ berhenti saat pemanggil membatalkan _request_ (Langkah 1). Database yang lambat di sistem sungguhan dapat saja sudah melakukan _commit_ atas _debit_ tersebut. HTTP 500 juga tidak di-_retry_ dengan alasan yang sama: _request_ bisa saja sudah setengah diproses.
 
-*Pertanyaan kedua: kegagalan mana yang dihitung oleh _circuit breaker_?* _Circuit breaker_ mengukur kesehatan `account` _service_. Error transport, _timeout_, dan HTTP 5xx menandakan `account` bermasalah. HTTP 4xx (rekening tidak ditemukan, saldo tidak cukup) adalah jawaban normal dari `account` yang sehat, sehingga tidak boleh membuat _circuit breaker_ beralih ke _open_. Tanpa pembedaan tersebut, sepuluh nasabah dengan saldo kurang dapat menghentikan transfer seluruh nasabah lain.
+*Pertanyaan kedua: kegagalan mana yang dihitung oleh _circuit breaker_?* _Circuit breaker_ mengukur kesehatan `account` _service_. Error _transport_, _timeout_, dan HTTP 5xx menandakan `account` bermasalah. HTTP 4xx (rekening tidak ditemukan, saldo tidak cukup) justru menandakan `account` sehat dan menjawab secara normal, sehingga tidak boleh membuat _circuit breaker_ beralih ke _open_. Tanpa pembedaan tersebut, sepuluh nasabah dengan saldo kurang dapat menghentikan transfer seluruh nasabah lain.
 
-Tambahkan dua fungsi berikut di `client.go`. Letak fungsi di dalam file tidak berpengaruh; _checkpoint_ menaruhnya setelah fungsi `New` dari Langkah 7.
+Tambahkan dua fungsi berikut di `client.go`. Letak fungsi di dalam file tidak berpengaruh. Di _checkpoint_, kedua fungsi tersebut berada setelah fungsi `New` dari Langkah 7.
 
 ```go
 // notProcessed reports whether the request provably never reached the account
@@ -406,7 +406,7 @@ func countsAsFailure(resp *http.Response, err error) bool {
 
 Kedua fungsi menerima pasangan `(resp, err)` yang sama dengan hasil `RoundTrip`. Bila `err` tidak `nil`, `resp` bernilai `nil`, sehingga `resp` hanya dibaca setelah `err` diperiksa. Pada `notProcessed`, error _timeout_ dari failsafe-go bukan `*net.OpError` dengan operasi `dial`, sehingga fungsi tersebut mengembalikan `false` dan _timeout_ tidak di-_retry_.
 
-=== Langkah 7: Merakit _Policy_ di Fungsi `New`
+=== Langkah 7: Menyusun _Policy_ di Fungsi `New`
 
 Ganti `type Client` dan fungsi `New` milik Lab 2 dengan versi berikut. Fungsi `New` kini menerima `Settings` dan `*slog.Logger`.
 
@@ -468,14 +468,14 @@ func New(baseURL string, s Settings, log *slog.Logger) *Client {
 Beberapa hal yang perlu diperhatikan dari kode di atas:
 
 - *Satu _circuit breaker_ untuk `account`.* _Debit_ dan _credit_ menuju _service_ yang sama. Bila `account` mati, keduanya sama-sama gagal, sehingga keduanya berbagi satu _circuit breaker_.
-- *Urutan argumen `NewRoundTripper`.* _Policy_ pertama adalah yang paling luar: `retry`, lalu `breaker`, lalu _timeout_. Argumen pertama `nil` berarti _round tripper_ di bagian terdalam adalah `http.DefaultTransport`.
+- *Urutan argumen `NewRoundTripper`.* _Policy_ disusun dari luar ke dalam sesuai urutan argumen, yaitu `retry`, lalu `breaker`, lalu _timeout_. Argumen pertama `nil` berarti _round tripper_ di bagian terdalam adalah `http.DefaultTransport`.
 - *`AbortOnErrors(circuitbreaker.ErrOpen)`.* Bila _circuit breaker_ beralih ke _open_ di tengah rangkaian _retry_, _retry_ berikutnya langsung dihentikan. Tidak ada gunanya menunggu _backoff_ bila percobaan berikutnya pasti ditolak _circuit breaker_.
-- *_Jitter_.* Faktor 0,25 mengacak jeda _backoff_ hingga 25%. Bila seratus transfer gagal bersamaan, _retry_ mereka tidak tiba di `account` pada milidetik yang sama.
+- *_Jitter_.* Faktor 0,25 mengacak jeda _backoff_ hingga 25%. Bila seratus transfer gagal bersamaan, _retry_ dari seratus transfer tersebut tidak tiba di `account` pada milidetik yang sama.
 - *`ReturnLastFailure()`.* Bila _retry_ habis, failsafe-go mengembalikan _response_ 503 terakhir apa adanya. Dengan begitu fungsi `mutate` tetap membaca kode status seperti biasa.
 - *`OnRetry` menutup _body_.* Kode lain tidak membaca lagi _response_ 503 yang memicu _retry_. _Body_ tersebut harus dibaca habis dan ditutup agar koneksinya kembali ke _connection pool_.
 - *_Log_ di setiap perubahan status.* `OnStateChanged` menulis _log_ `circuit breaker state changed` dengan atribut `from` dan `to`. _Log_ inilah yang diamati di bagian Verifikasi.
 
-=== Langkah 8: Menerjemahkan Error dan Menampilkan Status _Circuit Breaker_
+=== Langkah 8: Memetakan Error dan Menampilkan Status _Circuit Breaker_
 
 Ketika _circuit breaker_ berstatus _open_, `c.http.Do(req)` mengembalikan error yang membungkus `circuitbreaker.ErrOpen`. Di fungsi `mutate`, sisipkan pemeriksaan berikut tepat setelah baris `resp, err := c.http.Do(req)` dan sebelum pemeriksaan `if err != nil` yang sudah ada.
 
@@ -548,7 +548,7 @@ Di `transfer/internal/transfer/http.go`, fungsi `create`, tambahkan dua _case_ b
 	default:
 ```
 
-Urutan _case_ menentukan hasilnya. Rekening tujuan yang tidak ditemukan menghasilkan error yang membungkus `ErrCreditFailed` sekaligus `ErrAccountNotFound`. Bila _case_ 422 diperiksa lebih dulu, transfer tersebut dijawab 422 walaupun saldo sumber sudah terpotong. Hal yang sama berlaku untuk _circuit breaker_ yang beralih ke _open_ di antara _debit_ dan _credit_: tanpa _case_ `ErrCreditFailed` di urutan pertama, transfer tersebut dijawab 503 dan pemanggil mengira transfer aman diulang.
+Urutan _case_ menentukan hasilnya. Rekening tujuan yang tidak ditemukan menghasilkan error yang membungkus `ErrCreditFailed` sekaligus `ErrAccountNotFound`. Bila _case_ 422 diperiksa terlebih dahulu, transfer tersebut dijawab 422 walaupun saldo sumber sudah terpotong. Hal yang sama berlaku untuk _circuit breaker_ yang beralih ke _open_ di antara _debit_ dan _credit_: tanpa _case_ `ErrCreditFailed` di urutan pertama, transfer tersebut dijawab 503 dan pemanggil mengira transfer aman diulang.
 
 Di `transfer/main.go`, fungsi `run()`, ganti baris pembuatan `svc` dan `srv` menjadi seperti berikut.
 
@@ -687,7 +687,7 @@ func TestNoRetryOnTimeout(t *testing.T) {
 }
 ```
 
-_Test_ ketiga memastikan _circuit breaker_ beralih ke _open_ setelah 5 kegagalan, lalu menolak panggilan berikutnya dengan cepat tanpa menyentuh _server_.
+_Test_ ketiga memastikan _circuit breaker_ beralih ke _open_ setelah 5 kegagalan, lalu menolak panggilan berikutnya dengan cepat tanpa mengirim _request_ ke _server_.
 
 ```go
 func TestBreakerOpensAndRejectsFast(t *testing.T) {
@@ -895,7 +895,7 @@ Hasil yang diharapkan (angka waktu di laptop masing-masing sedikit berbeda):
 
 Penjelasannya:
 
-- Setiap transfer pertama hingga kelima menunggu sekitar 2 detik walaupun jeda di `account` 3 detik. _Timeout_ memotong penantian, dan karena _timeout_ tidak di-_retry_, setiap transfer hanya melakukan satu percobaan _debit_.
+- Setiap transfer pertama hingga kelima menunggu sekitar 2 detik walaupun jeda di `account` 3 detik. _Timeout_ menghentikan panggilan setelah 2 detik, dan karena _timeout_ tidak di-_retry_, setiap transfer hanya melakukan satu percobaan _debit_.
 - Setiap _timeout_ dihitung satu kegagalan oleh _circuit breaker_. Setelah kegagalan kelima, _circuit breaker_ beralih ke _open_.
 - Transfer keenam dijawab `503` seketika. `transfer` tidak mengirim _request_ apa pun ke `account`.
 
@@ -907,7 +907,7 @@ level=WARN msg="circuit breaker state changed" target=account from=closed to=ope
 level=WARN msg="transfer failed" transfer_id=... reason="debit failed: debit 1111111111: account service unavailable"
 ```
 
-Periksa lagi saldo rekening sumber dengan `curl -s localhost:8081/accounts/1111111111`. Saldo tidak berubah dibandingkan sebelum `make fault-slow`. Ingat penjelasan di Langkah 6: saldo tetap utuh hanya karena _fault injector_ berhenti saat `transfer` membatalkan _request_. Database yang lambat di sistem sungguhan dapat saja sudah menerapkan _debit_ tersebut, dan itulah alasan _timeout_ tidak di-_retry_.
+Periksa lagi saldo rekening sumber dengan `curl -s localhost:8081/accounts/1111111111`. Saldo tidak berubah dibandingkan sebelum `make fault-slow`. Ingat penjelasan di Langkah 6: saldo tetap utuh hanya karena _fault injector_ berhenti saat `transfer` membatalkan _request_. Database yang lambat di sistem sungguhan dapat saja sudah melakukan _commit_ atas _debit_ tersebut, dan itulah alasan _timeout_ tidak di-_retry_.
 
 === Perpindahan _Half-Open_ ke _Closed_
 
@@ -978,15 +978,15 @@ Sebagian besar transfer dijawab `201` walaupun sebagian _request_ ke `account` g
 level=WARN msg="retrying account call" next_attempt=... cause="503 Service Unavailable"
 ```
 
-Karena hasilnya acak, jumlah _retry_ dan status akhir _circuit breaker_ berbeda di setiap percobaan. Ulangi skenario tersebut dengan `RATE=0.5`. _Circuit breaker_ biasanya beralih ke _open_ setelah dua atau tiga transfer saja. Penyebabnya: _circuit breaker_ berada di dalam _retry_, sehingga setiap percobaan ulang ikut dihitung. Satu transfer yang menghabiskan seluruh _retry_ menyumbang empat kegagalan sekaligus. Untuk peragaan bertahap, gunakan `RATE=0.2` atau `make fault-slow`.
+Karena hasilnya acak, jumlah _retry_ dan status akhir _circuit breaker_ berbeda di setiap percobaan. Ulangi skenario tersebut dengan `RATE=0.5`. _Circuit breaker_ biasanya beralih ke _open_ setelah dua atau tiga transfer saja. Hal ini terjadi karena _circuit breaker_ berada di dalam _retry_, sehingga setiap percobaan ulang ikut dihitung. Satu transfer yang menghabiskan seluruh _retry_ menyumbang empat kegagalan sekaligus. Untuk peragaan bertahap, gunakan `RATE=0.2` atau `make fault-slow`.
 
-Dengan `RATE` yang tinggi, sesekali muncul transfer yang dijawab `502` dengan `failure_reason` berawalan `credit failed after debit`. Pada transfer tersebut, _debit_ berhasil, lalu _credit_ gagal karena keempat percobaannya dijawab 503, atau karena _circuit breaker_ beralih ke _open_ di tengah _retry_ untuk _credit_. Karena hasilnya acak, bagian berikut memperagakan kegagalan _credit_ dengan skenario yang selalu berhasil diulang.
+Dengan `RATE` yang tinggi, sesekali muncul transfer yang dijawab `502` dengan `failure_reason` berawalan `credit failed after debit`. Pada transfer tersebut, _debit_ berhasil, lalu _credit_ gagal karena keempat percobaannya dijawab 503, atau karena _circuit breaker_ beralih ke _open_ di tengah _retry_ untuk _credit_. Karena hasilnya acak, bagian berikut memperagakan kegagalan _credit_ dengan skenario yang dapat diulang dengan hasil yang selalu sama.
 
 === _Credit_ Gagal Setelah _Debit_
 
 Kirim transfer ke rekening tujuan yang tidak ada. _Debit_ berhasil, lalu _credit_ ditolak karena rekening tujuan tidak ditemukan.
 
-Pastikan _fault_ sudah dimatikan (`make fault-clear`) dan sudah lewat lebih dari 10 detik sejak _circuit breaker_ terakhir beralih ke _open_. Sebelum jeda tersebut lewat, _debit_ langsung ditolak dengan `HTTP 503`. Setelah jeda lewat, `make breaker` masih menampilkan `open` sampai transfer berikutnya masuk, sehingga keluaran tersebut tidak perlu ditunggu berubah.
+Pastikan _fault_ sudah dimatikan (`make fault-clear`) dan sudah lewat lebih dari 10 detik sejak _circuit breaker_ terakhir beralih ke _open_. Sebelum jeda tersebut lewat, _debit_ langsung ditolak dengan `HTTP 503`. Setelah jeda lewat, `make breaker` masih menampilkan `open` hingga transfer berikutnya masuk, sehingga tidak perlu menunggu _output_ tersebut berubah.
 
 #perintah[
 ```bash
@@ -1039,7 +1039,7 @@ git diff lab-03 -- .
 ```
 ]
 
-Selisih pada `README.md` dan `go.work.sum` memang wajar. `README.md` di _checkpoint_ memuat bagian baru tentang rekening contoh dan _resiliency_, sedangkan isi `go.work.sum` bergantung pada dependensi yang terunduh di laptop masing-masing. Keduanya dapat diambil dari _checkpoint_:
+Perbedaan pada `README.md` dan `go.work.sum` memang wajar. `README.md` di _checkpoint_ memuat bagian baru tentang rekening contoh dan _resiliency_, sedangkan isi `go.work.sum` bergantung pada dependensi yang sudah di-_download_ di laptop masing-masing. Keduanya dapat diambil dari _checkpoint_:
 
 #perintah[
 ```bash
