@@ -8,7 +8,7 @@ Setelah menyelesaikan lab ini, peserta mampu:
 
 - membuat mutasi saldo di `account` menjadi _idempotent_ dengan _unique index_ atas `reference`, sehingga _retry_ setelah _timeout_ aman dilakukan;
 - menjalankan transfer sebagai _saga_ yang diatur oleh `transfer` (_orchestration_), lengkap dengan langkah kompensasi ketika _credit_ gagal setelah _debit_ berhasil;
-- memberi langkah kompensasi _policy_ _retry_ tersendiri yang tidak melewati _circuit breaker_, sehingga gangguan singkat di `account` tidak membuat uang tertahan;
+- memberi langkah kompensasi _retry policy_ tersendiri yang tidak melewati _circuit breaker_, sehingga gangguan singkat di `account` tidak membuat uang tertahan;
 - menyimpan perubahan status transfer dan _event_-nya dalam satu transaksi database melalui pola _transactional outbox_;
 - mengirim _event_ dari tabel `outbox` ke Kafka dengan _relay_ dan memahami jaminan _at-least-once_ yang dihasilkannya;
 - membuat service ketiga, `notification`, yang membaca _event_ dari Kafka sebagai anggota _consumer group_.
@@ -301,7 +301,7 @@ func (s *PostgresStore) Mutate(ctx context.Context, number string, t MutationTyp
 
 Query `update account` di tengah fungsi tidak berubah dari Lab 2. Yang hilang adalah `insert into mutation` di akhir fungsi (sudah pindah ke awal) serta pemanggilan `s.Get` di cabang `pgx.ErrNoRows`.
 
-Cabang pengulangan (`RowsAffected() == 0`) membaca saldo dengan `tx.Query` di transaksi yang sama, bukan dengan `s.Get`. `s.Get` meminjam koneksi kedua dari _pool_ selagi koneksi pertama masih dipegang transaksi. Bila banyak _retry_ datang bersamaan dan _pool_ habis, setiap pemanggilan menunggu koneksi yang dipegangnya sendiri, sehingga tidak ada yang selesai.
+Cabang pengulangan (`RowsAffected() == 0`) membaca saldo dengan `tx.Query` di transaksi yang sama, bukan dengan `s.Get`. `s.Get` meminjam koneksi kedua dari _pool_ selagi koneksi pertama masih dipegang transaksi. Bila banyak _retry_ datang bersamaan dan seluruh koneksi _pool_ sudah dipegang, setiap pemanggilan memegang satu koneksi sambil menunggu koneksi kedua yang tidak pernah dilepas, sehingga tidak ada yang selesai.
 
 Di sisi gRPC, mutasi yang tidak diterapkan ulang tetap dijawab sukses. Pemanggil yang melakukan _retry_ setelah kehilangan jawaban pertama memang mengharapkan jawaban sukses, dan uangnya hanya berpindah sekali. Ubah bagian akhir fungsi `mutate` di `account/internal/account/grpc.go`:
 
@@ -500,13 +500,23 @@ func TestRetryOnDeadlineExceeded(t *testing.T) {
 
 Langkah kompensasi _saga_ (bagian berikutnya) adalah _credit_ balik ke rekening asal, yang disebut _reversal_. _Reversal_ dijalankan tepat setelah _credit_ ke rekening tujuan gagal, dan penyebab kegagalan yang paling umum adalah `account` sedang mati atau _circuit breaker_ baru saja terbuka. Bila _reversal_ melewati _circuit breaker_ yang sama, _reversal_ langsung ditolak tanpa dikirim, dan transfer berakhir `COMPENSATION_FAILED`: uang tertahan dan harus dikoreksi manual.
 
-_Circuit breaker_ melindungi pemanggil dari menunggu service yang mati dan melindungi service dari banjir panggilan. Untuk _reversal_, kedua alasan tersebut kalah penting. _Reversal_ jarang terjadi, sedangkan menyerah terlalu cepat berarti koreksi manual. Karena itu _reversal_ mendapat _policy_ sendiri:
+_Circuit breaker_ mencegah pemanggil menunggu service yang mati dan mencegah service menerima panggilan dalam jumlah besar sekaligus. Untuk _reversal_, kedua alasan tersebut tidak sepenting risiko koreksi manual. _Reversal_ jarang terjadi, sedangkan berhenti mencoba terlalu cepat berarti transfer harus dikoreksi manual. Karena itu _reversal_ mendapat _policy_ sendiri:
 
 - tanpa _circuit breaker_;
 - _retry_ untuk semua kegagalan infrastruktur (`Unavailable`, `DeadlineExceeded`, `Internal`, `Unknown`, _timeout_ per percobaan), dengan kriteria yang sama dengan `countsAsFailure`; jawaban bisnis seperti `NotFound` tetap final;
-- jumlah percobaan tidak dibatasi, tetapi durasinya dibatasi 30 detik, dengan _backoff_ 200 ms hingga 5 detik ditambah _jitter_. Batas 30 detik mencakup _restart_ `account` atau _pod_ yang dipindahkan Kubernetes.
+- jumlah percobaan tidak dibatasi, tetapi durasinya dibatasi 30 detik, dengan _backoff_ 200 ms hingga 5 detik ditambah _jitter_. Batas 30 detik cukup untuk menunggu _restart_ `account` atau _pod_ yang dipindahkan Kubernetes.
 
 Pengulangan aman karena setiap percobaan membawa `reference` yang sama, `<transfer_id>:reversal`, dan `account` menerapkan satu `reference` hanya sekali.
+
+Lengkapi juga komentar _package_ di awal `transfer/internal/accountclient/client.go`:
+
+```go
+// Package accountclient calls the account service gRPC API through failsafe-go
+// policies: per-attempt timeout, retry with backoff, and a circuit breaker,
+// installed as a gRPC unary client interceptor. The saga's reversal credit goes
+// through a second connection with its own policy (see Reverse).
+package accountclient
+```
 
 _Interceptor_ gRPC melekat pada koneksi, sehingga _reversal_ membutuhkan koneksi gRPC kedua ke `account`. Di `transfer/internal/accountclient/client.go`, tambahkan tiga _field_ di akhir struktur `Settings`, tiga fungsi bantu untuk menghitung durasi terburuk (digunakan _test_ `transfer/main_test.go` di bagian berikutnya), lalu isi ketiga _field_ tersebut di akhir `ProductionSettings`:
 
@@ -1249,7 +1259,7 @@ Di Lab 3 dan Lab 4, setiap kegagalan _credit_ setelah _debit_ dijawab `502` (`Er
   [`500`], [`COMPENSATION_FAILED`: _debit_ sudah terjadi dan pengembaliannya gagal],
 )
 
-`COMPENSATION_FAILED` berarti uang tertahan karena kegagalan di sisi sistem sendiri, apa pun jawaban `account` sebelumnya. Kondisi tersebut dijawab `500` dan tidak boleh tampak sebagai `503` atau `422` yang mengundang pengulangan. Karena itu pemeriksaan `ErrReversalFailed` berada sebelum pemetaan _error_ lain. Pemeriksaan ini menggunakan _error_, bukan `t.Status`, agar tetap berlaku ketika status `COMPENSATION_FAILED` sendiri gagal disimpan. Di `transfer/internal/transfer/http.go`, ubah `switch` di fungsi `create`: hapus kasus `ErrCreditFailed` dan sesuaikan komentarnya.
+`COMPENSATION_FAILED` berarti uang tertahan karena kegagalan di sisi sistem sendiri, apa pun jawaban `account` sebelumnya. Kondisi tersebut dijawab `500` dan tidak boleh tampak sebagai `503` atau `422`, karena kedua kode tersebut membuat pemanggil mengulang _request_. Karena itu pemeriksaan `ErrReversalFailed` berada sebelum pemetaan _error_ lain. Pemeriksaan ini menggunakan _error_, bukan `t.Status`, agar tetap berlaku ketika status `COMPENSATION_FAILED` sendiri gagal disimpan. Di `transfer/internal/transfer/http.go`, ubah `switch` di fungsi `create`: hapus kasus `ErrCreditFailed` dan sesuaikan komentarnya.
 
 ```go
 	switch {
@@ -1714,7 +1724,7 @@ Urutan pemrosesan menentukan jaminan pengiriman. _Offset_ baru di-_commit_ setel
 Dua jenis kegagalan ditangani dengan cara berbeda. Kegagalan sementara, seperti Kafka atau database yang mati, koneksi putus, atau _timeout_, ditunggu hingga kembali normal, dan service tidak berhenti. Kegagalan permanen berasal dari _event_ itu sendiri, sehingga pengulangan akan gagal dengan cara yang sama selamanya dan menahan semua _event_ berikutnya di _partition_ yang sama. _Event_ seperti ini disebut _poison message_, dan _consumer_ mencatatnya di log level `ERROR` lalu melewatinya:
 
 - JSON yang tidak dapat dibaca;
-- `event_id` atau `transfer_id` yang bukan UUID dalam bentuk kanonik 36 karakter, karena kolom tujuannya bertipe `uuid` dan _insert_ akan gagal dengan `22P02` di setiap percobaan;
+- `event_id` atau `transfer_id` yang bukan UUID dalam bentuk standar 36 karakter (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`), karena kolom tujuannya bertipe `uuid` dan _insert_ akan gagal dengan `22P02` di setiap percobaan;
 - _error_ PostgreSQL kelas 22 (data tidak valid, misalnya `22P02` atau `22001`) dan kelas 23 (_constraint_, misalnya `23502` atau `23514`).
 
 _Error_ lain, termasuk kelas 42 (misalnya tabel tidak ada), tetap diulang. Kesalahan _schema_ seperti itu menggagalkan semua _event_, bukan satu _event_ saja, sehingga melewatinya berarti membuang seluruh notifikasi. Jenis _event_ yang tidak dikenal juga dilewati, dengan log level `WARN`. Di sistem _production_, _event_ yang dilewati dikirim ke _dead-letter topic_ untuk diperiksa seseorang.
@@ -2003,7 +2013,7 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 }
 ```
 
-`main.go` menjalankan server HTTP dan _consumer_ sebagai dua _goroutine_. Saat berhenti, _consumer_ dihentikan terlebih dahulu, lalu `reader.Close()` (lewat `defer`) keluar dari _consumer group_, sehingga Kafka langsung menyerahkan _partition_ ke anggota lain tanpa menunggu _session timeout_. Buat `notification/main.go`:
+`main.go` menjalankan server HTTP dan _consumer_ sebagai dua _goroutine_. Saat berhenti, _consumer_ dihentikan terlebih dahulu, lalu `reader.Close()` (lewat `defer`) mengirim permintaan keluar dari _consumer group_, sehingga Kafka menyerahkan _partition_ ke anggota lain tanpa menunggu _session timeout_. Meski begitu, Kafka dapat masih melaporkan _group_ tersebut sebagai `Stable` selama beberapa detik setelah `notification` berhenti. Buat `notification/main.go`:
 
 ```go
 package main
@@ -2250,7 +2260,7 @@ Setelah Kafka sehat, log `transfer` menampilkan `outbox events published` dan `p
 
 === _Replay_ dan Notifikasi Ganda
 
-Skenario ini memperlihatkan celah yang ditutup di Lab 6. Hentikan `notification` dengan `Ctrl+C` di terminal 3, tunggu sekitar 10 detik hingga Kafka mencatat _group_ tersebut tidak aktif, lalu kembalikan _offset_ _group_ ke awal:
+Skenario ini memperlihatkan celah yang ditutup di Lab 6. Hentikan `notification` dengan `Ctrl+C` di terminal 3, tunggu 10–30 detik hingga Kafka mencatat _group_ tersebut tidak aktif, lalu kembalikan _offset_ _group_ ke awal:
 
 #perintah[```bash
 make replay
@@ -2285,9 +2295,9 @@ docker compose exec kafka /opt/kafka/bin/kafka-consumer-groups.sh \
 
 Log `notification` menampilkan `level=ERROR msg="skipping event with invalid event_id or transfer_id"` beserta _payload_-nya. Keluaran `--describe` menampilkan kolom `LAG` bernilai `0` untuk ketiga _partition_: _offset_ _event_ rusak tersebut sudah di-_commit_, dan _event_ berikutnya di _partition_ yang sama tetap diproses.
 
-=== _Reversal_ Menunggu Account Kembali
+=== _Reversal_ Menunggu `account` Aktif Kembali
 
-Dua skenario terakhir membutuhkan pengaturan waktu, karena _debit_ harus berhasil dan _credit_ harus gagal. _Delay_ 1,5 detik masih di bawah _timeout_ 2 detik, sehingga _debit_ berhasil. Satu detik kemudian, selagi _debit_ masih menunggu, `account` diubah agar menolak semua panggilan berikutnya. Lima detik setelahnya `account` dipulihkan, selagi _reversal_ masih di-_retry_:
+Dua skenario terakhir membutuhkan pengaturan waktu, karena _debit_ harus berhasil dan _credit_ harus gagal. _Delay_ 1,5 detik masih di bawah _timeout_ 2 detik, sehingga _debit_ berhasil. Satu detik kemudian, selagi _debit_ masih menunggu, `account` diubah agar menolak semua panggilan berikutnya. Lima detik setelahnya _fault injection_ dihapus (`make fault-clear`) dan `account` kembali normal, selagi _reversal_ masih di-_retry_:
 
 #perintah[```bash
 curl -sS -X PUT localhost:28081/admin/fault -d '{"delay_ms":1500,"error_rate":0}'
@@ -2307,9 +2317,11 @@ Sekitar delapan detik setelah dikirim, transfer dijawab dengan `"status":"COMPEN
 
 Pada kedua kode tersebut tidak ada uang yang berpindah: saldo `1111111111` dan `2222222222` sama dengan sebelum transfer ini. Seandainya _reversal_ melewati _breaker_ yang sama, kasus `503` di atas akan langsung berakhir `COMPENSATION_FAILED`.
 
+Sebelum skenario berikutnya, jalankan `make breaker`. Bila hasilnya `open`, tunggu 10 detik agar _debit_ tidak langsung ditolak _circuit breaker_.
+
 === Kompensasi yang Gagal
 
-Skenario terakhir sama dengan sebelumnya, tetapi `account` baru dipulihkan setelah transfer selesai, sehingga _reversal_ tidak pernah berhasil:
+Skenario terakhir sama dengan sebelumnya, tetapi _fault injection_ baru dihapus setelah transfer selesai, sehingga _reversal_ tidak pernah berhasil:
 
 #perintah[```bash
 curl -sS -X PUT localhost:28081/admin/fault -d '{"delay_ms":1500,"error_rate":0}'
