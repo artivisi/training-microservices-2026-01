@@ -16,17 +16,17 @@ Setelah menyelesaikan lab ini, peserta mampu:
 
 Di Lab 5, sistem sudah memiliki tiga service. `transfer` menjalankan _saga_, menulis _event_ ke tabel `outbox`, lalu _relay_ mengirimnya ke Kafka. `notification` membaca _event_ tersebut dan menyimpan satu notifikasi untuk setiap _event_.
 
-Pengiriman _event_ di Lab 5 bersifat _at-least-once_: setiap _event_ pasti sampai, tetapi bisa sampai lebih dari sekali. Ada tiga situasi yang mengirim ulang _event_ yang sama:
+Pengiriman _event_ di Lab 5 bersifat _at-least-once_: setiap _event_ pasti sampai, tetapi bisa sampai lebih dari sekali. _Event_ yang sama dapat terkirim ulang dalam tiga situasi:
 
 - _Relay_ berhenti setelah Kafka menerima _event_ tetapi sebelum kolom `published_at` terisi. Setelah _restart_, _relay_ mengirim _event_ tersebut lagi.
 - `notification` berhenti setelah notifikasi tersimpan tetapi sebelum _offset_ di-_commit_. Kafka mengirim _event_ tersebut lagi ke anggota _consumer group_ berikutnya.
-- Operator sengaja memutar ulang _topic_ dari awal (_replay_), misalnya setelah memperbaiki _bug_ di _consumer_.
+- Operator sengaja melakukan _replay_ (membaca ulang) _topic_ dari awal, misalnya setelah memperbaiki _bug_ di _consumer_.
 
 Ketiga situasi tersebut wajar dan tidak dapat dihilangkan sepenuhnya. Jalan keluarnya ada di penerima: pemrosesan dibuat _idempotent_, artinya memproses _event_ yang sama berkali-kali menghasilkan keadaan yang sama dengan memprosesnya sekali. Rumus yang menjadi pegangan lab ini:
 
 #align(center)[_at-least-once delivery_ + pemrosesan _idempotent_ = setiap efek terjadi tepat sekali]
 
-Masalah yang sama muncul di sisi _channel_. Aplikasi _mobile banking_ mengirim `POST /transfers`, lalu koneksinya putus sebelum jawaban diterima. Aplikasi tidak tahu apakah transfer sudah dijalankan. Bila aplikasi mengirim ulang _request_ yang sama, tanpa perlindungan apa pun rekening asal terdebit dua kali. _Header_ `Idempotency-Key` menyelesaikan masalah tersebut: aplikasi membuat satu _key_ (biasanya UUID) untuk setiap transfer yang ingin dilakukan nasabah, lalu mengirim _key_ yang sama pada setiap pengulangan.
+Masalah yang sama muncul di sisi _channel_. Aplikasi _mobile banking_ mengirim `POST /transfers`, lalu koneksinya putus sebelum _response_ diterima. Aplikasi tidak tahu apakah transfer sudah dijalankan. Bila aplikasi mengirim ulang _request_ yang sama, tanpa perlindungan apa pun rekening asal terdebit dua kali. _Header_ `Idempotency-Key` menyelesaikan masalah tersebut: aplikasi membuat satu _key_ (biasanya UUID) untuk setiap transfer yang ingin dilakukan nasabah, lalu mengirim _key_ yang sama pada setiap pengulangan.
 
 #perintah[```
   aplikasi channel                 transfer                  account
@@ -50,7 +50,7 @@ Masalah yang sama muncul di sisi _channel_. Aplikasi _mobile banking_ mengirim `
                                    + tabel notification, satu transaksi
 ```]
 
-Dengan lab ini, sistem memiliki tiga titik _idempotency_ dengan pola yang sama: penerima menyimpan sebuah identitas unik, lalu menolak memproses identitas yang sama untuk kedua kalinya.
+Dengan lab ini, sistem memiliki tiga titik _idempotency_ dengan pola yang sama: penerima menyimpan identitas unik, lalu tidak memproses ulang identitas yang sama.
 
 #table(
   columns: (auto, 1fr, 1fr, 1fr),
@@ -95,14 +95,14 @@ curl -X POST localhost:28081/accounts \
 
 === Mengamati notifikasi ganda di Lab 5
 
-Sebelum mengubah kode, buktikan dulu masalahnya. Buat satu transfer, lalu catat nilai `id` dari jawabannya:
+Sebelum mengubah kode, buktikan masalahnya terlebih dahulu. Buat satu transfer, lalu catat nilai `id` dari _response_-nya:
 
 #perintah[```bash
 curl -X POST localhost:28082/transfers \
   -d '{"from_account":"1111111111","to_account":"2222222222","amount":"100000"}'
 ```]
 
-Hentikan `notification` dengan `Ctrl+C`. Kafka hanya mengizinkan _offset_ sebuah _consumer group_ diubah ketika group tersebut tidak memiliki anggota aktif. Setelah itu, kembalikan _offset_ group `notification` ke awal _topic_, lalu jalankan `notification` lagi:
+Hentikan `notification` dengan `Ctrl+C`. Kafka hanya mengizinkan _offset_ sebuah _consumer group_ diubah ketika _group_ tersebut tidak memiliki anggota aktif. Setelah itu, kembalikan _offset_ _consumer group_ `notification` ke awal _topic_, lalu jalankan `notification` lagi:
 
 #perintah[```bash
 make replay
@@ -115,15 +115,15 @@ Log `notification` menampilkan `notification sent` untuk setiap _event_ yang per
 curl "localhost:28083/notifications?transfer_id=<id>"
 ```]
 
-Hasilnya berisi dua notifikasi dengan `event_id` yang sama. Di sistem sungguhan, nasabah menerima SMS "Transfer berhasil" dua kali untuk satu transfer. _Replay_ sengaja dipilih untuk demonstrasi karena mudah diulang; jalur kodenya sama dengan pengiriman ulang akibat _crash_ atau _rebalance_.
+Hasilnya berisi dua notifikasi dengan `event_id` yang sama. Di sistem sungguhan, nasabah menerima SMS "Transfer berhasil" dua kali untuk satu transfer. _Replay_ sengaja dipilih untuk demonstrasi karena mudah diulang dan melewati jalur kode yang sama dengan pengiriman ulang akibat _crash_ atau _rebalance_.
 
 === Tabel `processed_event` di `notification`
 
 Cara paling langsung untuk mengenali duplikat adalah mencatat setiap `event_id` yang sudah diproses. `event_id` dibuat oleh `transfer` saat menulis _outbox_ (Lab 5) dan ikut dikirim di _payload_ maupun _header_ Kafka, sehingga nilainya sama pada setiap pengiriman ulang.
 
-Pencatatan ini menggunakan tabel tersendiri, `processed_event`, dengan `event_id` sebagai _primary key_. Alternatifnya adalah _unique index_ pada `notification.event_id`, tetapi tabel tersendiri lebih tepat karena dua alasan:
+Pencatatan ini menggunakan tabel tersendiri, `processed_event`, dengan `event_id` sebagai _primary key_. Sebagai alternatif, dapat dipasang _unique index_ pada `notification.event_id`, tetapi tabel tersendiri lebih tepat karena dua alasan:
 
-- Aturan yang dijaga adalah "_event_ ini sudah ditangani". Ada _event_ yang tidak menghasilkan baris notifikasi, dan ada _event_ yang mungkin menghasilkan beberapa baris. Tabel `processed_event` berlaku untuk semua kasus tersebut.
+- Tabel ini menjaga aturan "_event_ ini sudah ditangani". Ada _event_ yang tidak menghasilkan baris notifikasi, dan ada _event_ yang mungkin menghasilkan beberapa baris. Tabel `processed_event` berlaku untuk semua kasus tersebut.
 - Tabel `notification` dari Lab 5 sudah berisi baris ganda. Pembuatan _unique index_ di atas data tersebut akan gagal, sedangkan tabel baru dapat dibuat tanpa menyentuh data lama.
 
 Tambahkan bagian berikut di akhir `notification/internal/notification/schema.sql`. Hapus juga komentar lama di atas `create table notification` yang menyatakan `event_id` sengaja belum unik.
@@ -217,14 +217,14 @@ func (s *PostgresStore) Insert(ctx context.Context, n Notification) (Notificatio
 
 Beberapa hal yang perlu diperhatikan dari kode tersebut:
 
-- Baris `processed_event` ditulis lebih dahulu dan berfungsi sebagai pemeriksaan duplikat. `on conflict do nothing` tidak menghasilkan _error_; `RowsAffected() == 0` berarti `event_id` tersebut sudah ada.
+- Baris `processed_event` ditulis lebih dahulu dan berfungsi sebagai pemeriksaan duplikat. `on conflict do nothing` tidak menghasilkan _error_ bila `event_id` sudah ada, sehingga kondisi tersebut dikenali dari `RowsAffected() == 0`.
 - Pemeriksaan dan penulisan terjadi dalam satu perintah SQL. Pola "`select` dulu, lalu `insert` bila belum ada" tidak aman, karena dua proses dapat sama-sama melihat tabel kosong lalu sama-sama menyimpan notifikasi.
-- Bila dua instance `notification` memproses _event_ yang sama secara bersamaan (misalnya saat _rebalance_), transaksi kedua tertahan oleh _lock_ pada _primary key_ hingga transaksi pertama selesai, lalu mendapatkan konflik.
+- Bila dua _instance_ `notification` memproses _event_ yang sama secara bersamaan (misalnya saat _rebalance_), transaksi kedua tertahan oleh _lock_ pada _primary key_ hingga transaksi pertama selesai, lalu tidak menyimpan apa pun karena `event_id` tersebut sudah ada.
 - `defer tx.Rollback(ctx)` membatalkan transaksi pada setiap jalur keluar sebelum `Commit`. Setelah `Commit` berhasil, `Rollback` tidak melakukan apa pun.
 
 === _Consumer_ melewati duplikat
 
-Di `notification/internal/notification/consumer.go`, fungsi `handle` memanggil `Insert`. Sesuaikan isi perulangan `for` di bagian akhir `handle` dengan tiga nilai kembalian yang baru. Cabang `permanentDBError` dari Lab 5 tetap ada di antara jalur berhasil dan jalur _retry_:
+Di `notification/internal/notification/consumer.go`, fungsi `handle` memanggil `Insert`. Sesuaikan isi perulangan `for` di bagian akhir `handle` dengan tiga nilai kembalian yang baru. Blok `if permanentDBError(err)` dari Lab 5 tetap ada di antara jalur berhasil dan jalur _retry_:
 
 ```go
 	n := Notification{EventID: e.EventID, TransferID: e.TransferID, EventType: eventType, Message: msg}
@@ -260,12 +260,12 @@ Di `notification/internal/notification/consumer.go`, fungsi `handle` memanggil `
 
 Duplikat dikembalikan sebagai `nil`, sama seperti _event_ yang berhasil diproses. Akibatnya, `Run` tetap melakukan _commit offset_ untuk _event_ duplikat. Langkah ini penting: bila _offset_ tidak di-_commit_, Kafka terus mengirim _event_ yang sama, dan semua _event_ berikutnya di _partition_ tersebut tertahan di belakangnya.
 
-Komentar di jalur `notification sent` membahas batas dari solusi ini. Di lab ini, "mengirim notifikasi" hanya berupa baris log. Pengiriman sungguhan melalui SMS atau _push notification_ memanggil sistem lain yang berada di luar transaksi database, sehingga transaksi tidak dapat menjaminnya:
+Komentar di jalur `notification sent` membahas keterbatasan solusi ini. Di lab ini, "mengirim notifikasi" hanya berupa baris log. Pengiriman sungguhan melalui SMS atau _push notification_ memanggil sistem lain yang berada di luar transaksi database, sehingga transaksi tidak dapat menjaminnya:
 
 - Bila dikirim setelah _commit_ dan proses berhenti di antaranya, notifikasi tidak pernah terkirim.
 - Bila dikirim sebelum _commit_ dan transaksi gagal, pengiriman ulang _event_ mengirim notifikasi kedua.
 
-Solusinya ada di penyedia layanan: banyak _provider_ SMS dan _push_ menerima _idempotency key_ di _request_-nya. Dengan `event_id` sebagai _key_ tersebut, pengiriman sebelum _commit_ menjadi aman.
+Solusinya ada di sisi _provider_: banyak _provider_ SMS dan _push_ menerima _idempotency key_ di _request_-nya. Dengan `event_id` sebagai _key_ tersebut, pengiriman sebelum _commit_ menjadi aman.
 
 Perbarui juga komentar di atas fungsi `Run` agar sesuai dengan perilaku baru. Ganti dua baris terakhir komentar tersebut (mulai `It is deliberately NOT idempotent yet`) dengan:
 
@@ -389,7 +389,7 @@ Tambahkan `ErrIdempotencyKeyReused` dan `ErrInProgress` di dalam blok `var (...)
 	ErrInProgress = errors.New("transfer still in progress")
 ```
 
-`ErrIdempotencyKeyReused` dikembalikan ketika _key_ yang sama datang dengan isi berbeda. `ErrInProgress` dikembalikan ketika pengulangan menemukan transfer asli yang belum selesai; _handler_ menerjemahkannya menjadi `202 Accepted`.
+`ErrIdempotencyKeyReused` dikembalikan ketika _key_ yang sama datang dengan isi berbeda. `ErrInProgress` dikembalikan ketika pengulangan menemukan transfer asli yang belum selesai. _Handler_ menerjemahkannya menjadi `202 Accepted`.
 
 Setelah blok `var (...)` tersebut, tambahkan `SameRequest`. Ketika _key_ yang sama datang lagi, `transfer` harus memastikan bahwa _request_ tersebut memang pengulangan, bukan transfer baru yang secara keliru menggunakan _key_ lama. Nominal dibandingkan sebagai desimal dengan `Equal`, sehingga `"100000"` dan `"100000.00"` dianggap sama.
 
@@ -522,13 +522,13 @@ func (s *Service) run(ctx context.Context, t Transfer) (Transfer, error) {
 	if err := s.accounts.Debit(ctx, t.FromAccount, t.Amount, t.ID); err != nil {
 ```
 
-Sisa isi fungsi lama, mulai dari penanganan _error_ `Debit` hingga akhir, tetap seperti semula dan sekarang menjadi isi `run`. Komentar di atas fungsi yang menjelaskan langkah _saga_ tetap dipertahankan; paragraf `idempotencyKey` di atas ditambahkan di bawahnya.
+Sisa isi fungsi lama, mulai dari penanganan _error_ `Debit` hingga akhir, tetap seperti semula dan sekarang menjadi isi `run`. Komentar di atas fungsi yang menjelaskan langkah _saga_ tetap dipertahankan, sedangkan paragraf `idempotencyKey` di atas ditambahkan di bawahnya.
 
-Perhatikan bahwa jawaban untuk pengulangan berisi transfer asli dengan status saat ini, ditambah _error_ yang sama dengan hasil _request_ pertama. _Error_ tersebut disusun ulang oleh `replayOutcome` dari data yang tersimpan, sehingga _handler_ dapat menjawab pengulangan dengan kode HTTP yang sama, kecuali bila status akhir _request_ pertama gagal disimpan. Klien yang kehilangan jawaban pertama lalu mengulang _request_ mengambil keputusan yang sama seperti bila jawaban pertama sampai.
+Perhatikan bahwa _response_ untuk pengulangan berisi transfer asli dengan status saat ini, ditambah _error_ yang sama dengan hasil _request_ pertama. _Error_ tersebut disusun ulang oleh `replayOutcome` dari data yang tersimpan, sehingga _handler_ dapat menjawab pengulangan dengan kode HTTP yang sama, kecuali bila status akhir _request_ pertama gagal disimpan. Dengan begitu, klien yang kehilangan _response_ pertama lalu mengulang _request_ akan mengambil keputusan yang sama seperti bila _response_ pertama diterima.
 
-Untuk status `FAILED` dan `COMPENSATED`, satu-satunya catatan penyebab kegagalan adalah teks di kolom `failure_reason`. `replayOutcome` memeriksa apakah teks tersebut diakhiri pesan salah satu _sentinel error_, misalnya `: insufficient funds`. Cara ini bergantung pada format teks dan cukup untuk lab. Rancangan di _production_ menyimpan kode kegagalan di kolom tersendiri.
+Untuk status `FAILED` dan `COMPENSATED`, penyebab kegagalan hanya tercatat sebagai teks di kolom `failure_reason`. `replayOutcome` memeriksa apakah teks tersebut diakhiri pesan salah satu _sentinel error_, misalnya `: insufficient funds`. Cara ini bergantung pada format teks dan cukup untuk lab. Di _production_, kode kegagalan sebaiknya disimpan di kolom tersendiri.
 
-Bila _request_ pertama masih berjalan, misalnya sedang menunggu `account`, _request_ kedua menerima status `PENDING` atau `DEBITED` bersama `ErrInProgress`. _Saga_ tidak dijalankan untuk kedua kalinya; klien cukup memeriksa `GET /transfers/{id}` hingga statusnya final. Celah dari Lab 5 tetap berlaku: transfer yang tertinggal di `PENDING` atau `DEBITED` karena proses `transfer` mati di antara dua langkah tidak pernah dilanjutkan, sehingga pengulangan dengan _key_ tersebut terus menerima status yang sama.
+Bila _request_ pertama masih berjalan, misalnya sedang menunggu `account`, _request_ kedua menerima status `PENDING` atau `DEBITED` bersama `ErrInProgress`. _Saga_ tidak dijalankan untuk kedua kalinya. Klien cukup memeriksa `GET /transfers/{id}` hingga statusnya final. Celah dari Lab 5 tetap berlaku: transfer yang tertinggal di `PENDING` atau `DEBITED` karena proses `transfer` mati di antara dua langkah tidak pernah dilanjutkan, sehingga pengulangan dengan _key_ tersebut terus menerima status yang sama.
 
 === _Handler_ `POST /transfers`
 
@@ -547,7 +547,7 @@ Di `transfer/internal/transfer/http.go`, fungsi `create` membaca _header_, memva
 	}
 ```
 
-Pemilihan kode HTTP dari Lab 5 sekarang digunakan oleh dua jalur: _request_ pertama dan pengulangan. Karena itu, blok `switch` lama dipindahkan dari `create` ke fungsi baru `createStatus`. Ganti bagian `create` mulai dari komentar `WithoutCancel` di atas pemanggilan `Execute` hingga akhir fungsi, lalu tambahkan `createStatus` di bawahnya:
+Kode HTTP untuk _request_ pertama maupun pengulangan sekarang dipilih dengan logika dari Lab 5. Karena itu, blok `switch` lama dipindahkan dari `create` ke fungsi baru `createStatus`. Ganti bagian `create` mulai dari komentar `WithoutCancel` di atas pemanggilan `Execute` hingga akhir fungsi, lalu tambahkan `createStatus` di bawahnya:
 
 ```go
 	// WithoutCancel: a client that disconnects must not abort a transfer halfway,
@@ -607,7 +607,7 @@ func createStatus(err error) int {
 }
 ```
 
-Isi `createStatus` sama dengan `switch` dari Lab 5; perbedaannya, setiap `case` mengembalikan kode HTTP alih-alih menulis jawaban, dan ada satu `case` baru untuk `ErrInProgress`. Dua kondisi tetap ditangani langsung di `create` karena tidak memiliki transfer untuk dikembalikan: _key_ yang digunakan ulang dengan _body_ berbeda, dan kegagalan sebelum transfer tersimpan (`t.ID == ""`).
+Isi `createStatus` sama dengan `switch` dari Lab 5. Bedanya, setiap `case` mengembalikan kode HTTP alih-alih menulis _response_, dan ada satu `case` baru untuk `ErrInProgress`. Dua kondisi tetap ditangani langsung di `create` karena tidak memiliki transfer untuk dikembalikan: _key_ yang digunakan ulang dengan _body_ berbeda, dan kegagalan sebelum transfer tersimpan (`t.ID == ""`).
 
 Kode HTTP untuk pengulangan dengan _key_ yang sama:
 
@@ -620,12 +620,12 @@ Kode HTTP untuk pengulangan dengan _key_ yang sama:
   [`PENDING` atau `DEBITED`], [202 Accepted: _request_ pertama masih berjalan (atau terhenti oleh _crash_ atau oleh kegagalan menyimpan status)],
 )
 
-Setiap jawaban pengulangan membawa _header_ `Idempotent-Replayed: true`, yang memberi tahu klien bahwa kali ini tidak ada yang dijalankan. _Header_ `Location` hanya diisi pada jawaban 201 dan 202. Kondisi lain di luar tabel:
+Setiap _response_ pengulangan membawa _header_ `Idempotent-Replayed: true`, yang memberi tahu klien bahwa kali ini tidak ada yang dijalankan. _Header_ `Location` hanya diisi pada _response_ 201 dan 202. Kondisi lain di luar tabel:
 
-- *422 Unprocessable Entity* ketika _key_ yang sama datang dengan _body_ berbeda. Kemungkinan besar kondisi ini adalah _bug_ di klien yang menggunakan _key_ lama untuk transfer baru. Menjalankannya berarti salah satu dari dua transfer tersebut hilang tanpa diketahui klien.
+- *422 Unprocessable Entity* ketika _key_ yang sama datang dengan _body_ berbeda. Kondisi ini kemungkinan besar disebabkan oleh _bug_ di klien yang menggunakan _key_ lama untuk transfer baru. Menjalankannya berarti salah satu dari dua transfer tersebut hilang tanpa diketahui klien.
 - *400 Bad Request* ketika format _key_ tidak valid.
 
-Pengulangan sengaja tidak dijawab dengan kode tersendiri seperti `200 OK`. Klien yang tidak menerima jawaban pertama harus dapat mengambil keputusan dari jawaban kedua dengan aturan yang sama: 201 berarti transfer selesai, 503 berarti tidak ada dana yang berpindah, 500 berarti dana tertahan dan perlu penanganan manual. Transfer yang tersimpan dengan status `FAILED` atau `COMPENSATED` sudah final. Pengulangan dengan _key_ yang sama selalu mengembalikan hasil yang sama, sehingga klien yang ingin mencoba lagi setelah 503 mengirim transfer baru dengan _key_ baru.
+Pengulangan sengaja tidak dijawab dengan kode tersendiri seperti `200 OK`. Klien yang tidak menerima _response_ pertama harus dapat mengambil keputusan dari _response_ kedua dengan aturan yang sama: 201 berarti transfer selesai, 503 berarti tidak ada dana yang berpindah, 500 berarti dana tertahan dan perlu penanganan manual. Transfer yang tersimpan dengan status `FAILED` atau `COMPENSATED` sudah final. Pengulangan dengan _key_ yang sama selalu mengembalikan hasil yang sama, sehingga klien yang ingin mencoba lagi setelah 503 mengirim transfer baru dengan _key_ baru.
 
 _Header_ ini sengaja dibuat opsional agar perintah `curl` dari Lab 2–5 tetap berjalan. API pembayaran yang diakses _channel_ di _production_ mewajibkannya.
 
@@ -667,7 +667,7 @@ Di `TestExecuteSaga`, ganti pembuatan _store_ dan pemanggilan `Execute`:
 			got, _, err := svc.Execute(context.Background(), req, "")
 ```
 
-Tambahkan _test_ baru di file yang sama. _Test_ ini memeriksa empat perilaku: transfer pertama berjalan, pengulangan dengan nominal yang ditulis berbeda tidak memanggil `account` lagi, _body_ berbeda ditolak, dan _request_ tanpa _key_ selalu menjadi transfer baru.
+Tambahkan _test_ baru di _file_ yang sama. _Test_ ini memeriksa empat perilaku: transfer pertama berjalan, pengulangan dengan nominal yang ditulis berbeda tidak memanggil `account` lagi, _body_ berbeda ditolak, dan _request_ tanpa _key_ selalu menjadi transfer baru.
 
 ```go
 func TestExecuteIdempotencyKey(t *testing.T) {
@@ -745,9 +745,9 @@ func TestReplayOutcome(t *testing.T) {
 }
 ```
 
-_Test_ kode HTTP sudah ada sejak Lab 3 di `transfer/internal/transfer/http_test.go` (`TestCreateStatus`). Di Lab 6, file tersebut mendapat tiga perubahan.
+_Test_ kode HTTP sudah ada sejak Lab 3 di `transfer/internal/transfer/http_test.go` (`TestCreateStatus`). Di Lab 6, _file_ tersebut mendapat tiga perubahan.
 
-Pertama, tambahkan `"github.com/shopspring/decimal"` ke daftar _import_, lalu tambahkan fungsi bantu `post` di bawah `fails`. Fungsi ini mengirim `POST /transfers` dengan _header_ `Idempotency-Key`:
+Pertama, tambahkan `"github.com/shopspring/decimal"` ke daftar _import_, lalu tambahkan fungsi _helper_ `post` di bawah `fails`. Fungsi ini mengirim `POST /transfers` dengan _header_ `Idempotency-Key`:
 
 ```go
 func post(t *testing.T, url, key string) *http.Response {
@@ -802,7 +802,7 @@ Lalu ganti isi `t.Run` di dalam perulangan kasus:
 
 Dengan perubahan ini, setiap baris tabel `TestCreateStatus` (201, 422, 503, 502, 500) sekaligus membuktikan bahwa `replayOutcome` menyusun ulang penyebab kegagalan dengan benar.
 
-Ketiga, tambahkan _test_ baru di akhir file untuk perilaku khusus _header_:
+Ketiga, tambahkan _test_ baru di akhir _file_ untuk perilaku khusus _header_:
 
 ```go
 func TestCreateIdempotencyKeyHTTP(t *testing.T) {
@@ -895,11 +895,11 @@ Pada database yang dibuat dari awal di Lab 6 (misalnya setelah `make infra-reset
 (0 rows)
 ```]
 
-Pada database dari Lab 5, daftar tersebut masih berisi duplikat hasil _replay_ di langkah pertama lab ini. Baris-baris tersebut tersimpan sebelum `processed_event` ada; yang perlu dibuktikan adalah jumlah notifikasinya tidak bertambah. Jalankan `make replay` sekali lagi (dengan `notification` dihentikan lebih dahulu), lalu `make duplicates`: angka di kolom `notifications` tetap sama.
+Pada database dari Lab 5, daftar tersebut masih berisi duplikat hasil _replay_ di langkah pertama lab ini. Baris-baris tersebut tersimpan sebelum `processed_event` ada, sehingga yang perlu dibuktikan hanyalah jumlah notifikasinya tidak bertambah. Jalankan `make replay` sekali lagi (dengan `notification` dihentikan lebih dahulu), lalu `make duplicates`: angka di kolom `notifications` tetap sama.
 
 === `Idempotency-Key` di `POST /transfers`
 
-Gunakan `curl -i` agar kode status dan _header_ jawaban terlihat. Kirim transfer dengan sebuah _key_:
+Gunakan `curl -i` agar kode status dan _header_ _response_ terlihat. Kirim transfer dengan sebuah _key_:
 
 #perintah[```bash
 curl -i -X POST localhost:28082/transfers \
@@ -907,7 +907,7 @@ curl -i -X POST localhost:28082/transfers \
   -d '{"from_account":"1111111111","to_account":"2222222222","amount":"100000"}'
 ```]
 
-Jawaban pertama adalah `201 Created` dengan transfer berstatus `COMPLETED` (potongan jawaban; ID dan waktu akan berbeda):
+_Response_ pertama berupa `201 Created` dengan transfer berstatus `COMPLETED` (potongan _response_; ID dan waktu akan berbeda):
 
 #perintah[```
 HTTP/1.1 201 Created
@@ -918,7 +918,7 @@ Location: /transfers/3f1e...
 {"id":"3f1e...","from_account":"1111111111","to_account":"2222222222","amount":"100000","status":"COMPLETED",...}
 ```]
 
-Ulangi perintah yang sama persis. Kode HTTP-nya tetap `201 Created`, karena transfer asli berstatus `COMPLETED`, tetapi jawabannya membawa _header_ tambahan dan `id` yang sama:
+Ulangi perintah yang sama persis. Kode HTTP-nya tetap `201 Created`, karena transfer asli berstatus `COMPLETED`, tetapi _response_-nya membawa _header_ tambahan dan `id` yang sama:
 
 #perintah[```
 HTTP/1.1 201 Created
@@ -942,7 +942,7 @@ curl -i -X POST localhost:28082/transfers \
   -d '{"from_account":"1111111111","to_account":"2222222222","amount":"5000"}'
 ```]
 
-Jawabannya `422 Unprocessable Entity`:
+_Response_-nya `422 Unprocessable Entity`:
 
 #perintah[```
 {"error":"idempotency key already used for a different request"}
@@ -960,7 +960,7 @@ for i in 1 2; do
 done
 ```]
 
-Kedua jawaban adalah `422`. _Request_ pertama menjalankan _debit_, gagal di _credit_, lalu membalikkan _debit_ (status `COMPENSATED`, `failure_reason` diakhiri `account not found`). _Request_ kedua tidak menjalankan apa pun; `replayOutcome` membaca `failure_reason` tersebut dan menghasilkan kode yang sama.
+Kedua _response_ berkode `422`. _Request_ pertama menjalankan _debit_, gagal di _credit_, lalu membalikkan _debit_ (status `COMPENSATED`, `failure_reason` diakhiri `account not found`). _Request_ kedua tidak menjalankan apa pun, hanya membaca `failure_reason` tersebut melalui `replayOutcome` untuk menghasilkan kode yang sama.
 
 === _Request_ paralel dengan _key_ yang sama
 
@@ -977,7 +977,7 @@ done; wait
 curl localhost:28081/accounts/1111111111
 ```]
 
-Bila `uuidgen` tidak tersedia, isi `KEY` dengan teks unik apa saja, misalnya `KEY=paralel-001`. Setiap jawaban berupa `201` atau `202`, dengan urutan dan jumlah yang berbeda pada setiap percobaan, misalnya:
+Bila `uuidgen` tidak tersedia, isi `KEY` dengan teks unik apa saja, misalnya `KEY=paralel-001`. Setiap _response_ berupa `201` atau `202`, dengan urutan dan jumlah yang berbeda pada setiap percobaan, misalnya:
 
 #perintah[```
 202
@@ -988,7 +988,7 @@ Bila `uuidgen` tidak tersedia, isi `KEY` dengan teks unik apa saja, misalnya `KE
 202
 ```]
 
-Saldo rekening asal berkurang tepat 100000. _Unique index_ pada `idempotency_key` menjamin hanya satu `insert` yang berhasil; kelima _request_ lain mengambil transfer yang sudah tersimpan. `202 Accepted` adalah jawaban pengulangan yang tiba ketika _saga_ dari _request_ pertama belum selesai, sehingga transfer masih berstatus `PENDING` atau `DEBITED`. Pengulangan yang tiba setelah _saga_ selesai menerima `201`, sama dengan _request_ pertama. Dari kode HTTP saja, _request_ pertama tidak dapat dibedakan dari pengulangan; pembedanya adalah _header_ `Idempotent-Replayed: true` yang hanya ada pada pengulangan.
+Saldo rekening asal berkurang tepat 100000. _Unique index_ pada `idempotency_key` menjamin hanya satu `insert` yang berhasil, sedangkan kelima _request_ lain mengambil transfer yang sudah tersimpan. Pengulangan yang tiba ketika _saga_ dari _request_ pertama belum selesai menerima `202 Accepted`, karena transfer masih berstatus `PENDING` atau `DEBITED`. Pengulangan yang tiba setelah _saga_ selesai menerima `201`, sama dengan _request_ pertama. Kode HTTP saja tidak dapat membedakan _request_ pertama dari pengulangan. Pembedanya _header_ `Idempotent-Replayed: true`, yang hanya muncul pada pengulangan.
 
 == Masalah Umum
 
@@ -1000,17 +1000,17 @@ Saldo rekening asal berkurang tepat 100000. _Unique index_ pada `idempotency_key
 
 *Pengulangan dengan _key_ yang sama menghasilkan transfer baru dengan `id` berbeda, tanpa _header_ `Idempotent-Replayed`.* `transfer` yang berjalan masih versi lama, karena service belum dijalankan ulang setelah kode diubah. Periksa juga penulisan nama _header_ di perintah `curl`: `Idempotency-Key`, dengan tanda hubung.
 
-*`make duplicates` masih menampilkan baris setelah semua langkah selesai.* Baris tersebut berasal dari _replay_ di Lab 5 atau di langkah pertama lab ini, sebelum `processed_event` ada. Selama jumlahnya tidak bertambah setelah _replay_ berikutnya, _consumer_ sudah _idempotent_. Untuk memulai dari database bersih, jalankan `make infra-reset` lalu `make infra-up`; perintah tersebut menghapus semua data lab, termasuk rekening, sehingga rekening contoh perlu dibuat ulang.
+*`make duplicates` masih menampilkan baris setelah semua langkah selesai.* Baris tersebut berasal dari _replay_ di Lab 5 atau di langkah pertama lab ini, sebelum `processed_event` ada. Selama jumlahnya tidak bertambah setelah _replay_ berikutnya, _consumer_ sudah _idempotent_. Untuk memulai dari database bersih, jalankan `make infra-reset` lalu `make infra-up`. Perintah `make infra-reset` menghapus semua data lab, termasuk rekening, sehingga rekening contoh perlu dibuat ulang.
 
-*Pengulangan dijawab `202 Accepted` dengan status `PENDING` atau `DEBITED`.* Kondisi ini benar. _Request_ pertama dengan _key_ tersebut masih berjalan, dan _request_ pengulangan tidak menunggunya. Periksa `GET /transfers/{id}` (alamatnya ada di _header_ `Location`) beberapa saat kemudian. Bila statusnya tidak pernah berubah, proses `transfer` mati di tengah _saga_, atau status berikutnya gagal disimpan (log `debit applied but not recorded` atau `saga end state not recorded`). Transfer tersebut tidak dilanjutkan oleh siapa pun di lab ini, sehingga pengulangan terus dijawab `202`, walaupun _request_ pertama mungkin menerima kode lain.
+*Pengulangan dijawab `202 Accepted` dengan status `PENDING` atau `DEBITED`.* Perilaku ini memang diharapkan. _Request_ pertama dengan _key_ tersebut masih berjalan, dan _request_ pengulangan tidak menunggunya. Periksa `GET /transfers/{id}` (alamatnya ada di _header_ `Location`) beberapa saat kemudian. Bila statusnya tidak pernah berubah, proses `transfer` mati di tengah _saga_, atau status berikutnya gagal disimpan (log `debit applied but not recorded` atau `saga end state not recorded`). Di lab ini, tidak ada mekanisme yang melanjutkan transfer tersebut, sehingga pengulangan terus dijawab `202`, walaupun _request_ pertama mungkin menerima kode lain.
 
 *Aplikasi klien mendapat `422` padahal hanya mengulang _request_.* Klien membuat _body_ yang berbeda pada pengulangan, atau menggunakan ulang _key_ untuk transfer baru. Setiap transfer baru harus memiliki _key_ sendiri, dan pengulangan harus mengirim _body_ yang sama.
 
 == Eksplorasi Mandiri
 
-+ *_Crash_ di antara _commit_ database dan _commit offset_.* Tambahkan `time.Sleep(10 * time.Second)` sementara di `Run` (`consumer.go`), tepat sebelum `c.reader.CommitMessages`. Buat satu transfer, tunggu hingga log `notification sent` muncul, lalu hentikan proses `notification` secara paksa sebelum 10 detik berlalu. `go run` menjalankan _binary_ hasil kompilasi sebagai proses anak, sehingga yang dihentikan adalah proses tersebut: `pkill -9 -f exe/notification`. Jalankan lagi `notification` dan amati bahwa _event_ yang sama datang lagi lalu dilewati sebagai duplikat. Hapus kembali `time.Sleep` setelah selesai.
-+ *Dua instance `notification`.* Jalankan instance kedua dari direktori `notification` dengan port HTTP lain: salin _environment variable_ dari target `run` di `notification/Makefile`, ganti `HTTP_ADDR=:8093`, lalu jalankan `go run .`. Amati di log bagaimana tiga _partition_ dibagi ke dua anggota group. Hentikan keduanya, jalankan `make replay`, lalu jalankan keduanya lagi. Periksa dengan `make duplicates` bahwa tidak ada notifikasi baru yang ganda.
-+ *Lingkup _key_ per klien.* Di lab ini, _key_ berlaku global untuk semua klien. Di _production_, dua klien berbeda boleh secara kebetulan membuat _key_ yang sama, sehingga _unique index_ biasanya dibuat pada pasangan (klien, _key_). Rancang perubahan _schema_ dan kode untuk lingkup tersebut, misalnya dengan _header_ `X-Client-ID` sementara. Di Lab 7, identitas klien akan tersedia dari _token_ OAuth2.
++ *_Crash_ di antara _commit_ database dan _commit offset_.* Tambahkan `time.Sleep(10 * time.Second)` sementara di `Run` (`consumer.go`), tepat sebelum `c.reader.CommitMessages`. Buat satu transfer, tunggu hingga log `notification sent` muncul, lalu hentikan proses `notification` secara paksa sebelum 10 detik berlalu. `go run` menjalankan _binary_ hasil kompilasi sebagai _child process_, sehingga proses itulah yang perlu dihentikan dengan`pkill -9 -f exe/notification`. Jalankan lagi `notification` dan amati bahwa _event_ yang sama datang lagi lalu dilewati sebagai duplikat. Hapus kembali `time.Sleep` setelah selesai.
++ *Dua _instance_ `notification`.* Jalankan _instance_ kedua dari direktori `notification` dengan port HTTP lain: salin _environment variable_ dari _target_ `run` di `notification/Makefile`, ganti `HTTP_ADDR=:8093`, lalu jalankan `go run .`. Amati di log bagaimana tiga _partition_ dibagi ke dua anggota _consumer group_. Hentikan keduanya, jalankan `make replay`, lalu jalankan keduanya lagi. Periksa dengan `make duplicates` bahwa tidak ada notifikasi baru yang ganda.
++ *Lingkup _key_ per klien.* Di lab ini, _key_ berlaku global untuk semua klien. Di _production_, dua klien berbeda bisa saja secara kebetulan membuat _key_ yang sama, sehingga _unique index_ biasanya dibuat pada pasangan (klien, _key_). Rancang perubahan _schema_ dan kode untuk lingkup tersebut, misalnya dengan _header_ `X-Client-ID` sementara. Di Lab 7, identitas klien akan tersedia dari _token_ OAuth2.
 + *Masa berlaku _key_.* _Key_ di lab ini tidak pernah kedaluwarsa. Sistem pembayaran umumnya menghapus _key_ setelah periode tertentu, misalnya 24 jam. Tulis perintah SQL yang mengosongkan `idempotency_key` untuk transfer yang lebih tua dari 24 jam, lalu jelaskan apa yang terjadi bila klien mengulang _request_ setelah _key_-nya dihapus.
 
 == Checkpoint

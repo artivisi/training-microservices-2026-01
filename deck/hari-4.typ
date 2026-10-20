@@ -33,7 +33,7 @@
     [09:45 – 10:45], [*Lab 8*: melacak satu transfer lintas tiga service di Grafana], [_Hands-on_],
     [11:00 – 12:30], [_Containerization_ dan *Lab 9*: seluruh sistem berjalan di k3d], [Demo + _hands-on_],
     [13:30 – 14:15], [CI/CD per service dan pemetaannya ke Jenkins; GitOps sekilas], [Presentasi + demo],
-    [14:15 – 15:45], [*Lab 10*: satu _commit_ menjadi _rolling update_], [_Hands-on_],
+    [14:15 – 15:45], [*Lab 10*: dari _commit_ hingga _rolling update_], [_Hands-on_],
     [15:45 – 16:30], [Operasional: HPA, penempatan _observability stack_, OpenShift; diskusi dan tanya jawab], [Presentasi + diskusi],
   )
 ]
@@ -68,10 +68,10 @@
   #table(
     columns: (auto, 1fr, 1fr, 1fr),
     [Model], [Ciri], [Kelebihan], [Pertimbangan],
-    [_On-premise_], [Server milik sendiri di _data center_ sendiri], [Kendali penuh atas data dan jaringan], [Kapasitas harus dibeli di muka; tim mengelola seluruh _stack_],
+    [_On-premise_], [Server milik sendiri di _data center_ sendiri], [Kendali penuh atas data dan jaringan], [Kapasitas harus dibeli di muka, dan tim mengelola sendiri seluruh _stack_],
     [_Private cloud_], [Platform _cloud_ khusus satu organisasi], [Kendali tetap tinggi, penyediaan _resource_ lebih cepat], [Investasi platform dan tim operasional],
-    [_Public cloud_], [_Resource_ milik penyedia, digunakan bersama oleh banyak pelanggan], [Elastis, layanan _managed_ lengkap], [Klasifikasi data dan lokasi penyimpanan harus sesuai regulasi],
-    [_Hybrid_], [Gabungan model di atas], [Penempatan dipilih per _workload_], [Konektivitas, identitas, dan observability lintas lokasi],
+    [_Public cloud_], [_Resource_ milik _cloud provider_, digunakan bersama oleh banyak pelanggan], [Elastis, pilihan _managed service_ lengkap], [Klasifikasi data dan lokasi penyimpanan harus sesuai regulasi],
+    [_Hybrid_], [Gabungan model di atas], [Penempatan dipilih per _workload_], [Konektivitas, identitas, dan _observability_ lintas lokasi],
   )
   #v(10pt)
   #note[Pilihan model ditentukan per _workload_, berdasarkan klasifikasi data yang diolah _workload_ tersebut.]
@@ -80,20 +80,20 @@
 #slide(kicker: "Model deployment", title: [_Managed_ vs _self-managed_])[
   #two-col(
     card([_Managed service_])[
-      - Penyedia mengurus instalasi, _patch_, _backup_, dan _high availability_
+      - _Cloud provider_ mengurus instalasi, _patch_, _backup_, dan _high availability_
       - Tim fokus pada aplikasi
-      - Konfigurasi terbatas pada pilihan yang disediakan penyedia
+      - Konfigurasi terbatas pada pilihan yang disediakan _cloud provider_
       - Contoh: database _managed_, Kafka _managed_, Kubernetes _managed_
     ],
     card([_Self-managed_], accent: gold.darken(15%))[
       - Tim menjalankan sendiri PostgreSQL, Kafka, Kubernetes
       - Seluruh parameter bisa diatur
-      - Beban operasional: _upgrade_, _monitoring_, pemulihan data, rotasi sertifikat
+      - Beban operasional: _upgrade_, _monitoring_, _restore_ data, rotasi sertifikat
       - Lazim di _on-premise_ dan _private cloud_
     ],
   )
   #v(12pt)
-  #note(kind: "tip")[Pertanyaan yang membantu memilih: siapa yang dihubungi pukul 02.00 ketika layanan tersebut mati, dan apakah tim tersebut memiliki keahlian untuk memulihkannya.]
+  #note(kind: "tip")[Untuk memilih, tanyakan siapa yang dihubungi bila service tersebut mati pukul 02.00, dan apakah pihak tersebut mampu mengaktifkannya kembali.]
 ]
 
 #slide(kicker: "Regulasi", title: "Regulasi dan klasifikasi data")[
@@ -107,7 +107,7 @@
   #note(kind: "warn")[Ketentuan regulasi berubah dari waktu ke waktu. Rujuk ketentuan yang berlaku dan kebijakan internal organisasi sebelum memindahkan _workload_.]
 ]
 
-#slide(kicker: "Portabilitas", title: "Kubernetes sebagai landasan yang portabel")[
+#slide(kicker: "Portabilitas", title: [Manifest Kubernetes yang sama berjalan di semua model _deployment_])[
   #diagram(height: 200pt,
     at(0pt, 70pt, node("manifest + image", sub: "hasil training", kind: "infra", width: 150pt)),
     at(340pt, 0pt, node("on-premise", sub: "cluster sendiri", width: 160pt)),
@@ -124,7 +124,7 @@
     ]),
   )
   #v(10pt)
-  #note[Portabilitas berlaku selama aplikasi hanya bergantung pada API Kubernetes standar. Fitur khusus satu penyedia, misalnya _load balancer_ atau _storage class_ tertentu, perlu dipisahkan ke _overlay_.]
+  #note[Portabilitas berlaku selama aplikasi hanya bergantung pada API Kubernetes standar. Fitur khusus satu _cloud provider_, misalnya _load balancer_ atau _storage class_ tertentu, perlu dipisahkan ke _overlay_.]
 ]
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -136,12 +136,12 @@
     [Sumber], [Pertanyaan yang dijawab], [Implementasi di studi kasus], [Disimpan di],
     [_Log_], [Apa yang terjadi pada satu _request_ tertentu?], [`slog` format JSON, `correlation_id`, `trace_id`], [Loki],
     [Metrik], [Seberapa sering, seberapa cepat, berapa yang gagal?], [`prometheus/client_golang`, _endpoint_ `/metrics`], [Prometheus],
-    [_Trace_], [Di service mana waktu habis untuk satu transaksi?], [OpenTelemetry, `otelhttp`, `otelgrpc`, Kafka _header_], [Tempo],
+    [_Trace_], [Di service mana sebagian besar waktu satu transaksi terpakai?], [OpenTelemetry, `otelhttp`, `otelgrpc`, _header_ Kafka], [Tempo],
   )
   #v(12pt)
   #bullets(size: 13.5pt,
-    [Metrik mendeteksi adanya masalah. _Trace_ menunjukkan service tempat waktu habis, dan _log_ berisi penyebabnya.],
-    [_Trace_ dan _log_ dihubungkan oleh `trace_id`. Dari lonjakan di grafik metrik, _engineer_ mempersempit rentang waktu lalu membuka _trace_ pada rentang tersebut. Tautan langsung dari metrik ke _trace_ membutuhkan _exemplar_ Prometheus, yang tidak dipasang di lab.],
+    [Metrik mendeteksi adanya masalah. _Trace_ menunjukkan service yang paling banyak menyita waktu, dan _log_ berisi penyebabnya.],
+    [_Trace_ dan _log_ dihubungkan oleh `trace_id`. Dari lonjakan di grafik metrik, _engineer_ mempersempit rentang waktu lalu membuka _trace_ pada rentang tersebut. Tautan langsung dari metrik ke _trace_ membutuhkan _exemplar_ Prometheus, dan fitur tersebut tidak dipasang di lab.],
   )
 ]
 
@@ -172,7 +172,7 @@
   side: [
     - Setiap baris _log_ otomatis membawa `correlation_id`, `trace_id`, `span_id`
     - Kode _handler_ HTTP cukup memanggil `slog.InfoContext(ctx, ...)`
-    - Output JSON ke _stdout_ sekaligus diekspor sebagai _log_ OTLP (_bridge_ `otelslog`)
+    - _Output_ JSON ke _stdout_ sekaligus diekspor sebagai _log_ OTLP (_bridge_ `otelslog`)
     - `WithAttrs` dan `WithGroup` membungkus ulang _handler_ hasilnya, sehingga _logger_ dari `logger.With(...)` tetap membawa ketiga atribut tersebut
   ],
 )[
@@ -210,12 +210,12 @@ func (h ctxHandler) WithGroup(n string) slog.Handler {
     [Histogram durasi _request_ (`method`, `route`, `status`)], [Semua], [_Latency_ p95 per _endpoint_],
     [`transfers_total{status}`], [transfer], [Laju transfer per status: `COMPLETED`, `FAILED`, `COMPENSATED`],
     [`circuit_breaker_state{target}`], [transfer], [0 = _closed_, 1 = _half-open_, 2 = _open_],
-    [Penghitung transisi _breaker_], [transfer], [Berapa kali _breaker_ berganti status],
+    [_Counter_ transisi _breaker_], [transfer], [Berapa kali _breaker_ berganti status],
     [`outbox_pending`], [transfer], [_Event_ yang belum terkirim ke Kafka],
-    [`notifications_processed_total{result}`], [notification], [`sent`, `duplicate`, dan `skipped`. `skipped` = _event_ rusak atau ditolak database; seharusnya tetap 0],
+    [`notifications_processed_total{result}`], [notification], [`sent`, `duplicate`, dan `skipped`. `skipped` menghitung _event_ rusak atau yang ditolak database, dan nilainya seharusnya tetap 0],
   )
   #v(10pt)
-  #note(kind: "warn")[Label `route` diisi pola ServeMux (`GET /transfers/{id}`), tidak diisi _path_ asli. _Path_ asli berisi ID sehingga jumlah _time series_ terus bertambah.]
+  #note(kind: "warn")[Label `route` diisi pola ServeMux (`GET /transfers/{id}`). Bila diisi _path_ asli yang mengandung ID, jumlah _time series_ akan terus bertambah.]
 ]
 
 #slide(kicker: "Tracing", title: [Meneruskan _trace context_ lewat Kafka])[
@@ -245,13 +245,13 @@ defer span.End()
       #set text(size: 12.5pt)
       - HTTP dan gRPC: `otelhttp` dan _stats handler_ `otelgrpc` meneruskan _header_ `traceparent` secara otomatis
       - Kafka: _relay_ berjalan di _goroutine_ terpisah tanpa _context_ dari _request_ asal, dan baru mengirim _event_ hingga ±500 ms kemudian. Karena itu _trace context_ disimpan ke baris _outbox_ saat baris tersebut ditulis
-      - Hanya `traceparent` yang diteruskan. _Baggage_ tidak digunakan: REST API menghadap channel, dan _baggage_ dari pemanggil luar akan ikut terkirim ke semua service di belakangnya
+      - Hanya `traceparent` yang diteruskan. _Baggage_ tidak digunakan karena REST API diakses langsung oleh aplikasi _channel_, dan _baggage_ dari pemanggil luar itu akan ikut terkirim ke semua service yang dipanggil sesudahnya
       - Hasilnya, satu transfer tampil sebagai satu _trace_ yang mencakup tiga service
     ],
   )
 ]
 
-#slide(kicker: "Stack", title: [_Stack_ observability di lab: `otel-lgtm`])[
+#slide(kicker: "Stack", title: [_Observability stack_ lab dalam satu _container_ `otel-lgtm`])[
   #diagram(height: 250pt,
     at(0pt, 0pt, node("transfer")),
     at(0pt, 90pt, node("account")),
@@ -273,8 +273,8 @@ defer span.End()
   )
   #v(6pt)
   #bullets(size: 13pt,
-    [Satu _container_ `grafana/otel-lgtm` berisi _collector_, Tempo, Loki, Prometheus, dan Grafana dengan _dashboard_ yang sudah diprovisikan.],
-    [_Trace_ dan _log_ dikirim (_push_) lewat OTLP; metrik diambil (_pull_) oleh Prometheus dari `/metrics` di setiap service.],
+    [Satu _container_ `grafana/otel-lgtm` berisi _collector_, Tempo, Loki, Prometheus, dan Grafana dengan _dashboard_ bawaan.],
+    [_Trace_ dan _log_ dikirim (_push_) lewat OTLP, sedangkan metrik diambil (_pull_) oleh Prometheus dari `/metrics` di setiap service.],
   )
 ]
 
@@ -316,13 +316,13 @@ defer span.End()
 // ════════════════════════════════════════════════════════════════════════════
 #section-slide(number: "03", title: [_Containerization_], subtitle: [_Multi-stage build_, _static binary_ Go, _image_ minimal, dan 12-factor])
 
-#slide(kicker: "Go dan container", title: [Mengapa Go cocok untuk _container_])[
+#slide(kicker: "Go dan container", title: [_Static binary_ Go menghasilkan _image_ yang kecil])[
   #two-col(
     [
       #bullets(
         [Dengan `CGO_ENABLED=0`, hasil _build_ Go berupa satu _static binary_ yang tidak membutuhkan _library_ sistem.],
         [_Image_ akhir cukup berisi _binary_ tersebut dan sertifikat CA, berukuran belasan hingga puluhan megabyte.],
-        [Tanpa _shell_ dan _package manager_ di _image_, celah serangan berkurang dan hasil _scanning_ lebih bersih.],
+        [Tanpa _shell_ dan _package manager_ di _image_, _attack surface_ lebih kecil dan hasil _scanning_ lebih bersih.],
       )
     ],
     card("Ukuran tipikal")[
@@ -344,8 +344,8 @@ defer span.End()
     - _Stage_ pertama: kompilasi dengan _toolchain_ lengkap
     - _Stage_ kedua: `FROM scratch`, hanya menyalin hasil _build_
     - `-trimpath -ldflags "-s -w"`: _path_ lokal dan simbol _debug_ dibuang
-    - `GOWORK=off`: hanya modul service dan `proto`, sehingga perubahan service lain tidak membatalkan _cache_
-    - `go.mod` disalin lebih dulu agar _layer_ unduhan dependensi tetap di-_cache_
+    - `GOWORK=off`: _build_ hanya melibatkan modul service dan `proto`, sehingga perubahan service lain tidak membuat _cache_ menjadi tidak valid
+    - `go.mod` disalin terlebih dahulu agar _layer_ hasil `go mod download` tetap di-_cache_
     - _Build context_ `studi-kasus/` karena account dan transfer membutuhkan modul `proto` (`replace ../proto`). Notification tidak menyalin `proto/`
   ],
 )[
@@ -372,14 +372,14 @@ ENTRYPOINT ["/transfer"]
 ```
 ]
 
-#slide(kicker: "Keamanan image", title: [_Non-root_ dan UID sembarang])[
+#slide(kicker: "Keamanan image", title: [_Non-root_ dan UID acak])[
   #two-col(
     card([`USER 65532:65532`])[
       - Proses tidak berjalan sebagai `root` walaupun _image_ dijalankan tanpa opsi tambahan
-      - Angka numerik dibutuhkan agar Kubernetes bisa memverifikasi `runAsNonRoot`
+      - UID numerik dibutuhkan agar Kubernetes bisa memverifikasi `runAsNonRoot`
       - `scratch` tidak memiliki `/etc/passwd`, sehingga nama pengguna tidak bisa digunakan
     ],
-    card([UID sembarang], accent: gold.darken(15%))[
+    card([UID acak], accent: gold.darken(15%))[
       - OpenShift dengan SCC `restricted-v2` menjalankan _container_ dengan UID acak dari rentang milik _namespace_
       - _Binary_ harus tetap berjalan dengan UID berapa pun
       - Service tidak menulis ke _filesystem_: _log_ ke _stdout_, data ke database
@@ -393,22 +393,22 @@ ENTRYPOINT ["/transfer"]
   #table(
     columns: (auto, 1fr),
     [Prinsip], [Penerapan di studi kasus],
-    [_Config_], [Seluruh konfigurasi dari _environment variable_; satu `LoadConfig` per service],
-    [_Backing services_], [Database, Kafka, Hydra, _collector_ diakses lewat URL dari konfigurasi; bisa diganti tanpa _build_ ulang],
-    [_Build, release, run_], [Satu _image_ per _commit_; konfigurasi ditambahkan saat _deploy_ melalui ConfigMap dan Secret],
-    [_Processes_], [Service tidak menyimpan _state_ di memori; _state_ ada di database],
+    [_Config_], [Seluruh konfigurasi dibaca dari _environment variable_ oleh satu `LoadConfig` di setiap service],
+    [_Backing services_], [Database, Kafka, Hydra, _collector_ diakses lewat URL dari konfigurasi sehingga bisa diganti tanpa _build_ ulang],
+    [_Build, release, run_], [Setiap _commit_ menghasilkan satu _image_, dan konfigurasinya ditambahkan saat _deploy_ melalui ConfigMap dan Secret],
+    [_Processes_], [Service tidak menyimpan _state_ di memori karena _state_ disimpan di database],
     [_Port binding_], [Service membuka _port_ HTTP dan gRPC sendiri: `HTTP_ADDR`, `GRPC_ADDR`],
-    [_Disposability_], [_Start_ cepat; _graceful shutdown_ saat menerima `SIGTERM`],
-    [_Logs_], [JSON ke _stdout_; platform yang mengumpulkan],
+    [_Disposability_], [Service bisa _start_ dengan cepat dan melakukan _graceful shutdown_ saat menerima `SIGTERM`],
+    [_Logs_], [Service menulis _log_ JSON ke _stdout_, lalu platform mengumpulkannya],
   )
 ]
 
-#code-slide(kicker: "Konfigurasi", title: [Konfigurasi wajib, tanpa nilai _default_],
+#code-slide(kicker: "Konfigurasi", title: [Konfigurasi wajib tidak memiliki nilai _default_],
   side: [
-    - _Environment variable_ yang kosong menghentikan _startup_ dengan pesan galat yang menyebut namanya
+    - _Environment variable_ yang kosong menghentikan _startup_ dengan pesan _error_ yang menyebut nama variabel tersebut
     - _Pod_ dengan ConfigMap yang salah langsung gagal dan terlihat di `kubectl get pods`
     - Nilai _default_ yang digunakan tanpa terdeteksi, misalnya `localhost`, baru ketahuan saat transaksi pertama gagal
-    - Nilai yang formatnya salah juga ditolak saat _startup_. `OTEL_EXPORTER_OTLP_ENDPOINT` tanpa _port_ membuat gRPC menghubungi _port_ 443, dan semua ekspor gagal tanpa pesan setelah service berjalan
+    - Nilai yang formatnya salah juga ditolak saat _startup_. `OTEL_EXPORTER_OTLP_ENDPOINT` tanpa _port_ membuat gRPC menghubungi _port_ 443, dan semua ekspor gagal tanpa pesan _error_ setelah service berjalan
   ],
 )[
 ```go
@@ -476,7 +476,7 @@ func LoadConfig() (Config, error) {
     [Service], [Nama DNS dan _load balancing_ ke _pod_ yang _ready_], [`account:9091` dipanggil transfer lewat gRPC],
     [ConfigMap], [Konfigurasi yang tidak rahasia], [`HTTP_ADDR`, `KAFKA_TOPIC`, `OAUTH_ISSUER`],
     [Secret], [Konfigurasi rahasia], [`DATABASE_URL`, `OAUTH_CLIENT_SECRET`],
-    [Ingress], [Jalur HTTP dari luar _cluster_], [`/transfers` lewat Traefik bawaan k3s],
+    [Ingress], [_Routing_ HTTP dari luar _cluster_], [`/transfers` lewat Traefik bawaan k3s],
     [Kustomize], [_Base_ bersama, _overlay_ per _cluster_], [`k8s/base`, `k8s/overlays/k3d`],
   )
   #v(10pt)
@@ -488,7 +488,7 @@ func LoadConfig() (Config, error) {
     - `/readyz` gagal → _pod_ dikeluarkan dari Service, tidak di-_restart_. Cocok untuk kondisi database belum terhubung
     - `/healthz` gagal → _container_ di-_restart_. Hanya untuk proses yang macet
     - Kesalahan umum: _liveness_ memeriksa database, sehingga gangguan database menyebabkan semua _pod_ di-_restart_ bersamaan
-    - _Probe_ hanya HTTP. _Health service_ gRPC account tidak memeriksa database, jadi tidak digunakan sebagai _readiness probe_
+    - Semua _probe_ menggunakan HTTP. _Health service_ gRPC account tidak memeriksa database, jadi tidak digunakan sebagai _readiness probe_
   ],
 )[
 ```yaml
@@ -558,20 +558,20 @@ kubectl -n bank rollout undo deployment/transfer
     ],
     [
       #set text(size: 12.5pt)
-      - Manifest menetapkan `maxSurge: 1` dan `maxUnavailable: 0`: satu _pod_ tambahan dibuat lebih dulu, jumlah _pod_ tidak pernah turun
-      - _Pod_ lama baru dihentikan setelah _pod_ baru lolos _readiness probe_. _Image_ yang gagal _start_ menahan _rollout_; versi lama tetap melayani
-      - Setiap perubahan mendapat `VERSION` baru. _Build_ ulang dengan _tag_ yang sama tidak pernah sampai ke _pod_: `IfNotPresent` dan referensi _image_ yang sama tidak memicu _rollout_
-      - `rollout undo` mengembalikan versi sebelumnya; peringatan `last-applied-configuration` yang muncul dapat diabaikan
+      - Dengan `maxSurge: 1` dan `maxUnavailable: 0` di manifest, satu _pod_ tambahan dibuat terlebih dahulu sehingga jumlah _pod_ tidak pernah turun
+      - _Pod_ lama baru dihentikan setelah _pod_ baru lolos _readiness probe_. Bila _image_ baru gagal _start_, _rollout_ tertahan dan _pod_ versi lama tetap melayani _request_
+      - Setiap perubahan mendapat `VERSION` baru. _Build_ ulang dengan _tag_ yang sama tidak mengubah _pod_ yang berjalan, karena `IfNotPresent` dan referensi _image_ yang tidak berubah tidak memicu _rollout_
+      - `rollout undo` mengembalikan versi sebelumnya. Peringatan `last-applied-configuration` yang muncul dapat diabaikan
     ],
   )
 ]
 
-#code-slide(kicker: "Rolling update", title: [`preStop` dan batas waktu saat _pod_ dihentikan],
+#code-slide(kicker: "Rolling update", title: [`preStop` dan _grace period_ saat _pod_ dihentikan],
   side: [
-    - Pengeluaran _pod_ dari _endpoint_ Service dan Ingress berjalan bersamaan dengan penghentiannya. Selama beberapa detik, _request_ baru masih datang
+    - _Pod_ dikeluarkan dari daftar _endpoint_ Service dan Ingress bersamaan dengan proses penghentiannya. Selama beberapa detik, _request_ baru masih datang
     - `preStop` `sleep` 5 detik menunda `SIGTERM` sampai _pod_ tidak lagi menerima _request_ baru. Aksi `sleep` bawaan (Kubernetes 1.30+) tidak membutuhkan _shell_, yang memang tidak ada di `scratch`
-    - `terminationGracePeriodSeconds` dihitung sejak `preStop` dimulai: `preStop` + batas _shutdown_ + _flush_ telemetri 5 detik. Account dan notification 30 (5 + 10 + 5), transfer 75 (5 + 60 + 5, ditambah cadangan)
-    - Nilai _default_ 30 detik akan mengirim `SIGKILL` ke transfer di tengah saga
+    - `terminationGracePeriodSeconds` dihitung sejak `preStop` dimulai: `preStop` + _timeout_ _shutdown_ + _flush_ telemetri 5 detik. Account dan notification 30 (5 + 10 + 5), transfer 75 (5 + 60 + 5, ditambah cadangan)
+    - Dengan nilai _default_ 30 detik, Kubernetes akan mengirim `SIGKILL` ke transfer di tengah saga
   ],
 )[
 ```yaml
@@ -588,11 +588,11 @@ spec:
 ```
 ]
 
-#slide(kicker: "Infra dari cluster", title: [_Pod_ menjangkau infrastruktur di _host_])[
+#slide(kicker: "Infra dari cluster", title: [_Pod_ mengakses infrastruktur di _host_])[
   #bullets(size: 13.5pt,
     [Hanya tiga service yang berjalan di k3d. PostgreSQL, Kafka, Hydra, dan `otel-lgtm` tetap berjalan dari `compose.yaml`.],
-    [_Pod_ menjangkau _host_ lewat nama `host.k3d.internal`.],
-    [Kafka mengiklankan alamat _broker_ ke klien. _Listener_ tambahan pada _port_ 19093 mengiklankan `host.k3d.internal`, sementara klien di _host_ tetap menggunakan `localhost:19092`.],
+    [_Pod_ mengakses _host_ lewat nama `host.k3d.internal`.],
+    [Kafka mengirim alamat _broker_ ke klien (_advertised listener_). _Listener_ tambahan pada _port_ 19093 mengirim alamat `host.k3d.internal`, sementara klien di _host_ tetap menggunakan `localhost:19092`.],
     [Token dari Hydra membawa `iss` = `http://localhost:14444/`. _Pod_ tetap memeriksa _issuer_ tersebut, tetapi mengambil JWKS dan token lewat `host.k3d.internal`.],
   )
   #v(8pt)
@@ -613,7 +613,7 @@ spec:
     - `VERSION=1.0.1`, `set image`, `rollout status`, `rollout undo`
   ],
   "lab-08",
-  [#note[`make k3d-up` menunggu 40–60 detik sampai DNS _cluster_ mengenal `host.k3d.internal`. Setelah Docker atau laptop di-_restart_, _pod_ masuk `CrashLoopBackOff` dengan pesan `no such host`: jalankan `k3d cluster stop bank` lalu `k3d cluster start bank`.]],
+  [#note[`make k3d-up` menunggu 40–60 detik sampai DNS _cluster_ mengenal `host.k3d.internal`. Bila _pod_ masuk `CrashLoopBackOff` dengan pesan `no such host` setelah Docker atau laptop di-_restart_, jalankan `k3d cluster stop bank` lalu `k3d cluster start bank`.]],
 )
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -621,9 +621,9 @@ spec:
 
 #slide(kicker: "Mengapa per service", title: [Setiap service memiliki _pipeline_ sendiri])[
   #bullets(
-    [Alasan utama memecah sistem menjadi service adalah _deployment_ yang independen. Tujuan tersebut baru tercapai bila setiap service memiliki jalur rilis sendiri.],
+    [Sistem dipecah menjadi service terutama agar setiap service bisa di-_deploy_ secara independen. Tujuan tersebut baru tercapai bila setiap service memiliki _pipeline_ sendiri.],
     [Perubahan di `studi-kasus/transfer/` hanya menjalankan _pipeline_ transfer. Perubahan di `proto/` menjalankan _pipeline_ account dan transfer karena keduanya bergantung pada kontrak tersebut.],
-    [Satu _pipeline_ untuk semua service mengembalikan sistem ke pola rilis monolith: semua service ikut di-_build_ dan di-_deploy_ setiap kali ada perubahan.],
+    [Bila semua service berbagi satu _pipeline_, pola rilisnya kembali seperti monolith: semua service ikut di-_build_ dan di-_deploy_ setiap kali ada perubahan.],
   )
   #v(10pt)
   #flow(
@@ -641,9 +641,9 @@ spec:
 
 #code-slide(kicker: "Workflow", title: [_Workflow_ hanya memanggil target `make`],
   side: [
-    - Tidak ada `uses:`; setiap _step_ berupa perintah _shell_ biasa
+    - Workflow tidak menggunakan `uses:`, sehingga setiap _step_ berupa perintah _shell_ biasa
     - Logika _build_ ada di `Makefile`, sehingga bisa dijalankan sama persis di laptop
-    - _Checkout_ berupa `git fetch` dengan token yang diterbitkan runner untuk job tersebut; isi lengkapnya ada di `.forgejo/workflows/transfer.yaml`
+    - _Checkout_ berupa `git fetch` dengan token yang diterbitkan runner untuk _job_ tersebut. Isi lengkapnya ada di `.forgejo/workflows/transfer.yaml`
     - _Tag image_ = SHA _commit_, sehingga setiap _image_ bisa dilacak ke kode sumbernya
     - `concurrency` mengantrekan _run_ berikutnya tanpa membatalkan yang sedang berjalan, agar dua _deploy_ tidak berebut Deployment yang sama
   ],
@@ -681,8 +681,8 @@ jobs:
 #code-slide(kicker: "Makefile", title: [Target `image`, `push`, `deploy`],
   side: [
     - Target ini ada di `studi-kasus/pipeline.mk` dan di-_include_ oleh `Makefile` setiap service
-    - `REGISTRY`, `IMAGE_OWNER`, `VERSION`, `NAMESPACE` wajib diisi; target berhenti dengan pesan `missing required variables` bila ada yang kosong
-    - Tidak ada _tag_ `latest`: _rollout_ selalu menunjuk versi yang pasti
+    - `REGISTRY`, `IMAGE_OWNER`, `VERSION`, `NAMESPACE` wajib diisi. Bila ada yang kosong, target berhenti dengan pesan `missing required variables`
+    - _Tag_ `latest` tidak digunakan agar _rollout_ selalu menunjuk versi yang pasti
     - _Deploy_ pertama di _namespace_ kosong menjalankan `apply`: ConfigMap, Service, Deployment (dan Ingress transfer) dibuat dari `k8s/overlays/server` dengan _image_ _commit_ ini
     - `change-cause` diisi setelah `set image`, sehingga `rollout history` mencatat versi per revisi
     - `deploy` menunggu `rollout status`, sehingga _pipeline_ gagal bila _pod_ baru tidak pernah _ready_
@@ -779,7 +779,7 @@ pipeline {
   )
 ]
 
-#slide(kicker: "GitOps", title: [GitOps: keadaan _cluster_ mengikuti isi repositori])[
+#slide(kicker: "GitOps", title: [GitOps menyamakan _state_ _cluster_ dengan isi repositori])[
   #two-col(
     card([Model _push_ (Lab 10)])[
       #flow(
@@ -787,26 +787,26 @@ pipeline {
         arr(label: "kubectl", length: 80pt),
         node("cluster", width: 90pt, height: 46pt),
       )
-      - Runner memegang _credential_ ke _cluster_
+      - Runner menyimpan _credential_ untuk mengakses _cluster_
       - Perubahan manual di _cluster_ tidak terdeteksi
-      - Sederhana; cocok untuk awal
+      - Sederhana dan cocok sebagai langkah awal
     ],
     card([Model _pull_ (GitOps)], accent: gold.darken(15%))[
       #flow(
         node("repo config", kind: "infra", width: 100pt, height: 46pt),
         arr(label: "dibaca", dir: "l", length: 70pt),
-        node("agen di cluster", width: 110pt, height: 46pt),
+        node("agent di cluster", width: 110pt, height: 46pt),
       )
-      - Agen di dalam _cluster_ membandingkan isi repositori dengan keadaan _cluster_, lalu menyamakannya
-      - _Rollback_ = `git revert`; riwayat perubahan = riwayat _commit_
+      - _Agent_ GitOps di dalam _cluster_ membandingkan isi repositori dengan _state_ _cluster_, lalu menyamakannya
+      - _Rollback_ cukup dengan `git revert`, dan riwayat perubahan tercatat sebagai riwayat _commit_
       - CI hanya memperbarui _tag image_ di repositori konfigurasi
     ],
   )
   #v(10pt)
-  #note[GitOps dibahas sebagai arah pengembangan. Lab tidak memasang _tools_ GitOps; konsepnya cukup dipahami agar bisa dinilai ketika organisasi siap.]
+  #note[GitOps dibahas sebagai arah pengembangan. Lab tidak memasang _tools_ GitOps. Konsepnya cukup dipahami agar organisasi dapat menilainya ketika sudah siap.]
 ]
 
-#lab-slide("10", [Satu _commit_ menjadi _rolling update_],
+#lab-slide("10", [Dari _commit_ hingga _rolling update_],
   [
     - Mengamati _pipeline_ per service berjalan otomatis setelah _push_
     - Melacak satu _commit_ hingga menjadi _image_ dengan _tag_ SHA dan _pod_ baru di _cluster_
@@ -858,12 +858,12 @@ spec:
 #slide(kicker: "Observability", title: [Penempatan _observability stack_])[
   #two-col(
     card([Di dalam _cluster_ aplikasi])[
-      - _Collector_ OpenTelemetry sebagai _DaemonSet_ atau _sidecar_ di setiap _cluster_
+      - _Collector_ OpenTelemetry sebagai DaemonSet atau _sidecar_ di setiap _cluster_
       - Penyimpanan jangka pendek dekat dengan sumber data
       - Risiko: gangguan _cluster_ ikut mematikan Grafana, Tempo, dan Loki yang dibutuhkan untuk menyelidiki gangguan tersebut
     ],
     card([_Cluster_ terpisah atau terpusat], accent: gold.darken(15%))[
-      - Tempo, Loki, Prometheus, dan Grafana di _cluster_ khusus observability
+      - Tempo, Loki, Prometheus, dan Grafana di _cluster_ khusus _observability_
       - Satu tempat untuk melihat semua _environment_
       - Data tetap tersedia saat _cluster_ aplikasi bermasalah
     ],
@@ -871,7 +871,7 @@ spec:
   #v(12pt)
   #bullets(size: 13pt,
     [Pola yang umum: _collector_ di setiap _cluster_ aplikasi, penyimpanan dan Grafana di tempat terpusat.],
-    [Kode aplikasi tidak berubah karena service hanya mengenal `OTEL_EXPORTER_OTLP_ENDPOINT`; yang berubah hanya alamat tersebut.],
+    [Kode aplikasi tidak perlu diubah karena service hanya mengenal `OTEL_EXPORTER_OTLP_ENDPOINT`. Cukup alamat tersebut yang diganti.],
     [_Log_ dan _trace_ bisa berisi data nasabah. Retensi dan hak akses mengikuti klasifikasi data yang sama dengan aplikasinya.],
   )
 ]
@@ -884,7 +884,7 @@ spec:
     [`securityContext` + Pod Security], [SCC `restricted-v2`], [Pengganti SCC `restricted` sejak OpenShift 4.11. UID acak, tanpa _privilege escalation_, _capabilities_ dibuang, _seccomp_ `RuntimeDefault`. Manifest Lab 9 sudah memenuhinya],
     [`kubectl`], [`oc`], [`oc` mencakup semua perintah `kubectl`, ditambah `oc login`, `oc new-project`, `oc adm`],
     [_Namespace_], [_Project_], [_Project_ = _namespace_ dengan anotasi dan kuota tambahan],
-    [_Registry_ eksternal], [_Internal registry_ + ImageStream], [Pipeline bisa tetap mendorong _image_ ke _registry_ eksternal],
+    [_Registry_ eksternal], [_Internal registry_ + ImageStream], [_Pipeline_ tetap bisa melakukan _push image_ ke _registry_ eksternal],
   )
   #v(10pt)
   #note(kind: "tip")[Uji kecocokan sebelum ke OpenShift: jalankan _image_ dengan UID acak dan _root filesystem_ _read-only_. Bila keduanya lolos, sebagian besar masalah SCC sudah tertangani.]
@@ -929,7 +929,7 @@ spec:
     ],
   )
   #v(8pt)
-  #text(size: 13pt)[Kedua objek mengarahkan _traffic_ HTTP ke Service yang sama. Perbedaannya ada di objek _routing_ saja; Deployment dan Service tidak berubah.]
+  #text(size: 13pt)[Kedua objek mengarahkan _traffic_ HTTP ke Service yang sama. Perbedaannya hanya pada objek _routing_, sedangkan Deployment dan Service tetap sama.]
 ]
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -964,9 +964,9 @@ spec:
     [_Multi-stage build_ + `scratch`], [_Image_ besar dan penuh paket yang tidak dibutuhkan], [Service Go tanpa CGO],
     [_Readiness probe_], [_Traffic_ masuk ke _pod_ yang belum siap], [Selalu, untuk setiap service yang menerima _traffic_],
     [_Rolling update_], [_Downtime_ saat rilis], [Service _stateless_ dengan _readiness probe_ yang benar],
-    [_Pipeline_ per service], [Rilis satu service menyeret service lain], [Tim ingin merilis service secara independen],
-    [HPA], [Beban berubah-ubah sepanjang hari], [Service _stateless_ yang kinerjanya terbatas CPU],
-    [GitOps], [Keadaan _cluster_ menyimpang dari repositori], [Banyak _cluster_ dan kebutuhan audit perubahan yang ketat],
+    [_Pipeline_ per service], [Service lain ikut dirilis setiap kali satu service berubah], [Tim ingin merilis service secara independen],
+    [HPA], [Beban berubah-ubah sepanjang hari], [Service _stateless_ yang _CPU-bound_],
+    [GitOps], [_State_ _cluster_ menyimpang dari repositori], [Banyak _cluster_ dan kebutuhan audit perubahan yang ketat],
   )
 ]
 
@@ -974,9 +974,9 @@ spec:
   #bullets(
     [Ulangi Lab 3 dan Lab 8 dengan nilai _fault_ yang berbeda, lalu cocokkan perilaku _breaker_ di _log_, metrik, dan _trace_.],
     [Tambahkan HPA untuk transfer di k3d, lalu beri beban dengan _load generator_ sederhana dan amati jumlah _replica_.],
-    [Jalankan _Jenkinsfile_ salah satu service sebagai _Multibranch Pipeline_ di Jenkins, lalu bandingkan log-nya dengan _run_ di runner lab.],
+    [Jalankan _Jenkinsfile_ salah satu service sebagai _Multibranch Pipeline_ di Jenkins, lalu bandingkan _log_ Jenkins dengan _log_ _run_ di runner lab.],
     [Jalankan _image_ setiap service dengan UID acak dan `--read-only` untuk memastikan kecocokan dengan SCC `restricted-v2`.],
-    [Pilih satu aplikasi internal, lalu petakan pola mana dari kartu referensi yang benar-benar dibutuhkan aplikasi tersebut.],
+    [Pilih satu aplikasi internal, lalu tentukan pola mana saja di kartu referensi yang benar-benar dibutuhkan aplikasi tersebut.],
   )
 ]
 

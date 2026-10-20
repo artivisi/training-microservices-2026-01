@@ -10,7 +10,7 @@ Setelah menyelesaikan lab ini, peserta mampu:
 
 - menulis log JSON dengan `slog` yang selalu membawa `correlation_id`, `trace_id`, dan `span_id`, lalu mengirimkannya ke Loki;
 - membuat _correlation ID_ di _middleware_ HTTP dan meneruskannya lewat _metadata_ gRPC serta _header_ Kafka;
-- menyediakan _metric_ Prometheus di `GET /metrics`: durasi _request_ per _route_, jumlah transfer per status, status _circuit breaker_, antrean _outbox_, dan notifikasi per hasil;
+- menyediakan _metric_ Prometheus di `GET /metrics`: durasi _request_ per _route_, jumlah transfer per status, status _circuit breaker_, jumlah baris _outbox_ yang belum terkirim, dan notifikasi per hasil;
 - mengirim _trace_ OpenTelemetry dari ketiga service, termasuk melewati Kafka, sehingga satu transfer menjadi satu _trace_;
 - menemukan service yang lambat dari _dashboard_ Grafana, _trace_ di Tempo, dan log di Loki.
 
@@ -38,9 +38,9 @@ notification :28083 -+                               |- Collector -> Tempo (trac
           (host.docker.internal:2808x)               |- Grafana :13000
 ```
 
-Arah _metric_ berlawanan dengan dua sinyal lainnya. Log dan _trace_ didorong (_push_) oleh service ke _collector_, sedangkan _metric_ diambil (_pull_, _scrape_) oleh Prometheus dari service. Karena service berjalan di laptop dan Prometheus di dalam _container_, Prometheus menghubungi laptop lewat nama `host.docker.internal`.
+Arah _metric_ berlawanan dengan dua sinyal lainnya. Log dan _trace_ dikirim oleh service ke _collector_ (model _push_), sedangkan _metric_ diambil oleh Prometheus dari service (model _pull_ atau _scrape_). Karena service berjalan di laptop dan Prometheus di dalam _container_, Prometheus menghubungi laptop lewat nama `host.docker.internal`.
 
-Tantangan utama lab ini terletak pada upaya menjaga satu _trace_ tetap utuh melintasi tiga service. Untuk HTTP dan gRPC, OpenTelemetry sudah menyediakan instrumentasi (`otelhttp`, `otelgrpc`) yang menulis dan membaca _header_ `traceparent` (standar W3C _Trace Context_). Jalur Kafka lebih rumit: _relay outbox_ mengirim _event_ dari _goroutine_ terpisah, setelah _request_ asal selesai. Pada saat itu _context_ milik _request_ sudah tidak ada. Karena itu _correlation ID_ dan _trace context_ disimpan di baris tabel `outbox` dalam transaksi yang sama dengan _event_, lalu _relay_ menyalinnya ke _header_ Kafka. Hasilnya satu _trace_ seperti berikut:
+Tantangan utama lab ini terletak pada upaya menjaga satu _trace_ tetap utuh melintasi tiga service. Untuk HTTP dan gRPC, OpenTelemetry sudah menyediakan instrumentasi (`otelhttp`, `otelgrpc`) yang menulis dan membaca _header_ `traceparent` (standar W3C _Trace Context_). Jalur Kafka lebih rumit: _relay outbox_ mengirim _event_ dari _goroutine_ terpisah, setelah _request_ asal selesai. Pada saat itu _context_ milik _request_ sudah tidak ada. Karena itu _correlation ID_ dan _trace context_ disimpan di baris tabel `outbox` dalam transaksi yang sama dengan _event_, lalu _relay_ menyalinnya ke _header_ Kafka. Hasilnya satu _trace_ seperti berikut. Setiap baris mewakili satu _span_ (satu unit kerja beserta waktu mulai dan selesainya), dan indentasi menandai _span_ yang menjadi _child_ dari baris di atasnya:
 
 ```
 transfer      POST /transfers
@@ -58,7 +58,7 @@ _Correlation ID_ dan _trace ID_ memiliki peran berbeda. _Correlation ID_ merupak
 #table(
   columns: (auto, 1fr, 1fr),
   [Jalur], [_Correlation ID_], [_Trace Context_ (W3C)],
-  [REST], [_Header_ `X-Correlation-ID`; dibuat (UUID) bila tidak ada atau formatnya tidak valid; dikembalikan di respons], [_Header_ `traceparent`, ditangani `otelhttp`],
+  [REST], [_Header_ `X-Correlation-ID`, berisi UUID baru bila tidak dikirim atau formatnya tidak valid, lalu dikembalikan di respons], [_Header_ `traceparent`, ditangani `otelhttp`],
   [gRPC `transfer` ke `account`], [_Metadata_ `x-correlation-id`], [_Metadata_ `traceparent`, ditangani `otelgrpc`],
   [Kafka `transfer` ke `notification`], [_Header_ `correlation_id`], [_Header_ `traceparent`, ditulis dan dibaca sendiri],
 )
@@ -98,7 +98,7 @@ ls observability observability/dashboards
 #table(
   columns: (auto, 1fr),
   [_File_], [Isi],
-  [`prometheus.yaml`], [Tiga _scrape job_ (`account`, `transfer`, `notification`) ke `host.docker.internal:28081`–`28083` setiap 5 detik, ditambah konfigurasi bawaan _image_ yang tetap dibutuhkan penerima OTLP],
+  [`prometheus.yaml`], [Tiga _scrape job_ (`account`, `transfer`, `notification`) ke `host.docker.internal:28081`–`28083` setiap 5 detik, ditambah konfigurasi bawaan _image_ yang tetap dibutuhkan _receiver_ OTLP],
   [`grafana-dashboards.yaml`], [_Provider_ yang memuat semua JSON di folder `dashboards` ke folder Grafana _Studi Kasus_],
   [`dashboards/studi-kasus.json`], [_Dashboard_ _Studi Kasus: Transfer_ dengan sembilan panel],
 )
@@ -134,7 +134,7 @@ ls observability observability/dashboards
       retries: 60
 ```
 
-_Container_ ini tidak memiliki _volume_ data: semua log, _trace_, dan _metric_ hilang ketika _container_ dibuat ulang. Untuk lab, kondisi tersebut justru memudahkan, karena setiap sesi dimulai dari data kosong.
+_Container_ ini tidak memiliki _volume_ data, sehingga semua log, _trace_, dan _metric_ hilang ketika _container_ dibuat ulang. Untuk lab, kondisi tersebut justru memudahkan, karena setiap sesi dimulai dari data kosong.
 
 #perintah[```bash
 make infra-up
@@ -190,7 +190,7 @@ Pemeriksaan format URL diperlukan karena _exporter_ OTLP mengabaikan nilai yang 
 	OTelServiceName string
 ```
 
-Lalu di `LoadConfig`, isi kedua _field_ dengan fungsi `get` yang sudah ada dan periksa formatnya setelah pemeriksaan variabel yang hilang:
+Lalu di `LoadConfig`, isi kedua _field_ dengan fungsi `get` yang sudah ada dan periksa formatnya setelah pemeriksaan variabel wajib yang belum diisi:
 
 ```go
 		OTelEndpoint:      get("OTEL_EXPORTER_OTLP_ENDPOINT"),
@@ -231,11 +231,11 @@ Tambahkan `"net/url"` di `import`. Lakukan perubahan yang sama di `account/confi
 
 === Paket `telemetry` di `transfer`
 
-Seluruh kode _observability_ dikumpulkan di paket `internal/telemetry`. Paket ini disalin ke setiap service, sengaja tidak dijadikan _library_ bersama: service berbagi konvensi (nama _header_, nama _metric_), tetapi tidak berbagi kode. _Library_ bersama akan mengikat jadwal rilis ketiga service menjadi satu. Paket ditulis lebih dahulu di `transfer`, karena `transfer` menggunakan ketiga jalur (HTTP, gRPC, dan Kafka).
+Seluruh kode _observability_ dikumpulkan di paket `internal/telemetry`. Paket ini sengaja disalin ke setiap service dan tidak dijadikan _library_ bersama. Ketiga service cukup menyepakati konvensi yang sama (nama _header_, nama _metric_), sedangkan kodenya dimiliki masing-masing service. Dengan _library_ bersama, ketiga service harus selalu dirilis bersamaan. Paket ditulis lebih dahulu di `transfer`, karena `transfer` menggunakan ketiga jalur (HTTP, gRPC, dan Kafka).
 
 ==== `telemetry.go`: _exporter_ dan _logger_
 
-Fungsi `Setup` menyiapkan _tracer provider_, _propagator_, dan _logger_. Tidak ada koneksi yang dibuka di sini: _collector_ yang mati tidak menghentikan service. Kegagalan kirim dicatat di _stdout_ sebagai `telemetry export failed`, dan _span_ serta log yang gagal dikirim dibuang. Keputusan ini disengaja: _observability_ tidak boleh menjadi alasan transfer gagal.
+Fungsi `Setup` menyiapkan _tracer provider_, _propagator_, dan _logger_. `Setup` tidak membuka koneksi apa pun, sehingga service tetap berjalan walaupun _collector_ tidak aktif. Kegagalan pengiriman dicatat di _stdout_ sebagai `telemetry export failed`, dan _span_ serta log yang gagal dikirim dibuang. Keputusan ini disengaja agar gangguan pada _observability_ tidak pernah menggagalkan transfer.
 
 Buat `transfer/internal/telemetry/telemetry.go`:
 
@@ -340,13 +340,13 @@ func (t *Telemetry) Shutdown(ctx context.Context) error {
 }
 ```
 
-Empat hal perlu diperhatikan. _Propagator_ hanya berisi `propagation.TraceContext{}`, sehingga yang berpindah antar-service hanya `traceparent` (dan `tracestate` bila ada): di _header_ HTTP, _metadata_ gRPC, _header_ Kafka, dan kolom `trace_context` di tabel `outbox`. _Baggage_ (W3C _Baggage_, pasangan _key-value_ bebas yang ikut berpindah bersama _trace_) sengaja tidak dipasang. REST API `transfer` dipanggil aplikasi _channel_ dari luar. Bila _propagator_ _Baggage_ dipasang, _baggage_ dari pemanggil luar ikut diteruskan ke setiap service di belakangnya. Di _production_, _public edge_ (API _gateway_ atau service pertama di belakangnya) sering juga mengabaikan `traceparent` dari luar dan memulai _trace_ baru, agar pemanggil luar tidak dapat menentukan _trace ID_ atau memaksa _sampling_. Lab ini tidak memiliki API _gateway_, sehingga penyaringan di _public edge_ tidak dipasang; `otelhttp` di `transfer` tetap melanjutkan `traceparent` bila pemanggil mengirimnya.
+Empat hal perlu diperhatikan. _Propagator_ hanya berisi `propagation.TraceContext{}`, sehingga yang berpindah antarservice hanya `traceparent` (dan `tracestate` bila ada): di _header_ HTTP, _metadata_ gRPC, _header_ Kafka, dan kolom `trace_context` di tabel `outbox`. _Baggage_ (W3C _Baggage_, pasangan _key-value_ bebas yang ikut berpindah bersama _trace_) sengaja tidak dipasang. REST API `transfer` dipanggil aplikasi _channel_ dari luar. Bila _propagator_ _Baggage_ dipasang, _baggage_ dari pemanggil luar ikut diteruskan ke setiap service di belakangnya. Di _production_, _public edge_ (API _gateway_ atau service pertama di belakangnya) sering juga mengabaikan `traceparent` dari luar dan memulai _trace_ baru, agar pemanggil luar tidak dapat menentukan _trace ID_ atau memaksa _sampling_. Lab ini tidak memiliki API _gateway_ dan tidak memasang penyaringan di _public edge_, sehingga `otelhttp` di `transfer` tetap melanjutkan `traceparent` bila pemanggil mengirimnya.
 
-`slog.NewMultiHandler` (tersedia sejak Go 1.26) meneruskan setiap _record_ ke dua _handler_ sekaligus: _stdout_ untuk `docker logs` atau `kubectl logs`, dan `otelslog` untuk Loki. _Sampler_ `AlwaysSample` menyimpan semua _trace_, cocok untuk lab dengan beberapa _request_ per detik; di _production_ biaya penyimpanan _trace_ bisa melebihi biaya service itu sendiri bila semua disimpan. Terakhir, `Shutdown` harus dipanggil paling akhir agar _span_ dan log dari proses _shutdown_ ikut terkirim.
+`slog.NewMultiHandler` (tersedia sejak Go 1.26) meneruskan setiap _record_ ke dua _handler_ sekaligus: _stdout_ untuk `docker logs` atau `kubectl logs`, dan `otelslog` untuk Loki. _Sampler_ `AlwaysSample` menyimpan semua _trace_. Pengaturan ini cocok untuk lab dengan beberapa _request_ per detik, tetapi di _production_ biaya penyimpanan semua _trace_ bisa melebihi biaya menjalankan service itu sendiri. Terakhir, `Shutdown` harus dipanggil paling akhir agar _span_ dan log dari proses _shutdown_ ikut terkirim.
 
 ==== `log.go`: ID di setiap baris log
 
-`slog.Handler` dapat dibungkus untuk menambah atribut dari _context_. Dengan pembungkus ini, kode bisnis cukup memanggil `log.InfoContext(ctx, ...)`, dan `correlation_id`, `trace_id`, serta `span_id` ditambahkan otomatis. Buat `transfer/internal/telemetry/log.go`:
+`slog.Handler` dapat dibungkus untuk menambah atribut dari _context_. Dengan _wrapper_ ini, kode bisnis cukup memanggil `log.InfoContext(ctx, ...)`, dan `correlation_id`, `trace_id`, serta `span_id` ditambahkan otomatis. Buat `transfer/internal/telemetry/log.go`:
 
 ```go
 package telemetry
@@ -391,7 +391,7 @@ func (h contextHandler) WithGroup(name string) slog.Handler {
 
 ==== `correlation.go`: _correlation ID_ di HTTP dan gRPC
 
-_Correlation ID_ dari luar adalah _input_ pemanggil yang akan muncul di setiap baris log. Karena itu panjangnya dibatasi dan karakternya dibatasi ke `A-Z a-z 0-9 . _ : -`. Nilai yang tidak memenuhi pola diganti UUID baru. Buat `transfer/internal/telemetry/correlation.go`:
+_Correlation ID_ dari luar berasal dari _input_ pemanggil dan akan muncul di setiap baris log. Karena itu panjangnya dibatasi dan karakternya dibatasi ke `A-Z a-z 0-9 . _ : -`. Nilai yang tidak memenuhi pola diganti UUID baru. Buat `transfer/internal/telemetry/correlation.go`:
 
 ```go
 package telemetry
@@ -468,13 +468,13 @@ func UnaryClientCorrelation() grpc.UnaryClientInterceptor {
 }
 ```
 
-Atribut _span_ `correlation.id` membuat _trace_ dapat dicari di Tempo dengan _correlation ID_ yang dilaporkan pemanggil.
+Dengan atribut _span_ `correlation.id`, _trace_ dapat dicari di Tempo berdasarkan _correlation ID_ yang dilaporkan pemanggil.
 
 ==== `http.go`: _metric_ dan _span_ per _route_
 
-_Metric_ durasi _request_ diberi _label_ `method`, `route`, dan `status`. Isi `route` adalah _pattern_ ServeMux (`/transfers/{id}`), tidak boleh _path_ lengkap (`/transfers/8f3c...`). Setiap kombinasi nilai _label_ menjadi satu _time series_ di Prometheus. Bila _path_ lengkap dijadikan _label_, setiap ID transfer menambah satu _series_ baru, jumlahnya tumbuh tanpa batas, dan akhirnya Prometheus kehabisan memori. Masalah ini dikenal sebagai _high cardinality_.
+_Metric_ durasi _request_ diberi _label_ `method`, `route`, dan `status`. `route` harus diisi _pattern_ ServeMux (`/transfers/{id}`), bukan _path_ lengkap (`/transfers/8f3c...`). Setiap kombinasi nilai _label_ menjadi satu _time series_ di Prometheus. Bila _path_ lengkap dijadikan _label_, setiap ID transfer menambah satu _series_ baru, jumlahnya tumbuh tanpa batas, dan akhirnya Prometheus kehabisan memori. Masalah ini dikenal sebagai _high cardinality_.
 
-ServeMux menulis _pattern_ yang cocok ke `r.Pattern` pada `*http.Request` yang diterimanya. Nilai tersebut hanya terbaca bila pembungkus `route` menerima objek `*http.Request` yang sama dengan yang diproses ServeMux, sehingga `route` harus membungkus _mux_ secara langsung, tanpa _middleware_ lain yang memanggil `r.WithContext` di antaranya. Buat `transfer/internal/telemetry/http.go`:
+ServeMux menulis _pattern_ yang cocok ke `r.Pattern` pada `*http.Request` yang diterimanya. Nilai tersebut hanya terbaca bila _wrapper_ `route` menerima objek `*http.Request` yang sama dengan yang diproses ServeMux, sehingga `route` harus membungkus _mux_ secara langsung, tanpa _middleware_ lain yang memanggil `r.WithContext` di antaranya. Buat `transfer/internal/telemetry/http.go`:
 
 ```go
 package telemetry
@@ -568,11 +568,11 @@ func (s *statusRecorder) WriteHeader(code int) {
 func (s *statusRecorder) Unwrap() http.ResponseWriter { return s.ResponseWriter }
 ```
 
-Fungsi `method` juga membatasi nilai _label_: metode HTTP di jaringan dapat berupa token apa pun, sehingga metode di luar daftar digabung menjadi `OTHER`. Nama _span_ diubah dari `http` menjadi `POST /transfers` agar mudah dibaca di Tempo.
+Fungsi `method` juga membatasi nilai _label_: metode HTTP yang dikirim klien dapat berupa token apa pun, sehingga metode di luar daftar digabung menjadi `OTHER`. Nama _span_ diubah dari `http` menjadi `POST /transfers` agar mudah dibaca di Tempo.
 
 ==== `kafka.go`: _trace context_ di _header_ Kafka
 
-`kafka-go` tidak memiliki instrumentasi OpenTelemetry. _Propagator_ OpenTelemetry menulis dan membaca _trace context_ lewat antarmuka `TextMapCarrier` (`Get`, `Set`, `Keys`), sehingga cukup dibuat adaptor dari `[]kafka.Header` ke antarmuka tersebut. Buat `transfer/internal/telemetry/kafka.go`:
+`kafka-go` tidak memiliki instrumentasi OpenTelemetry. _Propagator_ OpenTelemetry menulis dan membaca _trace context_ lewat _interface_ `TextMapCarrier` (`Get`, `Set`, `Keys`), sehingga cukup dibuat adaptor dari `[]kafka.Header` ke _interface_ tersebut. Buat `transfer/internal/telemetry/kafka.go`:
 
 ```go
 package telemetry
@@ -621,7 +621,7 @@ func (c KafkaHeaders) Keys() []string {
 
 === Memasang Telemetri di `transfer/main.go`
 
-Sebelum konfigurasi terbaca, alamat _collector_ belum diketahui. Karena itu `main` membuat _logger_ JSON sederhana ke _stdout_ untuk log kesalahan _startup_. Ganti baris pertama `main`:
+Sebelum konfigurasi terbaca, alamat _collector_ belum diketahui. Karena itu `main` membuat _logger_ JSON sederhana ke _stdout_ untuk log _error_ saat _startup_. Ganti baris pertama `main`:
 
 ```go
 	// Until the configuration is read there is no collector address: startup
@@ -695,7 +695,7 @@ Tambahkan _import_ `promhttp`, `otelhttp`, `golang.org/x/oauth2`, dan paket `tel
 
 === Telemetri pada Client gRPC dan _Circuit Breaker_
 
-Di `transfer/internal/accountclient/client.go`, client gRPC mendapat tiga tambahan. _Interceptor_ `UnaryClientCorrelation` ditaruh paling depan di rantai _interceptor_ agar _correlation ID_ ditambahkan satu kali, sebelum _token_ dan kebijakan _resiliency_. `otelgrpc.NewClientHandler` dipasang sebagai _stats handler_, sehingga setiap percobaan, termasuk setiap _retry_, menjadi satu _span_ tersendiri. Kedua opsi ini ditambahkan di fungsi `dial`, sehingga berlaku baik untuk koneksi utama (`Debit`, `Credit`) maupun untuk koneksi _reversal_ dari Lab 5. Ganti bagian opsi di `dial`:
+Di `transfer/internal/accountclient/client.go`, client gRPC mendapat tiga tambahan. _Interceptor_ `UnaryClientCorrelation` dipasang paling depan di rantai _interceptor_ agar _correlation ID_ ditambahkan satu kali, sebelum _token_ dan _policy_ _resiliency_. `otelgrpc.NewClientHandler` dipasang sebagai _stats handler_, sehingga setiap percobaan, termasuk setiap _retry_, menjadi satu _span_ tersendiri. Kedua opsi ini ditambahkan di fungsi `dial`, sehingga berlaku baik untuk koneksi utama (`Debit`, `Credit`) maupun untuk koneksi _reversal_ dari Lab 5. Ganti bagian opsi di `dial`:
 
 ```go
 		grpc.WithPerRPCCredentials(tokens),
@@ -753,7 +753,7 @@ Perbarui kedua _metric_ di `OnStateChanged` dan isi nilai awal _gauge_ setelah `
 	breakerState.WithLabelValues("account").Set(stateValue(breaker.State()))
 ```
 
-Log _retry_ di kedua kebijakan diubah menjadi `WarnContext` dengan _context_ percobaan, agar baris log tersebut muncul di bawah _trace_ transfer yang sama. Di kebijakan `retry`:
+Log _retry_ di kedua _policy_ diubah menjadi `WarnContext` dengan _context_ percobaan, agar baris log tersebut muncul di bawah _trace_ transfer yang sama. Di _policy_ `retry`:
 
 ```go
 		OnRetry(func(e failsafe.ExecutionEvent[any]) {
@@ -762,7 +762,7 @@ Log _retry_ di kedua kebijakan diubah menjadi `WarnContext` dengan _context_ per
 		}).
 ```
 
-Di kebijakan `reversalRetry`:
+Di _policy_ `reversalRetry`:
 
 ```go
 		OnRetry(func(e failsafe.ExecutionEvent[any]) {
@@ -775,7 +775,7 @@ _Import_ yang ditambahkan: `prometheus`, `promauto`, `otelgrpc`, dan paket `tele
 
 === _Metric_ Bisnis dan Atribut _Span_ Transfer
 
-_Metric_ HTTP menunjukkan kesehatan pemrosesan _request_, sedangkan `transfers_total` menunjukkan hasil transfer dana. Kenaikan jumlah `COMPENSATED` atau `FAILED` adalah insiden bisnis, walaupun setiap _request_ dijawab dengan cepat. Buat `transfer/internal/transfer/metrics.go`:
+_Metric_ HTTP menunjukkan kesehatan pemrosesan _request_, sedangkan `transfers_total` menunjukkan hasil transfer dana. Kenaikan jumlah `COMPENSATED` atau `FAILED` menandakan insiden bisnis, walaupun setiap _request_ dijawab dengan cepat. Buat `transfer/internal/transfer/metrics.go`:
 
 ```go
 package transfer
@@ -833,7 +833,7 @@ s.log.InfoContext(ctx, "transfer completed", "transfer_id", t.ID, "amount", t.Am
 
 Lokasi yang perlu diubah di `transfer`: semua log di `internal/transfer/service.go` (`Execute`, `run`, `compensate`, `finish`), `internalError` dan `readyz` di `internal/transfer/http.go` (dengan `r.Context()`), serta ketiga log `request rejected` di `internal/auth/http.go`. Log yang terjadi di luar _request_, misalnya `transfer service listening` atau perubahan status _circuit breaker_, tetap menggunakan `log.Info` atau `log.Warn`.
 
-=== _Outbox_: Meneruskan _Trace_ Melewati Kafka
+=== Meneruskan _Trace_ melalui _Outbox_ ke Kafka
 
 Langkah ini menyambung _trace_ dari `transfer` ke `notification`. Tambahkan dua kolom di akhir `transfer/internal/transfer/schema.sql`:
 
@@ -854,7 +854,7 @@ Di `transfer/internal/outbox/outbox.go`, `Message` mendapat dua _field_ untuk ke
 	TraceContext  map[string]string
 ```
 
-`Insert` mengambil _trace context_ dari `ctx` dengan _propagator_ ke sebuah `MapCarrier` (isinya `traceparent` dan, bila ada, `tracestate`), lalu menyimpannya bersama _correlation ID_. pgx menyimpan `map[string]string` ke kolom `jsonb` secara langsung.
+`Insert` menyalin _trace context_ dari `ctx` ke `MapCarrier` lewat _propagator_ (isinya `traceparent` dan, bila ada, `tracestate`), lalu menyimpannya bersama _correlation ID_. pgx menyimpan `map[string]string` ke kolom `jsonb` secara langsung.
 
 ```go
 func Insert(ctx context.Context, tx pgx.Tx, m Message) error {
@@ -933,7 +933,7 @@ func (r *Relay) message(ctx context.Context, m Message) (kafka.Message, trace.Sp
 }
 ```
 
-Di `publishBatch`, ganti pembuatan `kafka.Message` di dalam _loop_ dengan `message`, lalu akhiri _span_ setelah Kafka menerima _batch_. _Span_ dari _batch_ yang gagal sengaja tidak diakhiri, sehingga tidak pernah dikirim. Selama Kafka mati, _batch_ yang sama gagal setiap 500 ms; bila _span_ tersebut diakhiri, setiap _trace_ transfer yang menunggu akan mendapat satu _span_ gagal tambahan per percobaan.
+Di `publishBatch`, ganti pembuatan `kafka.Message` di dalam _loop_ dengan `message`, lalu akhiri _span_ setelah Kafka menerima _batch_. _Span_ dari _batch_ yang gagal sengaja tidak diakhiri, sehingga tidak pernah dikirim. Selama Kafka tidak berjalan, _batch_ yang sama gagal setiap 500 ms. Bila _span_ tersebut diakhiri, setiap _trace_ transfer yang menunggu akan mendapat satu _span_ gagal tambahan untuk setiap percobaan.
 
 ```go
 	spans := make([]trace.Span, len(pending))
@@ -968,7 +968,7 @@ Bagian akhir `publishBatch`, setelah `update outbox set published_at`, kini meme
 	return len(pending), nil
 ```
 
-Terakhir, _gauge_ `outbox_pending` mencatat jumlah baris yang belum terkirim. Nilainya normal 0 atau mendekati 0. Nilai yang terus naik berarti Kafka tidak dapat dihubungi atau _relay_ macet, dan semua notifikasi tertunda. Tambahkan di atas `type Message`:
+Terakhir, _gauge_ `outbox_pending` mencatat jumlah baris yang belum terkirim. Dalam kondisi normal, nilainya 0 atau mendekati 0. Nilai yang terus naik berarti Kafka tidak dapat dihubungi atau _relay_ macet, dan semua notifikasi tertunda. Tambahkan di atas `type Message`:
 
 ```go
 // pendingGauge is the backlog of the relay.
@@ -978,7 +978,7 @@ var pendingGauge = promauto.NewGauge(prometheus.GaugeOpts{
 })
 ```
 
-Ubah _loop_ di `Run` agar menghitung antrean setelah setiap _batch_, termasuk setelah _batch_ yang gagal:
+Ubah _loop_ di `Run` agar memperbarui _gauge_ `outbox_pending` setelah setiap _batch_, termasuk setelah _batch_ yang gagal:
 
 ```go
 		n, err := r.publishBatch(ctx)
@@ -1049,7 +1049,7 @@ func UnaryServerCorrelation() grpc.UnaryServerInterceptor {
 }
 ```
 
-Pekerjaan utama `account` berjalan lewat gRPC. Tanpa _metric_ gRPC, `Debit` yang lambat tidak muncul di _metric_ latensi mana pun milik `account`. Buat `account/internal/interceptor/metrics.go`:
+Panggilan utama ke `account` berjalan lewat gRPC. Tanpa _metric_ gRPC, `Debit` yang lambat tidak terlihat di satu pun _metric_ latensi `account`. Buat `account/internal/interceptor/metrics.go`:
 
 ```go
 package interceptor
@@ -1113,7 +1113,7 @@ func (i *Injector) inject(ctx context.Context) bool {
 }
 ```
 
-Di `account/main.go`, lakukan perubahan yang sama dengan `transfer`: _logger_ JSON di `main`, `telemetry.Setup` beserta `defer` `Shutdown`, `GET /metrics` setelah `faults.Register(mux)`, dan `Handler: telemetry.HTTPHandler(mux)`. Server gRPC mendapat _stats handler_ dan dua _interceptor_ baru di depan rantai:
+Di `account/main.go`, lakukan perubahan yang sama dengan `transfer`: _logger_ JSON di `main`, `telemetry.Setup` beserta `defer` `Shutdown`, `GET /metrics` setelah `faults.Register(mux)`, dan `Handler: telemetry.HTTPHandler(mux)`. Server gRPC mendapat _stats handler_ dan dua _interceptor_ baru di awal _chain_:
 
 ```go
 	grpcSrv := grpc.NewServer(
@@ -1131,9 +1131,9 @@ Di `account/main.go`, lakukan perubahan yang sama dengan `transfer`: _logger_ JS
 		))
 ```
 
-Urutan rantai ini menentukan hasil pengukuran. `UnaryServerCorrelation` berada paling depan agar semua _interceptor_ berikutnya menulis log dengan _correlation ID_. `Metrics` berada sebelum `auth` dan _fault injector_, sehingga durasi yang tercatat mencakup penolakan dan _delay_ simulasi, sama seperti yang dialami pemanggil.
+Urutan _interceptor_ ini menentukan hasil pengukuran. `UnaryServerCorrelation` berada paling depan agar semua _interceptor_ berikutnya menulis log dengan _correlation ID_. `Metrics` berada sebelum `auth` dan _fault injector_, sehingga durasi yang tercatat mencakup penolakan dan _delay_ simulasi, sama seperti yang dialami pemanggil.
 
-Ubah juga log di dalam penanganan _request_ menjadi varian `...Context`: `mutate` dan `toStatus` di `internal/account/grpc.go`, termasuk log `caller gave up before the request finished` dari Lab 4. `toStatus` kini menerima `ctx` sebagai parameter pertama, sehingga semua pemanggilnya ikut diubah, termasuk jalur kesalahan `parseAmount` di awal `mutate` (`s.toStatus(ctx, err)`). Lakukan hal yang sama pada ketiga log `grpc call rejected` dan log `no scope configured` di `internal/auth/grpc.go`, serta log di `internalError` dan `readyz` pada `internal/account/http.go`. `interceptor.Logging` sudah memanggil `log.Log(ctx, ...)`, sehingga tidak perlu diubah.
+Ubah juga log di dalam penanganan _request_ menjadi varian `...Context`: `mutate` dan `toStatus` di `internal/account/grpc.go`, termasuk log `caller gave up before the request finished` dari Lab 4. `toStatus` kini menerima `ctx` sebagai parameter pertama, sehingga semua pemanggilnya ikut diubah, termasuk pemanggilan saat `parseAmount` gagal di awal `mutate` (`s.toStatus(ctx, err)`). Lakukan hal yang sama pada ketiga log `grpc call rejected` dan log `no scope configured` di `internal/auth/grpc.go`, serta log di `internalError` dan `readyz` pada `internal/account/http.go`. `interceptor.Logging` sudah memanggil `log.Log(ctx, ...)`, sehingga tidak perlu diubah.
 
 Ambil _unit test_ `account` dari _checkpoint_, lalu jalankan pengujian:
 
@@ -1199,7 +1199,7 @@ func (c *Consumer) process(ctx context.Context, m kafka.Message) error {
 }
 ```
 
-`codes` di sini adalah `go.opentelemetry.io/otel/codes`. Hasil pemrosesan dihitung dengan `notifications_processed_total`. Tambahkan di atas `type Reader`:
+Paket `codes` di sini berasal dari `go.opentelemetry.io/otel/codes`. Hasil pemrosesan dihitung dengan `notifications_processed_total`. Tambahkan di atas `type Reader`:
 
 ```go
 // processed counts every event the consumer finished with (Lab 8):
@@ -1280,7 +1280,7 @@ X-Correlation-Id: lab8-1
  "amount":"1000","status":"COMPLETED",...}
 ```
 
-Log ketiga service kini berbentuk JSON, dan baris yang ditulis dengan _context_ milik _request_ atau _event_ membawa ID yang sama. Contoh berikut dipotong dan dipecah agar muat di halaman; di terminal setiap _record_ berupa satu baris:
+Log ketiga service kini berbentuk JSON, dan baris yang ditulis dengan _context_ milik _request_ atau _event_ membawa ID yang sama. Contoh berikut dipotong dan dipecah agar muat di halaman, sedangkan di terminal setiap _record_ tertulis dalam satu baris:
 
 ```
 account
@@ -1294,17 +1294,17 @@ notification
  "correlation_id":"lab8-1","trace_id":"122d873a...","span_id":"..."}
 ```
 
-Di Grafana, buka _Explore_, pilih sumber data Tempo, lalu jalankan _query_ TraceQL berikut:
+Di Grafana, buka _Explore_, pilih _data source_ Tempo, lalu jalankan _query_ TraceQL berikut:
 
 ```
 { span.correlation.id = "lab8-1" }
 ```
 
-_Trace_ yang muncul berisi _span_ dari ketiga service, dengan susunan seperti diagram di bagian Gambaran. Pencarian Tempo dapat tertinggal beberapa detik dari _request_. Membuka _trace_ langsung dengan `trace_id` dari baris log selalu berhasil seketika.
+_Trace_ yang muncul berisi _span_ dari ketiga service, dengan susunan seperti diagram di bagian Gambaran. Pencarian Tempo dapat tertinggal beberapa detik dari _request_. Sebaliknya, _trace_ yang dibuka langsung dengan `trace_id` dari baris log selalu tampil seketika.
 
 === Latihan: Menemukan Service yang Lambat
 
-Latihan ini mensimulasikan insiden: `account` menjadi lambat, dan tugas peserta adalah menemukan penyebabnya hanya dari _dashboard_, _trace_, dan log. Buka _dashboard_ _Studi Kasus: Transfer_ (Grafana → _Dashboards_ → _Studi Kasus_). _Dashboard_ diperbarui setiap 5 detik dan menampilkan 15 menit terakhir.
+Latihan ini mensimulasikan insiden ketika `account` menjadi lambat. Peserta mencari penyebabnya hanya dari _dashboard_, _trace_, dan log. Buka _dashboard_ _Studi Kasus: Transfer_ (Grafana → _Dashboards_ → _Studi Kasus_). _Dashboard_ diperbarui setiap 5 detik dan menampilkan 15 menit terakhir.
 
 #table(
   columns: (auto, 1fr),
@@ -1334,7 +1334,7 @@ while true; do
 done
 ```]
 
-Setelah satu atau dua menit, ketika panel _Transfer per status_ menunjukkan aliran `COMPLETED` yang stabil, jalankan gangguan di terminal lain:
+Setelah satu atau dua menit, ketika panel _Transfer per status_ menunjukkan laju `COMPLETED` yang stabil, jalankan gangguan di terminal lain:
 
 #perintah[```bash
 make fault-slow     # account menahan setiap panggilan 3 detik
@@ -1349,7 +1349,7 @@ Amati hasilnya secara berurutan. _Query_ untuk Tempo dan Loki ada di bawah tabel
   [No.], [Tempat], [Yang Terlihat],
   [1], [Terminal beban], [Respons berubah dari `201` menjadi `502` (transfer `FAILED` setelah semua percobaan habis), lalu `503` (ditolak _circuit breaker_ yang berstatus `open`)],
   [2], [_Dashboard_], [Latensi p95 gRPC `Debit` naik ke kisaran 2 detik, _circuit breaker_ menjadi `OPEN`, dan laju `FAILED` naik],
-  [3], [_Explore_ → Tempo], [_Trace_ dari sebelum _circuit breaker_ berstatus `open` berisi empat _span_ `Debit` sekitar 2 detik: satu percobaan ditambah tiga _retry_. _Span_ server di `account` sama panjangnya dan membawa _event_ `fault injected: delay`],
+  [3], [_Explore_ → Tempo], [_Trace_ yang terjadi sebelum _circuit breaker_ berstatus `open` berisi empat _span_ `Debit` yang masing-masing sekitar 2 detik, yaitu satu percobaan awal ditambah tiga _retry_. _Span_ server di `account` sama panjangnya dan membawa _event_ `fault injected: delay`],
   [4], [_Explore_ → Loki], [Log `retrying account call` dan `transfer not completed` dari _trace_ yang sama],
 )
 
@@ -1367,8 +1367,8 @@ _Query_ Loki untuk semua log satu _trace_, dengan `trace_id` disalin dari Tempo 
 
 Beberapa hasil perlu dibaca dengan cermat:
 
-- Latensi `Debit` tercatat sekitar 2 detik, padahal _delay_ simulasi 3 detik. `transfer` memutus setiap percobaan setelah 2 detik (_timeout_ per percobaan dari Lab 3). _Context_ di `account` ikut dibatalkan, sehingga _span_ server juga berhenti di sekitar 2 detik. Nilai p95 di panel adalah perkiraan dari _bucket histogram_ (batas 1 detik dan 2,5 detik), sehingga angkanya berada di antara kedua batas tersebut.
-- Latensi p95 REST `transfer` dapat terlihat rendah ketika _circuit breaker_ berstatus `open`. Transfer yang ditolak _circuit breaker_ selesai dalam hitungan milidetik, karena panggilan ke `account` tidak pernah dikirim. Latensi yang rendah tidak berarti sistem sehat; panel _Transfer per status_ menunjukkan bahwa hampir semua transfer `FAILED`. Inilah alasan _metric_ bisnis dibutuhkan di samping _metric_ teknis.
+- Latensi `Debit` tercatat sekitar 2 detik, padahal _delay_ simulasi 3 detik. `transfer` memutus setiap percobaan setelah 2 detik (_timeout_ per percobaan dari Lab 3). _Context_ di `account` ikut dibatalkan, sehingga _span_ server juga berhenti di sekitar 2 detik. Nilai p95 di panel diperkirakan dari _histogram bucket_ (batas 1 detik dan 2,5 detik), sehingga angkanya berada di antara kedua batas tersebut.
+- Latensi p95 REST `transfer` dapat terlihat rendah ketika _circuit breaker_ berstatus `open`. Transfer yang ditolak _circuit breaker_ selesai dalam hitungan milidetik, karena panggilan ke `account` tidak pernah dikirim. Latensi yang rendah tidak berarti sistem sehat. Justru panel _Transfer per status_ menunjukkan bahwa hampir semua transfer `FAILED`. Inilah alasan _metric_ bisnis dibutuhkan di samping _metric_ teknis.
 - _Trace_ transfer yang ditolak _circuit breaker_ hanya berisi _span_ `POST /transfers` tanpa _span_ `Debit`.
 - Selama gangguan masih aktif, panel _Perubahan status circuit breaker_ menunjukkan siklus `open` → `half-open` → `open`. Setelah 10 detik, panggilan berikutnya menjadi percobaan _half-open_, gagal lagi, dan _circuit breaker_ kembali ke `open`.
 
@@ -1378,7 +1378,7 @@ Akhiri gangguan:
 make fault-clear
 ```]
 
-Panel _circuit breaker_ kembali ke `CLOSED`, dan transfer kembali `COMPLETED`. Status `HALF-OPEN` hanya berlangsung sekitar satu detik, sehingga biasanya tidak tertangkap _scrape_; perpindahan `open` → `half-open` → `closed` terlihat di panel _Perubahan status circuit breaker_. Perpindahan dari `open` ke `half-open` hanya terjadi pada panggilan pertama setelah 10 detik. Tanpa beban transfer, _circuit breaker_ dari latihan sebelumnya tetap berstatus `open` walaupun `account` sudah normal. Hentikan _loop_ beban dengan Ctrl+C.
+Panel _circuit breaker_ kembali ke `CLOSED`, dan transfer kembali `COMPLETED`. Status `HALF-OPEN` hanya berlangsung sekitar satu detik, sehingga biasanya tidak tertangkap _scrape_. Meski begitu, perpindahan `open` → `half-open` → `closed` tetap terlihat di panel _Perubahan status circuit breaker_. Perpindahan dari `open` ke `half-open` hanya terjadi pada panggilan pertama setelah 10 detik. Tanpa beban transfer, _circuit breaker_ dari latihan sebelumnya tetap berstatus `open` walaupun `account` sudah normal. Hentikan _loop_ beban dengan Ctrl+C.
 
 // TODO(endy): the Tempo "logs for this span" link to Loki was not exercised; the explicit Loki query above was verified.
 
@@ -1404,7 +1404,7 @@ Pengujian baru yang diambil dari _checkpoint_:
   [`TestConsumerContinuesTraceAndCounts`], [`notification/internal/notification`],
 )
 
-Konfigurasi yang salah menghentikan service saat _startup_. Bila nilai `OTEL_EXPORTER_OTLP_ENDPOINT` di `transfer/Makefile` sementara diganti menjadi `localhost:14317`, `make -C transfer run` berhenti dengan:
+Service berhenti saat _startup_ bila konfigurasinya salah. Bila nilai `OTEL_EXPORTER_OTLP_ENDPOINT` di `transfer/Makefile` sementara diganti menjadi `localhost:14317`, `make -C transfer run` berhenti dengan:
 
 ```
 {"time":"...","level":"ERROR","msg":"transfer service stopped","error":"OTEL_EXPORTER_OTLP_ENDPOINT must be a URL like http://localhost:14317, got \"localhost:14317\""}
@@ -1435,10 +1435,10 @@ notifications_processed_total{result="skipped"} 0
 
 Bagian `28081` kosong karena `account` tidak memiliki _metric_ domain. _Counter_ perpindahan status _circuit breaker_ baru muncul setelah perpindahan pertama.
 
-Daftar periksa akhir:
+_Checklist_ akhir:
 
 - Panel _Target scrape_ menunjukkan `UP` untuk `account`, `transfer`, dan `notification`.
-- Respons `POST /transfers` mengembalikan _header_ `X-Correlation-Id`; tanpa _header_ dari pemanggil, nilainya berupa UUID baru.
+- Respons `POST /transfers` mengembalikan _header_ `X-Correlation-Id`. Bila pemanggil tidak mengirim _header_ tersebut, nilainya berupa UUID baru.
 - Satu _trace_ di Tempo berisi _span_ dari `transfer`, `account`, dan `notification`.
 - Log di Loki dapat difilter dengan `trace_id` dan menampilkan baris dari ketiga service.
 - Latihan menunjukkan _circuit breaker_ `OPEN` saat `make fault-slow` dan kembali `CLOSED` setelah `make fault-clear`.
@@ -1447,18 +1447,18 @@ Daftar periksa akhir:
 
 *Panel _Target scrape_ menunjukkan `DOWN`.* Prometheus di dalam _container_ tidak dapat mengambil `/metrics`. Pastikan service berjalan dan `curl localhost:28082/metrics` berhasil dari laptop. Di Docker Engine Linux, pastikan `extra_hosts: host-gateway` ada di `compose.yaml`, dan _firewall_ laptop mengizinkan koneksi dari jaringan Docker ke port 28081–28083. _Query_ `up` di _Explore_ menunjukkan status setiap target.
 
-*Log `telemetry export failed` di _stdout_.* _Collector_ belum siap atau `otel-lgtm` tidak berjalan. Periksa `docker compose ps otel-lgtm`. Service tetap melayani _request_, tetapi _span_ dan log selama periode tersebut hilang. Pada pengembangan kode lab ini, beberapa kali terjadi jeda 20–30 detik setelah _binary_ hasil _build_ baru pertama kali dijalankan: _export_ OTLP gagal dengan `DeadlineExceeded`, dan sekali panggilan gRPC serta pengambilan _token_ dari `transfer` ikut _timeout_. Gejala tersebut tidak muncul lagi dengan _binary_ yang sama. Bila terjadi, tunggu hingga jeda tersebut selesai, lalu ulangi langkah yang sedang dikerjakan.
+*Log `telemetry export failed` di _stdout_.* _Collector_ belum siap atau `otel-lgtm` tidak berjalan. Periksa `docker compose ps otel-lgtm`. Service tetap melayani _request_, tetapi _span_ dan log selama periode tersebut hilang. Selama kode lab ini dikembangkan, beberapa kali terjadi jeda 20–30 detik setelah _binary_ hasil _build_ baru pertama kali dijalankan. Selama jeda tersebut _export_ OTLP gagal dengan `DeadlineExceeded`, dan pada satu kejadian panggilan gRPC serta pengambilan _token_ dari `transfer` juga mengalami _timeout_. Gejala tersebut tidak muncul lagi dengan _binary_ yang sama. Bila terjadi, tunggu hingga jeda tersebut selesai, lalu ulangi langkah yang sedang dikerjakan.
 
 *Baris log tidak memiliki `trace_id` atau `correlation_id`.* Log ditulis tanpa _context_ (`log.Info` alih-alih `log.InfoContext(ctx, ...)`), atau _logger_ yang digunakan masih _logger_ awal dari `main`, sebelum `log = tel.Logger`.
 
-*_Trace_ berhenti di `transfer`; tidak ada _span_ `process transfer-events`.* Periksa bahwa `Insert` mengisi `trace_context` (perintah di bawah), bahwa _relay_ memanggil `span.End()` setelah `WriteMessages` berhasil, dan bahwa `notification` memanggil `Extract` sebelum `tracer.Start`. _Event_ yang ditulis sebelum Lab 8 memang tidak memiliki _trace context_.
+*_Trace_ berhenti di `transfer` dan tidak ada _span_ `process transfer-events`.* Pastikan `Insert` mengisi `trace_context` (perintah di bawah), _relay_ memanggil `span.End()` setelah `WriteMessages` berhasil, dan `notification` memanggil `Extract` sebelum `tracer.Start`. _Event_ yang ditulis sebelum Lab 8 memang tidak memiliki _trace context_.
 
 #perintah[```bash
 docker compose exec db-transfer psql -U transfer -d transfer -c \
   "select id, correlation_id, trace_context from outbox order by created_at desc limit 5"
 ```]
 
-*Panel latensi per _route_ menampilkan `unmatched` untuk semua _request_.* Pembungkus `route` tidak membungkus _mux_ secara langsung, sehingga `r.Pattern` tidak terbaca. Urutan di `HTTPHandler` harus `otelhttp` → `CorrelationMiddleware` → `route` → _mux_.
+*Panel latensi per _route_ menampilkan `unmatched` untuk semua _request_.* Fungsi `route` tidak membungkus _mux_ secara langsung, sehingga `r.Pattern` tidak terbaca. Urutan di `HTTPHandler` harus `otelhttp` → `CorrelationMiddleware` → `route` → _mux_.
 
 *Perubahan JSON _dashboard_ tidak terlihat.* Grafana membaca _file_ _dashboard_ saat _startup_. Jalankan `docker compose restart otel-lgtm`. Perubahan lewat UI Grafana tidak tersimpan ke _file_ dan hilang ketika _container_ dibuat ulang.
 
@@ -1473,7 +1473,7 @@ docker compose exec db-transfer psql -U transfer -d transfer -c \
 + Hentikan Kafka dengan `docker compose stop kafka`, kirim beberapa transfer, lalu amati panel _Outbox pending_ dan log `outbox publish failed`. Jalankan kembali dengan `docker compose start kafka`. Periksa di Tempo apakah _trace_ transfer yang tertunda tetap tersambung ke `notification`, dan berapa lama jarak antara _span_ `POST /transfers` dan _span_ `publish transfer-events`.
 + Jalankan `make fault-error RATE=0.5` alih-alih `make fault-slow`. Bandingkan _trace_ yang dihasilkan: berapa percobaan `Debit` yang muncul, berapa lama setiap percobaan, dan _event_ apa yang tercatat di _span_ server `account`.
 + Tambahkan _counter_ `account_mutations_total` dengan _label_ `type` (`DEBIT`, `CREDIT`) dan `applied` (`true`, `false`) di `account`, lalu tambahkan panel baru di `observability/dashboards/studi-kasus.json`. Amati panel tersebut selama beban transfer dari latihan berjalan.
-+ Ganti _sampler_ di `telemetry.go` menjadi `sdktrace.ParentBased(sdktrace.TraceIDRatioBased(0.1))` di `transfer` saja. Amati berapa _trace_ yang tersimpan dan apakah _span_ `account` serta `notification` ikut mengikuti keputusan _sampling_ dari `transfer`.
++ Ganti _sampler_ di `telemetry.go` menjadi `sdktrace.ParentBased(sdktrace.TraceIDRatioBased(0.1))` di `transfer` saja. Amati berapa _trace_ yang tersimpan dan apakah _span_ `account` serta `notification` mengikuti keputusan _sampling_ dari `transfer`.
 
 == Checkpoint
 

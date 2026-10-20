@@ -83,7 +83,7 @@
     [4], [Kontrak protobuf; transfer memanggil account melalui gRPC dengan _interceptor_],
     [5], [Saga dengan kompensasi, _transactional outbox_, Kafka, notification service],
     [6], [_Idempotent consumer_ dan _idempotency key_ pada `POST /transfers`],
-    [7], [Token OAuth2 dari authorization server, validasi JWT di REST dan gRPC],
+    [7], [Token OAuth2 dari _authorization server_, validasi JWT di REST dan gRPC],
     [8], [_Structured log_, _correlation ID_, metrik Prometheus, _trace_ OpenTelemetry, Grafana],
     [9], [Dockerfile _multi-stage_ dan _manifest_ Kubernetes, berjalan di k3d],
     [10], [_Pipeline_ CI/CD per service: _test_, _build image_, _push_, _deploy_],
@@ -108,11 +108,11 @@
       - _Debugging_ cukup di satu proses, dengan satu _stack trace_
       - _Refactoring_ lintas modul dibantu _compiler_
       - Satu _pipeline_ dan satu jadwal rilis
-      - Pemanggilan antarmodul tidak menanggung latensi jaringan
+      - Pemanggilan antarmodul tanpa latensi jaringan
     ],
   )
   #v(10pt)
-  #note[Monolith yang modular, dengan batas modul yang rapi, tetap menjadi pilihan yang wajar untuk banyak sistem.]
+  #note[Untuk banyak sistem, monolith modular dengan batas modul yang rapi tetap menjadi pilihan yang wajar.]
 ]
 
 #slide(kicker: "Konsep", title: "Ciri microservices")[
@@ -139,7 +139,7 @@
     [_Deployment_], [Seluruh aplikasi dirilis sekaligus], [Setiap service dirilis terpisah],
     [Skalabilitas], [Seluruh aplikasi diperbanyak bersama], [Hanya service yang sibuk yang diperbanyak],
     [Konsistensi data], [Satu transaksi database], [Saga, _outbox_, dan _idempotency_ (Hari 2–3)],
-    [Kegagalan], [Proses mati, seluruh aplikasi berhenti], [Kegagalan parsial, perlu _timeout_ dan _circuit breaker_ (Hari 2)],
+    [Kegagalan], [Bila proses mati, seluruh aplikasi ikut berhenti], [Kegagalan parsial, perlu _timeout_ dan _circuit breaker_ (Hari 2)],
     [_Debugging_], [_Stack trace_ dalam satu proses], [_Distributed tracing_ lintas service (Hari 4)],
     [Beban operasional], [Satu aplikasi, satu database], [Banyak _deployable unit_, _pipeline_, dan database],
   )
@@ -147,10 +147,10 @@
 
 #slide(kicker: "Konsep", title: "Kondisi yang membuat microservices merugikan")[
   #bullets(
-    [*Tim kecil.* Bila satu tim mengelola semua service, tidak ada koordinasi antartim yang berkurang, sedangkan beban operasional tetap bertambah.],
+    [*Tim kecil.* Bila semua service dikelola satu tim, pemecahan service tidak mengurangi koordinasi antartim, sedangkan beban operasionalnya tetap bertambah.],
     [*Batas domain belum jelas.* Batas service yang salah jauh lebih sulit diperbaiki dibandingkan batas modul di dalam satu aplikasi.],
     [*Belum ada otomasi.* Tanpa _pipeline_ dan _observability_, setiap service tambahan menambah pekerjaan manual.],
-    [*Beban merata.* Bila semua fitur menerima beban yang serupa, pemecahan tidak menambah kemampuan skala.],
+    [*Beban merata.* Bila semua fitur menerima beban yang serupa, pemecahan service tidak meningkatkan skalabilitas.],
   )
   #v(4pt)
   #note(kind: "tip")[Microservices layak dipertimbangkan ketika ada kebutuhan konkret: tim yang harus merilis secara independen, atau bagian sistem dengan kebutuhan skala yang berbeda jauh.]
@@ -163,7 +163,7 @@
       #v(6pt)
       #bullets(size: 13.5pt,
         [Beberapa service harus di-_deploy_ bersamaan],
-        [Satu service mati, seluruh alur bisnis berhenti],
+        [Bila satu service mati, seluruh alur bisnis ikut berhenti],
         [Service membaca tabel milik service lain secara langsung],
         [Perubahan satu kontrak API memaksa banyak service ikut berubah],
       )
@@ -184,7 +184,7 @@
 
 // ── 02 Service decomposition ──────────────────────────────────────────────
 
-#section-slide(number: "02", title: "Service Decomposition", subtitle: [Menentukan batas service dengan kapabilitas bisnis dan _bounded context_])
+#section-slide(number: "02", title: "Service Decomposition", subtitle: [Batas service menurut kapabilitas bisnis dan _bounded context_])
 
 #slide(kicker: "Konsep", title: [Kapabilitas bisnis dan _bounded context_])[
   #two-col(
@@ -194,7 +194,7 @@
       Kapabilitas bisnis jarang berubah, sehingga menjadi acuan batas service yang stabil.
     ],
     card([_Bounded context_], accent: gold.darken(15%))[
-      Batas berlakunya satu model domain. Di dalam batas tersebut, setiap istilah hanya memiliki satu arti.
+      Batas berlakunya model domain. Di dalam batas tersebut, setiap istilah hanya memiliki satu arti.
 
       Contoh: bagi account service, transfer hanyalah dua mutasi saldo. Bagi transfer service, transfer memiliki status, alasan gagal, dan riwayat.
     ],
@@ -204,12 +204,12 @@
 #slide(kicker: "Konsep", title: "Tiga acuan penentuan batas service")[
   #enum(
     spacing: 14pt,
-    [*Service memiliki datanya sendiri.* Service lain hanya mengakses data tersebut melalui API, tidak melalui _query_ ke tabelnya.],
+    [*Service memiliki datanya sendiri.* Service lain hanya boleh mengakses data tersebut melalui API, tanpa _query_ langsung ke tabelnya.],
     [*Service dapat dirilis tanpa koordinasi lintas tim.* Rilis account service tidak menunggu jadwal rilis transfer service.],
     [*Perubahan satu kebutuhan bisnis idealnya cukup di satu service.* Bila setiap fitur baru menyentuh tiga service, batasnya perlu ditinjau ulang.],
   )
   #v(10pt)
-  #note[Ketiga acuan ini sekaligus menjadi alat uji: batas service yang melanggar salah satunya akan mengarah ke _distributed monolith_.]
+  #note[Ketiga acuan ini sekaligus menjadi kriteria uji: batas service yang melanggar salah satunya akan mengarah ke _distributed monolith_.]
 ]
 
 #slide(kicker: "Kesalahan umum", title: "Pemecahan service yang keliru")[
@@ -233,10 +233,10 @@
     [Service], [Kapabilitas], [Data yang dimiliki], [Pemanggil],
     [account], [Mengelola rekening dan saldo], [Tabel `account` dan `mutation`], [Aplikasi klien (REST), transfer service],
     [transfer], [Memindahkan dana antarrekening], [Tabel `transfer`], [Aplikasi klien (REST)],
-    [notification], [Memberi tahu hasil transfer (Hari 3)], [Tabel `notification`], [Tidak dipanggil langsung; membaca _event_ dari Kafka],
+    [notification], [Memberi tahu hasil transfer (Hari 3)], [Tabel `notification`], [Tidak dipanggil langsung, tetapi membaca _event_ dari Kafka],
   )
   #v(10pt)
-  #note[Transfer dipisahkan dari account karena aturan transfer (status, kompensasi, _idempotency_) berubah karena alasan dan pada waktu yang berbeda dari pengelolaan rekening. Saldo tetap hanya diubah oleh account service.]
+  #note[Transfer dipisahkan dari account karena aturan transfer (status, kompensasi, _idempotency_) dan aturan pengelolaan rekening berubah dengan alasan dan jadwal yang berbeda. Saldo tetap hanya diubah oleh account service.]
 ]
 
 #slide(kicker: "Studi kasus", title: [_Database per service_])[
@@ -255,7 +255,7 @@
     [
       #bullets(size: 13.5pt,
         [Setiap service memiliki _container_ PostgreSQL sendiri di `compose.yaml`.],
-        [Transfer service tidak memiliki koneksi ke `db-account`; data rekening hanya diperoleh melalui API account.],
+        [Transfer service tidak memiliki koneksi ke `db-account`, sehingga data rekening hanya dapat diperoleh melalui API account.],
         [Konsekuensinya, _join_ lintas service tidak tersedia, dan debit serta credit tidak dapat dibungkus satu transaksi database.],
       )
     ],
@@ -292,7 +292,7 @@ transfer -> account  POST /accounts/1000000002/credit
 
 // ── 03 Go essentials ───────────────────────────────────────────────────────
 
-#section-slide(number: "03", title: "Go Essentials untuk Service", subtitle: [Fitur bahasa yang langsung digunakan di lab, secukupnya untuk menulis dan membaca kode service])
+#section-slide(number: "03", title: "Go Essentials untuk Service", subtitle: [Fitur bahasa Go yang cukup untuk menulis dan membaca kode service di lab])
 
 #code-slide(kicker: "Go essentials", title: [_Module_ dan _workspace_],
   side: [
@@ -350,7 +350,7 @@ type CreateRequest struct {
 
 #code-slide(kicker: "Go essentials", title: [_Interface_],
   side: [
-    - _Interface_ didefinisikan di sisi pengguna, yaitu _handler_.
+    - _Interface_ didefinisikan di sisi kode yang menggunakannya, yaitu _handler_.
     - Implementasi PostgreSQL memenuhi _interface_ secara implisit, tanpa kata kunci `implements`.
     - _Unit test_ untuk _handler_ cukup menggunakan implementasi _in-memory_.
   ],
@@ -378,7 +378,7 @@ type Handler struct {
   side: [
     - _Error_ berupa nilai biasa yang dikembalikan fungsi dan diperiksa tepat setelah pemanggilan.
     - `%w` membungkus _error_ dengan konteks tambahan tanpa menghilangkan identitas _error_ asalnya.
-    - `errors.Is` memeriksa seluruh rantai bungkusan, sehingga _handler_ transfer tetap mengenali `ErrInsufficientFunds`.
+    - `errors.Is` memeriksa seluruh rantai _error_ yang dibungkus, sehingga _handler_ transfer tetap mengenali `ErrInsufficientFunds`.
   ],
 )[
 ```go
@@ -411,7 +411,7 @@ default:
   side: [
     - `go func()` menjalankan fungsi secara konkuren di _goroutine_ baru.
     - _Channel_ `errCh` mengirim hasil dari _goroutine_ tersebut ke fungsi `run`.
-    - `select` berhenti menunggu begitu salah satu kejadian terjadi: server berhenti karena _error_, atau sistem operasi mengirim sinyal berhenti.
+    - `select` berhenti menunggu begitu salah satu dari dua hal berikut terjadi: server berhenti karena _error_, atau sistem operasi mengirim sinyal berhenti.
   ],
 )[
 ```go
@@ -433,7 +433,7 @@ case <-ctx.Done():
 
 #code-slide(kicker: "Go essentials", title: [`context.Context`],
   side: [
-    - `context` membawa batas waktu dan sinyal pembatalan ke seluruh rantai pemanggilan.
+    - `context` membawa _deadline_ dan sinyal pembatalan ke seluruh rantai pemanggilan.
     - `signal.NotifyContext` membatalkan `ctx` ketika menerima Ctrl+C atau `SIGTERM` dari Docker dan Kubernetes.
     - `WithTimeout` membatasi waktu satu operasi, misalnya _ping_ ke database.
     - Setiap fungsi yang mengakses jaringan atau database menerima `ctx` sebagai parameter pertama.
@@ -486,7 +486,7 @@ func logging(log *slog.Logger, next http.Handler) http.Handler {
   side: [
     - Kode dikelompokkan per fitur (_package-by-feature_) di bawah `internal/`.
     - _Package_ di `internal/` tidak dapat di-_import_ oleh _module_ lain.
-    - `main.go` hanya merangkai komponen; logika bisnis berada di _package_ domain.
+    - `main.go` hanya merangkai komponen, sedangkan logika bisnis berada di _package_ domain.
     - Setiap service memiliki `Makefile` sendiri. Target yang sama nantinya dipanggil _pipeline_ CI.
   ],
 )[
@@ -541,7 +541,7 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 
 #code-slide(kicker: "Anatomi service", title: "Validasi input",
   side: [
-    - Validasi berjalan sebelum data menyentuh database.
+    - Validasi dijalankan sebelum data disimpan ke database.
     - `ValidationError` mengumpulkan semua _field_ yang bermasalah, sehingga klien menerima seluruh daftar kesalahan dalam satu _response_.
     - JSON dengan _field_ yang tidak dikenal ditolak (`DisallowUnknownFields`).
   ],
@@ -577,7 +577,7 @@ HTTP 400
   side: [
     - Konfigurasi hanya dibaca dari _environment variable_ (prinsip _12-factor_), sehingga _image_ yang sama berjalan di laptop, CI, dan Kubernetes.
     - Semua variabel wajib diisi dan tidak ada nilai _default_.
-    - Variabel yang kosong menghentikan service saat _startup_ dengan _error_ yang menyebut nama variabelnya.
+    - Bila ada variabel yang kosong, service berhenti saat _startup_ dengan _error_ yang menyebut nama variabel tersebut.
   ],
 )[
 ```go
@@ -654,12 +654,12 @@ case <-ctx.Done():
   #table(
     columns: (1fr, auto, auto),
     [Kondisi], [_Error_ di Go], [Status HTTP],
-    [_Body_ berisi JSON yang tidak valid atau memuat _field_ tak dikenal], [_decode_ gagal], [`400`],
+    [_Body_ berisi JSON yang tidak valid atau memuat _field_ tak dikenal], [Proses _decode_ gagal], [`400`],
     [Isi _field_ tidak memenuhi aturan], [`ValidationError`], [`400` beserta daftar _field_],
     [Nomor rekening sudah terdaftar], [`ErrAlreadyExists`], [`409`],
     [Rekening tidak ditemukan], [`ErrNotFound`], [`404`],
     [Saldo tidak mencukupi untuk debit], [`ErrInsufficientFunds`], [`422`],
-    [_Error_ lain, misalnya database terputus], [_error_ apa pun], [`500`],
+    [_Error_ lain, misalnya database terputus], [_Error_ apa pun], [`500`],
   )
   #v(10pt)
   #note[Untuk status `500`, klien hanya menerima `"internal error"`. Detail _error_ seperti alamat database atau isi _query_ hanya ditulis ke _log_.]
@@ -690,7 +690,7 @@ case <-ctx.Done():
         - Port: HTTP `28081`, PostgreSQL `15432`
       ]
       #v(8pt)
-      #note(kind: "tip")[Jalankan `make test` sebelum melanjutkan ke Lab 2. _Test handler_ menggunakan `httptest` tanpa database.]
+      #note(kind: "tip")[Jalankan `make test` sebelum melanjutkan ke Lab 2. _Unit test_ untuk _handler_ menggunakan `httptest` tanpa database.]
     ],
   )
 ]
@@ -833,14 +833,14 @@ func (s *Service) Execute(ctx context.Context,
       *Ditangani di Lab 3* dengan _timeout_, _retry_, dan _circuit breaker_.
     ],
     card("Credit gagal setelah debit", accent: red)[
-      Dana sudah keluar dari rekening sumber, tetapi tidak sampai di rekening tujuan. Transfer dicatat `FAILED` dan _log_ meminta _reversal_ manual.
+      Dana sudah keluar dari rekening sumber, tetapi tidak sampai di rekening tujuan. Transfer dicatat `FAILED` dan _log_ mencatat bahwa _reversal_ manual diperlukan.
 
       #v(4pt)
       *Ditangani di Lab 5* dengan saga: debit yang sudah terjadi dibatalkan melalui transaksi kompensasi.
     ],
   )
   #v(12pt)
-  #note(kind: "tip")[Lab 3 diawali dengan _fault injection_ pada account service (`PUT /admin/fault`) untuk menyuntikkan _delay_ dan _error_, sehingga kedua celah ini terlihat langsung.]
+  #note(kind: "tip")[Lab 3 diawali dengan _fault injection_ pada account service (`PUT /admin/fault`) untuk memunculkan _delay_ dan _error_ secara sengaja, sehingga kedua celah ini terlihat langsung.]
 ]
 
 // ── Penutup ────────────────────────────────────────────────────────────────
@@ -852,7 +852,7 @@ func (s *Service) Execute(ctx context.Context,
       - Account service dan transfer service berjalan dengan database masing-masing
       - Konfigurasi wajib dari _environment variable_, tanpa nilai _default_
       - _Liveness_ dan _readiness_ dipisahkan sejak awal
-      - Transfer memanggil account melalui REST, dengan dua celah yang tercatat
+      - Transfer memanggil account melalui REST dan masih memiliki dua celah yang sudah dicatat
     ],
     card("Persiapan Hari 2", accent: gold.darken(15%))[
       - Pastikan `make test` lulus dan kode sesuai _tag_ `lab-02`

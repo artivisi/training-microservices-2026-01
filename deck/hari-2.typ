@@ -4,7 +4,7 @@
 #import "../_template/deck.typ": *
 
 #show: deck.with(
-  title: "Komunikasi Antar Service: Resiliency dan gRPC",
+  title: "Resiliency dan gRPC untuk Komunikasi Antarservice",
   subtitle: [_Timeout_, _retry_, dan _circuit breaker_ dengan failsafe-go; kontrak protobuf dan gRPC untuk panggilan internal; saga dan _idempotency_ sebagai fondasi Hari 3],
   day-label: "Hari 2",
   client: sys.inputs.at("client"),
@@ -58,8 +58,8 @@
       - Account sudah dilengkapi _fault injection_ di `/admin/fault`
     ],
     card("Celah yang ditutup hari ini dan besok", accent: amber)[
-      - Klien HTTP transfer belum memiliki batas waktu tunggu
-      - Credit yang gagal setelah debit tidak dikembalikan (Hari 3)
+      - HTTP client di transfer belum memiliki _timeout_
+      - Debit tidak dikembalikan bila credit sesudahnya gagal (Hari 3)
       - Kontrak REST internal hanya diperiksa saat program berjalan
     ],
   )
@@ -77,7 +77,7 @@
     [Karena itu setiap panggilan keluar perlu keputusan eksplisit: berapa lama menunggu, kapan mengulang, dan kapan berhenti mencoba.],
   )
   #v(4pt)
-  #note(kind: "tip")[Pertanyaan pertama saat meninjau kode panggilan antar service: apa yang terjadi bila service tujuan tidak menjawab selama satu menit?]
+  #note(kind: "tip")[Pertanyaan pertama saat meninjau kode panggilan antarservice: apa yang terjadi bila service tujuan tidak menjawab selama satu menit?]
 ]
 
 #slide(kicker: "Konsep", title: "Service lambat lebih berbahaya dibandingkan service mati")[
@@ -99,7 +99,7 @@
   #note(kind: "warn")[`http.Client{}` tanpa _field_ `Timeout` dan tanpa _deadline_ pada `context` menunggu selamanya. Kondisi ini berlaku pada transfer service di akhir Lab 2.]
 ]
 
-#slide(kicker: "Konsep", title: [Rambatan kegagalan (_cascading failure_)])[
+#slide(kicker: "Konsep", title: [_Cascading failure_ (kegagalan berantai)])[
   #flow(
     node("channel", sub: "menunggu transfer", kind: "ext", width: 130pt),
     arr(length: 60pt),
@@ -193,7 +193,7 @@ if errors.Is(err, context.DeadlineExceeded) {
     [HTTP 404 atau 422 (rekening tidak ada, saldo kurang)], [Ditolak oleh aturan bisnis], [Tidak, hasilnya akan sama],
   )
   #v(10pt)
-  #note(kind: "warn")[Debit di account belum _idempotent_: _request_ yang sama dua kali akan mendebit dua kali. Selama kondisi itu berlaku, _timeout_ tidak boleh di-_retry_. Lab 5 menambahkan _reference_ unik pada setiap mutasi, dan sejak itu _timeout_ ikut di-_retry_.]
+  #note(kind: "warn")[Debit di account belum _idempotent_, sehingga _request_ yang dikirim dua kali akan mendebit dua kali. Selama kondisi itu berlaku, _timeout_ tidak boleh di-_retry_. Lab 5 menambahkan _reference_ unik pada setiap mutasi, dan sejak itu _timeout_ ikut di-_retry_.]
 ]
 
 #slide(kicker: "Pola 3", title: [_State_ pada _circuit breaker_])[
@@ -227,7 +227,7 @@ if errors.Is(err, context.DeadlineExceeded) {
   #v(10pt)
   #note[HTTP 4xx berarti account sehat dan menjawab sesuai aturan bisnis. Bila 4xx ikut dihitung, nasabah yang berulang kali mencoba transfer dengan saldo kurang dapat membuka _circuit breaker_ dan menghentikan transfer semua nasabah lain.]
   #v(4pt)
-  #note(kind: "tip")[Satu _circuit breaker_ untuk seluruh account service: debit dan credit berada pada service yang sama, sehingga account yang mati menghentikan keduanya.]
+  #note(kind: "tip")[Cukup satu _circuit breaker_ untuk seluruh account service karena debit dan credit berada pada service yang sama. Bila account mati, keduanya ikut gagal.]
 ]
 
 #slide(kicker: "failsafe-go", title: [Pengaruh urutan _policy_ terhadap perilaku])[
@@ -250,13 +250,13 @@ if errors.Is(err, context.DeadlineExceeded) {
     ],
   )
   #v(8pt)
-  #note(kind: "warn")[Bila _timeout_ diletakkan di luar _retry_, satu nilai 2 detik dibagi untuk semua percobaan, dan _circuit breaker_ tidak pernah melihat _timeout_ sebagai kegagalan.]
+  #note(kind: "warn")[Bila _timeout_ diletakkan di luar _retry_, batas 2 detik berlaku untuk seluruh percobaan sekaligus, dan _circuit breaker_ tidak pernah melihat _timeout_ sebagai kegagalan.]
 ]
 
 #code-slide(kicker: "failsafe-go", title: [_Round tripper_ dengan tiga _policy_],
   side: [
     - `failsafehttp` membungkus `http.RoundTripper`, sehingga kode pemanggil tetap menggunakan `http.Client` biasa
-    - Urutan argumen mengikuti urutan pembungkusan: _retry_, _circuit breaker_, _timeout_
+    - Urutan argumen mengikuti urutan _wrapping_: _retry_, _circuit breaker_, _timeout_
     - Parameter disimpan di kode dalam struct `Settings`. Perubahan nilainya melalui _review_ dan _test_ seperti perubahan kode lain
   ],
 )[
@@ -355,10 +355,10 @@ func countsAsFailure(resp *http.Response, err error) bool {
     [Debit ditolak: rekening sumber tidak ada atau saldo kurang], [`422`], [Tidak ada mutasi. Mengulang dengan data yang sama memberi hasil yang sama],
     [_Circuit breaker_ terbuka saat debit], [`503`], [Tidak ada mutasi, aman diulang setelah jeda],
     [Debit gagal karena account _error_ atau _timeout_], [`502`], [Hasil debit tidak pasti, periksa `GET /transfers/{id}`],
-    [Credit gagal setelah debit, termasuk rekening tujuan tidak ada dan _breaker_ yang baru terbuka], [`502`], [Debit sudah diterapkan. Jangan diulang; _log_ `ERROR` meminta _reversal_ manual],
+    [Credit gagal setelah debit, termasuk rekening tujuan tidak ada dan _breaker_ yang baru terbuka], [`502`], [Debit sudah diterapkan dan tidak boleh diulang. Log `ERROR` mencatat bahwa _reversal_ harus dilakukan manual],
   )
   #v(8pt)
-  #note[Semua kegagalan credit setelah debit dibungkus `ErrCreditFailed` di `Service.Execute`, dan _handler_ memeriksanya sebelum kasus `422` dan `503`. Demo yang pasti: transfer ke `to_account` yang tidak terdaftar menghasilkan `502` dengan `failure_reason` `credit failed after debit: ... account not found`.]
+  #note[Semua kegagalan credit setelah debit dibungkus `ErrCreditFailed` di `Service.Execute`, dan _handler_ memeriksanya sebelum kasus `422` dan `503`. Skenario demo yang selalu dapat diulang: transfer ke `to_account` yang tidak terdaftar menghasilkan `502` dengan `failure_reason` `credit failed after debit: ... account not found`.]
 ]
 
 #slide(kicker: "Lab 3", title: "Resiliency pada panggilan transfer ke account")[
@@ -407,21 +407,21 @@ func countsAsFailure(resp *http.Response, err error) bool {
 
 #slide(kicker: "Konsep", title: "Kebutuhan panggilan internal berbeda dengan API channel")[
   #two-col(
-    card("API yang menghadap channel")[
+    card("API untuk channel")[
       - Dikonsumsi aplikasi _mobile_, web, dan pihak eksternal
-      - Klien beragam dan tidak dikendalikan tim yang sama
+      - Client beragam dan tidak dikendalikan tim yang sama
       - Butuh format yang mudah dibaca dan diuji: JSON melalui REST
       - Dokumentasi dan versi API dikelola untuk pihak luar
     ],
-    card("Panggilan antar service internal", accent: gold.darken(15%))[
+    card("Panggilan internal antarservice", accent: gold.darken(15%))[
       - Volume tinggi, karena satu _request_ channel memicu beberapa panggilan internal
       - Kedua sisi dikembangkan oleh tim internal
       - Kontrak harus tetap cocok setiap kali salah satu sisi berubah
-      - Butuh satu titik seragam untuk autentikasi, log, dan resiliency
+      - Butuh satu titik terpusat untuk autentikasi, log, dan resiliency
     ],
   )
   #v(10pt)
-  #note[Pola penempatan di studi kasus mengikuti praktik umum industri: gRPC antar service internal, REST untuk API yang dikonsumsi channel dan pihak eksternal.]
+  #note[Pola penempatan di studi kasus mengikuti praktik umum industri: gRPC antarservice internal, REST untuk API yang dikonsumsi channel dan pihak eksternal.]
 ]
 
 #slide(kicker: "Studi kasus", title: "Penempatan REST dan gRPC setelah Lab 4")[
@@ -444,7 +444,7 @@ func countsAsFailure(resp *http.Response, err error) bool {
 #slide(kicker: "Konsep", title: "Komponen gRPC")[
   #grid(columns: (1fr, 1fr), column-gutter: 16pt, row-gutter: 14pt,
     card("Kontrak protobuf")[
-      _File_ `.proto` mendefinisikan service, method, dan struktur data. File ini menjadi acuan tunggal bagi server dan client.
+      _File_ `.proto` mendefinisikan service, method, dan struktur data. _File_ ini menjadi acuan tunggal bagi server dan client.
     ],
     card([_Code generation_])[
       `protoc` menghasilkan kode Go yang _type-safe_. Ketidakcocokan nama method dan tipe tertangkap saat kompilasi.
@@ -453,17 +453,17 @@ func countsAsFailure(resp *http.Response, err error) bool {
       Satu koneksi melayani banyak panggilan sekaligus. Ukuran data lebih kecil dan _parsing_ lebih cepat dibandingkan JSON.
     ],
     card([_Interceptor_])[
-      _Middleware_ untuk setiap panggilan gRPC: log, autentikasi, _fault injection_, dan resiliency ditulis sekali untuk semua method.
+      Fungsinya seperti _middleware_, tetapi untuk setiap panggilan gRPC. Log, autentikasi, _fault injection_, dan resiliency cukup ditulis sekali untuk semua method.
     ],
   )
   #v(10pt)
-  #note[gRPC mendukung empat jenis panggilan: _unary_, _server streaming_, _client streaming_, dan _bidirectional streaming_. Studi kasus hanya menggunakan _unary_ (satu _request_, satu _response_), jenis yang paling sering digunakan antar service.]
+  #note[gRPC mendukung empat jenis panggilan: _unary_, _server streaming_, _client streaming_, dan _bidirectional streaming_. Studi kasus hanya menggunakan _unary_ (satu _request_, satu _response_), jenis yang paling sering digunakan antarservice.]
 ]
 
 #code-slide(kicker: "Kontrak", title: [Cuplikan `account/v1/account.proto`],
   side: [
     - `package account.v1` memuat versi di nama _package_. Perubahan yang merusak kompatibilitas masuk ke `v2`
-    - Nomor _field_ (`= 1`, `= 2`) yang dikirim di jaringan, nama _field_ tidak dikirim
+    - Yang dikirim lewat jaringan hanya nomor _field_ (`= 1`, `= 2`), tanpa nama _field_
     - Setiap RPC memiliki _message_ _request_ dan _response_ sendiri, sehingga masing-masing dapat ditambah _field_ tanpa memengaruhi yang lain
     - Nominal uang ditulis sebagai _string_ desimal, alasannya di _slide_ berikut
   ],
@@ -511,8 +511,8 @@ fmt.Println(x.Add(y))
         [`double` dan `float` adalah bilangan biner berpresisi terbatas. Nilai 0,1 tidak dapat disimpan secara tepat.],
         [Selisih kecil tersebut menumpuk pada penjumlahan saldo dan membuat rekonsiliasi tidak cocok.],
         [Kontrak mengirim _string_ desimal. Server dan client mengubahnya menjadi `decimal.Decimal` (shopspring/decimal), sama dengan kolom `numeric(19,2)` di database.],
-        [Format yang diterima: angka dengan paling banyak 2 desimal, tanpa tanda dan eksponen, kurang dari $10^17$. Selain itu ditolak dengan `codes.InvalidArgument` (REST: `400`).],
-        [Nilai `100.005` ditolak, tidak dibulatkan. Tanpa pemeriksaan ini, `numeric(19,2)` membulatkannya menjadi `100.01` tanpa pesan apa pun.],
+        [Format yang diterima: angka dengan maksimal 2 desimal, tanpa tanda +/- dan tanpa eksponen, kurang dari $10^17$. Selain itu ditolak dengan `codes.InvalidArgument` (REST: `400`).],
+        [Nilai `100.005` ditolak, tidak dibulatkan. Tanpa pemeriksaan ini, `numeric(19,2)` membulatkannya menjadi `100.01` tanpa _error_ maupun peringatan.],
       )
     ],
   )
@@ -537,17 +537,17 @@ fmt.Println(x.Add(y))
   #bullets(size: 13pt,
     [Kontrak berada di modul tersendiri, `studi-kasus/proto`. Kode hasil _generate_ ada di `proto/gen/account/v1` (_package_ `accountv1`) dan ikut di-_commit_.],
     [`make -C proto generate` menjalankan `protoc` dengan kedua _plugin_. Pastikan `$(go env GOPATH)/bin` ada di `PATH`.],
-    [Modul account dan transfer mengimpor modul proto dengan direktif `replace` ke `../proto`, sehingga `go mod tidy` dan _build_ Docker tetap berjalan.],
+    [Modul account dan transfer mengimpor modul proto dengan _directive_ `replace` ke `../proto`, sehingga `go mod tidy` dan _build_ Docker tetap berjalan.],
   )
 ]
 
 #code-slide(kicker: "Server", title: "Account melayani HTTP dan gRPC sekaligus",
   side: [
     - `GRPC_ADDR` wajib diisi. Bila kosong, account berhenti saat _startup_ dan log _error_-nya menyebut nama variabel tersebut
-    - _Health service_ standar gRPC (`grpc.health.v1`) tidak memeriksa database: statusnya `SERVING` sejak _startup_ hingga _shutdown_. _Readiness_ _pod_ tetap HTTP `/readyz`
-    - _Reflection_ memungkinkan _client_ generik membaca daftar method tanpa _file_ `.proto`
+    - _Health service_ standar gRPC (`grpc.health.v1`) tidak memeriksa database, jadi statusnya `SERVING` sejak _startup_ hingga _shutdown_. _Readiness_ _pod_ tetap diperiksa melalui HTTP `/readyz`
+    - _Reflection_ memungkinkan client generik membaca daftar method tanpa _file_ `.proto`
     - HTTP dan gRPC berjalan di _goroutine_ terpisah dalam satu proses
-    - `notAccountService` bernilai `true` untuk method di luar `AccountService` (_health_, _reflection_), sehingga method tersebut tidak terkena _fault injection_. Di kode Lab 4 fungsi ini ditulis langsung sebagai argumen; variabel dengan nama ini baru ada sejak Lab 7
+    - `notAccountService` bernilai `true` untuk method di luar `AccountService` (_health_, _reflection_), sehingga method tersebut tidak terkena _fault injection_. Di kode Lab 4 fungsi ini ditulis langsung sebagai argumen, dan variabel dengan nama ini baru muncul di Lab 7
   ],
 )[
 ```go
@@ -650,7 +650,7 @@ case codes.NotFound:
 #code-slide(kicker: [_Interceptor_], title: [Bentuk _unary server interceptor_],
   side: [
     - `handler` adalah method service yang sesungguhnya
-    - Kode sebelum `handler` berjalan sebelum method, kode sesudahnya melihat hasil method
+    - Kode sebelum pemanggilan `handler` berjalan sebelum method, sedangkan kode sesudahnya dapat membaca hasil method
     - `info.FullMethod` berisi nama lengkap, contoh `/account.v1.AccountService/Debit`
     - Jawaban bisnis dicatat `INFO`, kode lain yang gagal dicatat `WARN`
     - Pola yang sama dengan _middleware_ `http.Handler` dari Hari 1
@@ -696,14 +696,14 @@ func Logging(log *slog.Logger) grpc.UnaryServerInterceptor {
     note(kind: "tip")[`GET /debug/circuit-breaker` dan `make fault-*` tetap berfungsi, sehingga skenario Lab 3 dapat diulang pada jalur gRPC.],
   )
   #v(6pt)
-  #note(kind: "warn")[`Unavailable` juga muncul bila koneksi terputus setelah _request_ terkirim. Sampai Lab 5 risiko debit ganda ini diterima untuk lab dan hilang setelah mutasi _idempotent_.]
+  #note(kind: "warn")[`Unavailable` juga muncul bila koneksi terputus setelah _request_ terkirim. Risiko debit ganda ini sengaja dibiarkan sampai Lab 5 membuat mutasi account menjadi _idempotent_.]
 ]
 
 #code-slide(kicker: "Client", title: "Koneksi gRPC di transfer service",
   side: [
     - `ACCOUNT_GRPC_ADDR` menggantikan `ACCOUNT_SERVICE_URL` dan wajib diisi
     - `grpc.NewClient` tidak langsung membuka koneksi. Koneksi dibuat saat panggilan pertama dan dibuat ulang otomatis bila terputus, dengan jeda maksimal 5 detik
-    - `insecure.NewCredentials()` hanya untuk lab. Di _production_, koneksi antar service wajib TLS
+    - `insecure.NewCredentials()` hanya untuk lab. Di _production_, koneksi antarservice wajib TLS
   ],
 )[
 ```go
@@ -741,13 +741,13 @@ return mapError("debit", number, err)
   )
   #v(12pt)
   #bullets(
-    [Pada REST, batas waktu pemanggil tidak dikirim ke server. Server baru tahu pemanggil berhenti menunggu ketika koneksi diputus, dan hanya bila kode server memeriksa `r.Context()`.],
+    [Pada REST, _deadline_ pemanggil tidak dikirim ke server. Server baru tahu pemanggil berhenti menunggu ketika koneksi diputus, dan hanya bila kode server memeriksa `r.Context()`.],
     [Pada gRPC, _deadline_ dari `context` pemanggil dikirim sebagai _header_ `grpc-timeout`. `ctx` di sisi server ikut berakhir pada waktu yang sama.],
     [Account meneruskan `ctx` tersebut ke pgx, sehingga _query_ yang tidak lagi ditunggu dibatalkan dan koneksi database segera dilepas.],
   )
 ]
 
-#slide(kicker: "Kontrak", title: "Perubahan kontrak yang aman dan yang merusak")[
+#slide(kicker: "Kontrak", title: "Kompatibilitas perubahan kontrak protobuf")[
   #two-col(
     card("Aman (kompatibel)", accent: gold.darken(15%))[
       - Menambah _field_ baru dengan nomor baru
@@ -757,19 +757,19 @@ return mapError("debit", number, err)
     ],
     card("Merusak kompatibilitas", accent: red)[
       - Mengubah nomor atau tipe _field_ yang sudah ada
-      - Memakai ulang nomor _field_ yang sudah dihapus
+      - Menggunakan kembali nomor _field_ yang sudah dihapus
       - Mengganti nama atau menghapus method
-      - Solusinya `reserved` untuk nomor lama, atau _package_ baru `account.v2`
+      - Sebagai gantinya, tandai nomor lama dengan `reserved` atau buat _package_ baru `account.v2`
     ],
   )
   #v(10pt)
-  #note[Kompilasi hanya menangkap nama method atau _field_ yang diganti atau dihapus, pada service yang di-_build_ dari kontrak baru. Nomor _field_ yang diubah atau dipakai ulang tidak menimbulkan _compile error_, tetapi merusak data antara versi lama dan versi baru yang berjalan bersamaan. Karena itu nomor lama ditandai `reserved`, dan perubahan kontrak diperiksa dengan _breaking-change tool_ atau _review_.]
+  #note[Kompilasi hanya menangkap nama method atau _field_ yang diganti atau dihapus, pada service yang di-_build_ dari kontrak baru. Nomor _field_ yang diubah atau digunakan kembali tidak menimbulkan _compile error_, tetapi merusak data antara versi lama dan versi baru yang berjalan bersamaan. Karena itu nomor lama ditandai `reserved`, dan perubahan kontrak diperiksa dengan _breaking-change tool_ atau _review_.]
 ]
 
 #code-slide(kicker: "Testing", title: [_Unit test_ gRPC dengan `bufconn`],
   side: [
     - `bufconn` menyediakan _listener_ di memori. Server dan client gRPC sungguhan berjalan tanpa membuka _port_
-    - Server palsu di _test_ dapat mengembalikan `codes.Unavailable` atau menunda jawaban
+    - _Fake server_ di _test_ dapat mengembalikan `codes.Unavailable` atau menunda jawaban
     - Skenario _test_ Lab 3 diulang: _retry_ pada `Unavailable`, tanpa _retry_ pada `DeadlineExceeded`, _circuit breaker_ terbuka
   ],
 )[
@@ -814,7 +814,7 @@ c, err := New("passthrough:///bufnet", s, log,
         - Waktu: ± 90 menit
       ]
       #v(8pt)
-      #note(kind: "tip")[Verifikasi akhir: transfer dari REST channel tetap berhasil, dan `make fault-error RATE=1` kembali membuka _circuit breaker_, kali ini melalui `codes.Unavailable`.]
+      #note(kind: "tip")[Verifikasi akhir: transfer yang dikirim channel melalui REST tetap berhasil, dan `make fault-error RATE=1` kembali membuka _circuit breaker_, kali ini melalui `codes.Unavailable`.]
     ],
   )
 ]
@@ -836,7 +836,7 @@ c, err := New("passthrough:///bufnet", s, log,
   )
   #v(8pt)
   #bullets(size: 13.5pt,
-    [Debit dan credit adalah dua transaksi database yang terpisah, di service yang terpisah. Tidak ada `BEGIN ... COMMIT` yang mencakup keduanya.],
+    [Debit dan credit berjalan sebagai dua transaksi database terpisah di dua service yang berbeda. Tidak ada `BEGIN ... COMMIT` yang mencakup keduanya.],
     [Bila credit gagal setelah debit berhasil, saldo rekening A sudah berkurang tetapi rekening B tidak bertambah. Transfer di akhir Lab 2 hanya mencatat log untuk koreksi manual.],
     [Demo: transfer ke nomor rekening tujuan yang tidak ada. Debit berhasil, credit dijawab `NotFound`, channel menerima `502`, dan saldo sumber tidak kembali.],
   )
@@ -855,9 +855,9 @@ c, err := New("passthrough:///bufnet", s, log,
     ],
     [
       #bullets(size: 13.5pt,
-        [*_Coupling_ ketat.* Semua database yang terlibat harus mendukung protokol yang sama (XA) dan aktif bersamaan.],
+        [*_Tight coupling_.* Semua database yang terlibat harus mendukung protokol yang sama (XA) dan aktif bersamaan.],
         [*_Availability_ turun.* Database yang lambat menahan _lock_ di semua database hingga _coordinator_ memutuskan.],
-        [*_Coordinator_ menjadi titik kegagalan.* Bila _coordinator_ mati setelah _prepare_, database yang terlibat tertahan menunggu.],
+        [*_Coordinator_ menjadi _single point of failure_.* Bila _coordinator_ mati setelah _prepare_, database yang terlibat tertahan menunggu.],
         [*Dukungan _tools_ minim.* Kafka, sebagian besar _managed database_ di _cloud_, dan API HTTP/gRPC tidak ikut dalam 2PC.],
       )
     ],
@@ -889,13 +889,13 @@ c, err := New("passthrough:///bufnet", s, log,
       - Satu service (_orchestrator_) menyimpan _state_ saga dan memanggil setiap langkah
       - Alur mudah dibaca di satu tempat dan mudah dilacak
       - _Orchestrator_ mengetahui semua service yang terlibat dalam saga
-      - *Dipakai di studi kasus:* transfer sebagai _orchestrator_ untuk debit, credit, dan _reversal_
+      - *Digunakan di studi kasus:* transfer sebagai _orchestrator_ untuk debit, credit, dan _reversal_
     ],
     card([_Choreography_], accent: amber)[
       - Tidak ada pengendali pusat. Setiap service bereaksi terhadap _event_ dari service lain
-      - _Coupling_ antar service lebih longgar
+      - _Coupling_ antarservice lebih longgar
       - Alur tersebar di banyak service dan sulit dilacak ketika jumlah langkah bertambah
-      - *Di studi kasus:* tidak ada saga _choreography_. Notification (Hari 3) hanya bereaksi terhadap _event_ transfer, mekanisme yang sama tetapi tanpa kompensasi
+      - *Di studi kasus:* tidak ada saga _choreography_. Notification (Hari 3) hanya bereaksi terhadap _event_ transfer, dengan mekanisme seperti _choreography_ tetapi tanpa kompensasi
     ],
   )
   #v(10pt)
@@ -906,7 +906,7 @@ c, err := New("passthrough:///bufnet", s, log,
   #bullets(
     [_Rollback_ database menghapus jejak transaksi seolah tidak pernah terjadi. Kompensasi justru menambah mutasi baru: credit _reversal_ dengan _reference_ `<transfer_id>:reversal`.],
     [Kedua mutasi (debit asli dan _reversal_) tetap tercatat di riwayat mutasi rekening. Jejak ini dibutuhkan untuk audit dan rekonsiliasi.],
-    [Di antara debit dan _reversal_, saldo rekening sumber sempat berkurang dan dapat terbaca oleh nasabah. Saga menjamin konsistensi akhir (_eventual consistency_), tidak menjamin isolasi.],
+    [Di antara debit dan _reversal_, saldo rekening sumber sempat berkurang dan dapat terbaca oleh nasabah. Saga menjamin _eventual consistency_ (data akhirnya konsisten), tetapi tidak menjamin isolasi.],
     [Kompensasi juga dapat gagal. Status `COMPENSATION_FAILED` dicatat dengan log _error_ untuk ditangani manual, dan tidak boleh diabaikan.],
   )
   #v(4pt)
@@ -925,7 +925,7 @@ c, err := New("passthrough:///bufnet", s, log,
     [
       #card("Solusi di studi kasus", accent: gold.darken(15%))[
         - *Account (Lab 5).* _Unique constraint_ pada `(account_number, type, reference)`. _Reference_ yang sama tidak diterapkan ulang, account cukup mengembalikan kondisi rekening saat ini.
-        - *Transfer (Lab 6).* _Header_ `Idempotency-Key` pada `POST /transfers`. _Key_ yang sama mengembalikan transfer asli dengan kode HTTP yang sama seperti respons pertama, _key_ yang sama dengan isi berbeda ditolak (422).
+        - *Transfer (Lab 6).* _Header_ `Idempotency-Key` pada `POST /transfers`. _Key_ yang sama mengembalikan transfer asli dengan kode HTTP yang sama seperti _response_ pertama, sedangkan _key_ yang sama dengan isi berbeda ditolak (422).
       ]
     ],
   )
@@ -940,7 +940,7 @@ c, err := New("passthrough:///bufnet", s, log,
     [_Timeout_], [Pemanggil menunggu tanpa batas], [Selalu, pada setiap panggilan jaringan],
     [_Retry_ + _backoff_], [Gangguan sesaat menggagalkan _request_], [Operasinya _idempotent_ atau terbukti belum diproses],
     [_Circuit breaker_], [Service yang mati terus dibebani dan pemanggil ikut lambat], [Panggilan sinkron ke service yang dapat gagal],
-    [gRPC], [Kontrak internal hanya diperiksa saat program berjalan], [Panggilan internal bervolume tinggi antar tim yang sama-sama mengendalikan kontrak],
+    [gRPC], [Kontrak internal hanya diperiksa saat program berjalan], [Panggilan internal bervolume tinggi antartim yang sama-sama mengendalikan kontrak],
     [Saga], [Transaksi lintas database tanpa 2PC], [Satu proses bisnis mengubah data di lebih dari satu service],
     [_Idempotency key_], [_Retry_ dan pengiriman ulang menggandakan mutasi], [Setiap operasi yang mengubah saldo],
   )

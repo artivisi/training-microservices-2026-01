@@ -10,19 +10,19 @@ Setelah lab ini, peserta mampu:
 - menulis _workflow_ per service yang hanya berisi _step_ `run:` dan dipicu oleh perubahan di direktori service tersebut;
 - memetakan setiap _step_ _workflow_ ke _stage_ _declarative pipeline_ Jenkins;
 - menjalankan tahapan _pipeline_ satu service di laptop hingga _deploy_ ke k3d, lalu menelusuri versi yang berjalan lewat `kubectl rollout history`;
-- menjelaskan selisih antara isi repository dan isi _cluster_ (_drift_) yang menjadi alasan GitOps.
+- menjelaskan _drift_ (selisih antara isi repository dan isi _cluster_) yang menjadi alasan GitOps.
 
 == Gambaran
 
-Hingga Lab 9, _image_ dibangun dan dipasang ke k3d dengan perintah manual: `make images`, `make k3d-import`, lalu `kubectl set image`. Lab 10 mengubah urutan perintah itu menjadi _pipeline_: setiap _commit_ ke `main` yang mengubah satu service menjalankan _test_, membangun _image_ dengan _tag_ berupa SHA _commit_, mengirim _image_ ke _container registry_, lalu menjalankan _rolling update_ Deployment service tersebut.
+Hingga Lab 9, _image_ di-_build_ dan di-_deploy_ ke k3d dengan perintah manual: `make images`, `make k3d-import`, lalu `kubectl set image`. Lab 10 mengubah urutan perintah itu menjadi _pipeline_: setiap _commit_ ke `main` yang mengubah satu service menjalankan _test_, mem-_build_ _image_ dengan _tag_ berupa SHA _commit_, mengirim _image_ ke _container registry_, lalu menjalankan _rolling update_ Deployment service tersebut.
 
 Ada tiga keputusan desain dalam lab ini.
 
-*Satu _pipeline_ per service.* _Commit_ yang hanya mengubah `account` tidak perlu menguji ulang dan memasang ulang `notification`. Setiap service punya _workflow_ dan `Jenkinsfile` sendiri dengan filter _path_. Direktori bersama (`proto/`, `go.work`, `pipeline.mk`) memicu semua service yang bergantung padanya.
+*Satu _pipeline_ per service.* _Commit_ yang hanya mengubah `account` tidak perlu menguji ulang dan men-_deploy_ ulang `notification`. Setiap service punya _workflow_ dan `Jenkinsfile` sendiri dengan filter _path_. Perubahan di direktori bersama (`proto/`, `go.work`, `pipeline.mk`) memicu _pipeline_ semua service yang bergantung padanya.
 
-*_Step_ hanya memanggil `make`.* _Workflow_ tidak menggunakan _action_ siap pakai (`uses:`). Setiap _step_ berisi perintah `make` yang juga bisa dijalankan di laptop, sehingga setiap _step_ setara dengan satu _stage_ Jenkins dan perpindahan dari satu CI ke CI lain hanya mengganti _file_ definisi, bukan logikanya.
+*_Step_ hanya memanggil `make`.* _Workflow_ tidak menggunakan _action_ siap pakai (`uses:`). Setiap _step_ berisi perintah `make` yang juga bisa dijalankan di laptop, sehingga setiap _step_ setara dengan satu _stage_ Jenkins dan perpindahan dari satu CI ke CI lain cukup mengganti _file_ definisi tanpa mengubah logikanya.
 
-*Tidak ada nilai _default_.* `REGISTRY`, `IMAGE_OWNER`, `VERSION`, dan `NAMESPACE` wajib diisi oleh pemanggil. _Image_ yang terkirim ke registry yang salah atau _deploy_ ke _namespace_ orang lain lebih merugikan dibandingkan _pipeline_ yang berhenti dengan pesan error.
+*Tidak ada nilai _default_.* `REGISTRY`, `IMAGE_OWNER`, `VERSION`, dan `NAMESPACE` wajib diisi oleh pemanggil. Lebih aman bila _pipeline_ berhenti dengan pesan error dibandingkan mengirim _image_ ke registry yang salah atau men-_deploy_ ke _namespace_ orang lain.
 
 Alur _pipeline_ di server pelatihan:
 
@@ -50,13 +50,13 @@ Alur yang sama di laptop, tanpa git server dan registry:
 ```
 
 #note[
-  *Status server pelatihan.* Runner CI pusat dan server pelatihan belum tersedia saat panduan ini disusun. _Workflow_, `Jenkinsfile`, dan _overlay_ `k8s/overlays/server` sudah ditulis, tetapi belum pernah dijalankan dari awal hingga akhir. _Target_ `apply` (_deploy_ pertama ke _namespace_ kosong) sudah diuji di k3d dengan _kubeconfig_ ber-RBAC satu _namespace_ dan _image_ dari registry. Latihan yang bisa dijalankan sepenuhnya di laptop adalah `make pipeline-k3d` pada Langkah 8. Bagian yang bergantung pada server ditandai di setiap langkah.
+  *Status server pelatihan.* Runner CI pusat dan server pelatihan belum tersedia saat panduan ini disusun. _Workflow_, `Jenkinsfile`, dan _overlay_ `k8s/overlays/server` sudah ditulis, tetapi belum pernah dijalankan dari awal hingga akhir. _Target_ `apply` (_deploy_ pertama ke _namespace_ kosong) sudah diuji di k3d dengan _kubeconfig_ yang RBAC-nya terbatas pada satu _namespace_ dan _image_ dari registry. Latihan yang bisa dijalankan sepenuhnya di laptop adalah `make pipeline-k3d` pada Langkah 8. Bagian yang bergantung pada server ditandai di setiap langkah.
 ]
 // TODO(endy): update this note and Langkah 10 once the central runner and the training server exist and the pipeline has run end to end.
 
 == Titik Awal
 
-Lab ini melanjutkan kondisi akhir Lab 9: _image_ ketiga service bisa dibangun, k3d bisa dibuat, dan _manifest_ `k8s/overlays/k3d` bisa di-_apply_. Peserta yang belum menyelesaikan Lab 9 memulai dari _tag_ `lab-09`:
+Lab ini melanjutkan kondisi akhir Lab 9: _image_ ketiga service bisa di-_build_, k3d bisa dibuat, dan _manifest_ `k8s/overlays/k3d` bisa di-_apply_. Peserta yang belum menyelesaikan Lab 9 memulai dari _tag_ `lab-09`:
 
 #perintah[
 ```bash
@@ -66,7 +66,7 @@ git switch -c lab-10-saya
 ```
 ]
 
-Perintah `git switch -c` membuat _branch_ kerja. Langkah 8 meminta _commit_, dan _commit_ yang dibuat langsung di atas _tag_ berada dalam kondisi _detached HEAD_ dan mudah hilang setelah `git checkout` berikutnya.
+Perintah `git switch -c` membuat _branch_ kerja. Langkah 8 mengharuskan peserta membuat _commit_, padahal _commit_ yang dibuat langsung di atas _tag_ berada dalam kondisi _detached HEAD_ dan mudah hilang setelah `git checkout` berikutnya.
 
 Pastikan prasyarat Lab 9 masih berjalan:
 
@@ -83,15 +83,15 @@ kubectl version --client
 
 === Langkah 1: _Target_ _pipeline_ bersama di `pipeline.mk`
 
-Ketiga service membutuhkan _target_ yang sama: membangun _image_, mengirimnya ke registry, membuat objek service di _cluster_ pada _deploy_ pertama, dan mengganti _image_ pada _deploy_ berikutnya. Agar tidak ditulis tiga kali, _target_ tersebut diletakkan di satu _file_ `studi-kasus/pipeline.mk` yang di-_include_ oleh `Makefile` setiap service. `Makefile` service cukup mengisi variabel `SERVICE`; nilai lainnya datang dari pemanggil.
+Ketiga service membutuhkan _target_ yang sama: mem-_build_ _image_, mengirimnya ke registry, membuat objek service di _cluster_ pada _deploy_ pertama, dan mengganti _image_ pada _deploy_ berikutnya. Agar tidak ditulis tiga kali, _target_ tersebut diletakkan di satu _file_ `studi-kasus/pipeline.mk` yang di-_include_ oleh `Makefile` setiap service. `Makefile` service cukup mengisi variabel `SERVICE`; nilai lainnya diisi oleh pemanggil.
 
 Beberapa hal yang perlu diperhatikan sebelum menulis _file_-nya:
 
 - Fungsi `require` memeriksa variabel yang kosong dan menghentikan `make` dengan daftar nama variabelnya, sama seperti `LoadConfig` di service.
-- `image` menggunakan _build context_ `..` (direktori `studi-kasus/`), sama seperti Lab 9, karena `Dockerfile` menyalin `proto/`. _Label_ `org.opencontainers.image.revision` menghubungkan _image_ dengan _commit_ asalnya.
-- `push` membuat `DOCKER_CONFIG` sementara untuk setiap pemanggilan dan menghapusnya ketika resep selesai, sehingga _token_ registry tidak tertinggal di `~/.docker/config.json` milik pengguna runner setelah _job_ selesai. Mekanisme ini tidak mengisolasi peserta satu sama lain: runner digunakan bersama, dan siapa pun yang bisa mengubah _workflow_ bisa menjalankan perintah apa saja di _host_ runner. `REGISTRY_USER` dan `REGISTRY_PASSWORD` hanya dibaca dari _environment variable_, karena argumen baris perintah terlihat di daftar proses. Setelah _push_ berhasil, _image_ lokal dihapus dengan `docker image rm`. Registry sudah menyimpannya, sedangkan satu _image_ per _commit_ per peserta akan memenuhi disk runner. _Build cache_ tetap ada, sehingga _build_ berikutnya menggunakan ulang _layer_ yang tidak berubah.
+- `image` menggunakan _build context_ `..` (direktori `studi-kasus/`), sama seperti Lab 9, karena `Dockerfile` menyalin `proto/`. Label `org.opencontainers.image.revision` menghubungkan _image_ dengan _commit_ asalnya.
+- `push` membuat `DOCKER_CONFIG` sementara untuk setiap pemanggilan dan menghapusnya ketika _recipe_ (baris perintah di bawah _target_) selesai, sehingga _token_ registry tidak tertinggal di `~/.docker/config.json` milik pengguna runner setelah _job_ selesai. Mekanisme ini tidak mengisolasi peserta satu sama lain: runner digunakan bersama, dan siapa pun yang bisa mengubah _workflow_ bisa menjalankan perintah apa saja di _host_ runner. `REGISTRY_USER` dan `REGISTRY_PASSWORD` hanya dibaca dari _environment variable_, karena argumen baris perintah terlihat di daftar proses. Setelah _push_ berhasil, _image_ lokal dihapus dengan `docker image rm`. _Image_ itu sudah tersimpan di registry. Bila tidak dihapus, _image_ dari setiap _commit_ setiap peserta akan memenuhi disk runner. _Build cache_ tetap ada, sehingga _build_ berikutnya menggunakan ulang _layer_ yang tidak berubah.
 - `apply` memasang bagian _overlay_ `k8s/overlays/server` milik satu service: ConfigMap, Service, dan Deployment, ditambah Ingress khusus untuk `transfer`. _Overlay_ itu tidak menyebut _namespace_ dan _tag image_. `apply` menulis _kustomization_ sementara di atas _overlay_ yang mengisi keduanya dari `NAMESPACE` dan `IMAGE`, lalu `kubectl apply -l app.kubernetes.io/name=<service>` hanya memasang objek yang berlabel service tersebut (label dipasang di Langkah 7). Tanpa filter label, Deployment service lain ikut terpasang dengan nama _image_ yang belum diganti. Direktori sementara `.apply.XXXXXX` dibuat di samping `Makefile` service, bukan di `/tmp`, karena _kustomize_ menolak _path_ absolut di `resources`. `apply` juga berhenti dengan pesan error selama _overlay_ masih berisi _placeholder_ `replace-me` (Langkah 7).
-- `deploy` memeriksa dulu apakah Deployment service sudah ada. `kubectl get --ignore-not-found` tidak mencetak apa pun hanya bila Deployment belum ada; dalam kondisi itu `deploy` memanggil `apply`, sehingga _pipeline_ pertama setiap service membuat objeknya sendiri di _namespace_ kosong. Error lain, misalnya akses ditolak atau _cluster_ tidak bisa dihubungi, menghentikan `deploy` di baris itu. Setelah itu `deploy` menjalankan `kubectl set image`, lalu menulis anotasi `kubernetes.io/change-cause`. Anotasi disalin _controller_ ke ReplicaSet yang sedang aktif, sehingga `kubectl rollout history` menampilkan versi setiap revisi. Urutannya penting: anotasi yang ditulis sebelum `set image` akan menimpa catatan versi revisi sebelumnya. `kubectl rollout status` membuat _pipeline_ gagal bila _rollout_ gagal; _pod_ lama tetap melayani karena Deployment menggunakan `maxUnavailable: 0`.
+- `deploy` memeriksa dulu apakah Deployment service sudah ada. `kubectl get --ignore-not-found` tidak mencetak apa pun hanya bila Deployment belum ada. Dalam kondisi itu `deploy` memanggil `apply`, sehingga _pipeline_ pertama setiap service membuat objeknya sendiri di _namespace_ kosong. Error lain, misalnya akses ditolak atau _cluster_ tidak bisa dihubungi, menghentikan `deploy` di baris itu. Setelah itu `deploy` menjalankan `kubectl set image`, lalu menulis anotasi `kubernetes.io/change-cause`. Anotasi disalin _controller_ ke ReplicaSet yang sedang aktif, sehingga `kubectl rollout history` menampilkan versi setiap revisi. Urutannya penting: anotasi yang ditulis sebelum `set image` akan menimpa catatan versi revisi sebelumnya. Bila _rollout_ gagal, `kubectl rollout status` ikut gagal sehingga _pipeline_ berhenti, sementara _pod_ lama tetap melayani karena Deployment menggunakan `maxUnavailable: 0`.
 
 Buat _file_ `studi-kasus/pipeline.mk`:
 
@@ -208,7 +208,7 @@ deploy:
 ```
 ]
 
-Baris resep di `Makefile` harus diawali karakter _Tab_, bukan spasi. Salinan dari PDF biasanya mengubah _Tab_ menjadi spasi; `make` lalu berhenti dengan pesan `missing separator`.
+Baris _recipe_ di `Makefile` harus diawali karakter _Tab_, bukan spasi. Saat kode disalin dari PDF, _Tab_ biasanya berubah menjadi spasi, dan `make` lalu berhenti dengan pesan `missing separator`.
 
 === Langkah 2: _Include_ di `Makefile` setiap service
 
@@ -231,7 +231,7 @@ make -C transfer deploy REGISTRY=r IMAGE_OWNER=o VERSION=v
 ```
 ]
 
-Keluaran yang diharapkan:
+_Output_ yang diharapkan:
 
 #perintah[
 ```
@@ -240,7 +240,7 @@ Keluaran yang diharapkan:
 ```
 ]
 
-Angka setelah `pipeline.mk:` adalah nomor baris pemanggilan `require`, sehingga bisa berbeda bila komentar ditulis dengan kata-kata sendiri. GNU make 4.x (umumnya di Linux) juga mencetak baris `make: Entering directory '.../studi-kasus/transfer'` dan `make: Leaving directory ...` di sekitar keluaran setiap perintah `make -C`, termasuk perintah `make -n -C` di bawah. GNU make 3.81 bawaan macOS tidak mencetak baris tersebut.
+Angka setelah `pipeline.mk:` adalah nomor baris pemanggilan `require`, sehingga bisa berbeda bila komentar ditulis dengan kata-kata sendiri. GNU make 4.x (umumnya di Linux) juga mencetak baris `make: Entering directory '.../studi-kasus/transfer'` dan `make: Leaving directory ...` di sekitar _output_ setiap perintah `make -C`, termasuk perintah `make -n -C` di bawah. GNU make 3.81 bawaan macOS tidak mencetak baris tersebut.
 
 Opsi `-n` menampilkan perintah tanpa menjalankannya. Dengan opsi ini, isi _target_ `image` bisa diperiksa tanpa Docker:
 
@@ -256,13 +256,13 @@ docker build -f Dockerfile --label org.opencontainers.image.revision=abc -t k3d.
 ```
 ]
 
-Opsi `-n` tidak cocok untuk `deploy`. Baris resep yang berisi `$(MAKE)` tetap dijalankan walaupun ada `-n`, dan baris pertama `deploy` berisi `$(MAKE) apply`. Akibatnya `kubectl get deployment` benar-benar dijalankan, dan tanpa _cluster_ perintah itu berhenti dengan error koneksi. Urutan perintah `deploy` cukup dibaca dari `pipeline.mk`: `kubectl get` (dan `apply` bila Deployment belum ada), `kubectl set image`, `kubectl annotate`, lalu `kubectl rollout status`.
+Opsi `-n` tidak cocok untuk `deploy`. Baris _recipe_ yang berisi `$(MAKE)` tetap dijalankan walaupun ada `-n`, dan baris pertama `deploy` berisi `$(MAKE) apply`. Akibatnya `kubectl get deployment` benar-benar dijalankan, dan tanpa _cluster_ perintah itu berhenti dengan error koneksi. Urutan perintah `deploy` cukup dibaca dari `pipeline.mk`: `kubectl get` (dan `apply` bila Deployment belum ada), `kubectl set image`, `kubectl annotate`, lalu `kubectl rollout status`.
 
-Nama _container_ di `kubectl set image` (`transfer=...`) adalah nama _container_ di `k8s/base/transfer/deployment.yaml`, yang sama dengan nama service.
+Nama _container_ di `kubectl set image` (`transfer=...`) mengacu pada nama _container_ di `k8s/base/transfer/deployment.yaml`, yaitu nama service itu sendiri.
 
 === Langkah 3: `.dockerignore` dan `.gitignore`
 
-`Jenkinsfile` dan `pipeline.mk` tidak dibutuhkan untuk membangun _binary_. `Jenkinsfile` berada di dalam direktori service yang disalin oleh `COPY transfer/ /src/transfer/`, sehingga setiap perubahan `Jenkinsfile` membatalkan _cache layer_ tersebut dan membuat _build_ berikutnya lebih lama. `pipeline.mk` tidak disalin ke _image_, tetapi tetap ikut terkirim ke _builder_ sebagai bagian dari _build context_. Tambahkan keduanya ke `.dockerignore`, sama seperti `Makefile` dan `compose.yaml`, dengan dua baris di akhir `studi-kasus/.dockerignore`:
+`Jenkinsfile` dan `pipeline.mk` tidak dibutuhkan untuk mem-_build_ _binary_. `Jenkinsfile` berada di dalam direktori service yang disalin oleh `COPY transfer/ /src/transfer/`, sehingga setiap perubahan `Jenkinsfile` membuat _cache layer_ tersebut tidak terpakai lagi dan membuat _build_ berikutnya lebih lama. `pipeline.mk` tidak disalin ke _image_, tetapi tetap ikut terkirim ke _builder_ sebagai bagian dari _build context_. Tambahkan keduanya ke `.dockerignore`, sama seperti `Makefile` dan `compose.yaml`, dengan dua baris di akhir `studi-kasus/.dockerignore`:
 
 #perintah[
 ```
@@ -271,7 +271,7 @@ pipeline.mk
 ```
 ]
 
-Direktori sementara `.apply.XXXXXX` dari _target_ `apply` dihapus ketika resep selesai. Agar direktori yang tertinggal karena proses terhenti di tengah jalan tidak ikut ter-_commit_, tambahkan satu baris di akhir `.gitignore` di akar repository:
+Direktori sementara `.apply.XXXXXX` dari _target_ `apply` dihapus ketika _recipe_ selesai. Agar direktori yang tertinggal karena proses terhenti di tengah jalan tidak ikut ter-_commit_, tambahkan satu baris di akhir `.gitignore` di direktori _root_ repository:
 
 #perintah[
 ```
@@ -283,7 +283,7 @@ Direktori sementara `.apply.XXXXXX` dari _target_ `apply` dihapus ketika resep s
 
 `Makefile` di `studi-kasus/` mendapat dua _target_ baru:
 
-- `pipeline-k3d` menjalankan tahapan _pipeline_ satu service di laptop hingga _deploy_ ke k3d. Laptop tidak punya registry, sehingga `push` diganti `k3d image import`. _Tag_ _image_ adalah 12 karakter pertama SHA _commit_ saat ini. Karena itu _target_ ini berhenti dengan pesan error selama ada perubahan yang belum di-_commit_ di `studi-kasus/`: tanpa pemeriksaan tersebut, _image_ bisa berisi kode yang tidak ada di _commit_ yang namanya tertulis di _tag_.
+- `pipeline-k3d` menjalankan tahapan _pipeline_ satu service di laptop hingga _deploy_ ke k3d. Laptop tidak punya registry, sehingga `push` diganti `k3d image import`. _Tag_ _image_ diambil dari 12 karakter pertama SHA _commit_ saat ini. Karena itu _target_ ini berhenti dengan pesan error selama ada perubahan yang belum di-_commit_ di `studi-kasus/`: tanpa pemeriksaan tersebut, _image_ bisa berisi kode yang tidak ada di _commit_ yang namanya tertulis di _tag_.
 - `k8s-apply-server` memanggil _target_ `apply` milik satu service. _Pipeline_ pertama sudah membuat objek service lewat `deploy`, sehingga _target_ ini hanya diperlukan untuk membawa perubahan `config.yaml` atau `ingress.yaml` di _overlay_ server ke _cluster_ (Langkah 10). Variabelnya sama dengan `apply`: `SERVICE`, `VERSION`, `REGISTRY`, `IMAGE_OWNER`, `NAMESPACE`.
 
 Tambahkan kedua nama _target_ ke baris `.PHONY` yang sudah ada:
@@ -356,21 +356,21 @@ k8s-apply-server:
 
 === Langkah 5: _Workflow_ per service
 
-Runner CI membaca _workflow_ dari direktori `.forgejo/workflows/` di akar repository, bukan di `studi-kasus/`. Format _file_-nya sama dengan format _workflow_ CI berbasis YAML yang umum: `on` untuk _trigger_, `jobs` untuk pekerjaan, `steps` untuk urutan perintah.
+Runner CI membaca _workflow_ dari direktori `.forgejo/workflows/` di _root_ repository, bukan di `studi-kasus/`. Format _file_-nya sama dengan format _workflow_ CI berbasis YAML yang umum: `on` untuk _trigger_, `jobs` untuk _job_, `steps` untuk urutan perintah.
 
 Bagian-bagian _workflow_ `transfer`:
 
 - `on.push.paths` membatasi _trigger_ pada perubahan di `studi-kasus/transfer/`, `studi-kasus/proto/` (kontrak gRPC yang di-_import_ `transfer`), `go.work`, `pipeline.mk`, dan _file_ _workflow_ itu sendiri.
 - `concurrency` dengan `cancel-in-progress: false` membuat _workflow_ satu service berjalan satu per satu. _Push_ berikutnya menunggu _pipeline_ yang sedang berjalan selesai, bukan membatalkannya. Dua _deploy_ satu service yang berjalan bersamaan akan saling berebut Deployment yang sama. Padanannya di Jenkins adalah `disableConcurrentBuilds()`.
 - `runs-on: host` menjalankan _job_ langsung di server tempat runner berjalan, tanpa _container_ _job_. Server tersebut sudah menyediakan `git`, `make`, `go`, `docker`, dan `kubectl`. Runner digunakan bersama oleh semua peserta tanpa pemisahan hak akses: _job_ berjalan sebagai pengguna runner, sehingga siapa pun yang bisa mengubah _workflow_ bisa menjalankan perintah apa saja di _host_ tersebut.
-- `env` di tingkat _job_ mengisi variabel untuk `pipeline.mk`. `REGISTRY` dan `NAMESPACE` adalah _variable_ repository, `IMAGE_OWNER` adalah pemilik repository, dan `VERSION` adalah SHA _commit_ yang memicu _pipeline_. Satu _commit_ menghasilkan satu _image_, sehingga _tag_ tidak pernah tertimpa.
-- _Step_ Checkout menggunakan `git` biasa dengan _token_ yang diterbitkan runner untuk _job_ ini (akses baca ke repository, berlaku selama _job_ berjalan). _Workspace_ runner _host_ bisa tersisa dari _job_ sebelumnya; `fetch`, `checkout -f`, dan `clean -ffdx` memastikan isinya tepat _commit_ ini.
+- `env` di tingkat _job_ mengisi variabel untuk `pipeline.mk`. `REGISTRY` dan `NAMESPACE` diambil dari _variable_ repository, `IMAGE_OWNER` diisi nama pemilik repository, dan `VERSION` diisi SHA _commit_ yang memicu _pipeline_. Satu _commit_ menghasilkan satu _image_, sehingga _tag_ tidak pernah tertimpa.
+- _Step_ Checkout menggunakan `git` biasa dengan _token_ yang diterbitkan runner untuk _job_ ini (akses baca ke repository, berlaku selama _job_ berjalan). Karena isi _workspace_ runner _host_ bisa tersisa dari _job_ sebelumnya, `fetch`, `checkout -f`, dan `clean -ffdx` menyamakan isinya tepat dengan _commit_ ini.
 - _Secret_ `REGISTRY_USER` dan `REGISTRY_PASSWORD` hanya tersedia di _step_ Push.
 - _Step_ Deploy menulis _secret_ `KUBE_CONFIG` ke _file_ sementara yang dihapus ketika _step_ selesai (`trap ... EXIT`). Dengan `KUBECONFIG` yang menunjuk ke _file_ itu, `kubectl` tidak pernah menggunakan _kubeconfig_ milik pengguna runner. RBAC _kubeconfig_ tersebut harus mengizinkan pembuatan ConfigMap, Service, Deployment, dan Ingress di _namespace_ peserta, karena _deploy_ pertama membuat objek-objek itu.
 
-_Variable_ atau _secret_ yang belum diisi sampai ke _step_ sebagai _string_ kosong. `pipeline.mk` menghentikan _step_ tersebut dengan pesan `missing required variables: ...`, dan _step_ Deploy memeriksa `KUBE_CONFIG` sendiri.
+Bila _variable_ atau _secret_ belum diisi, _step_ menerimanya sebagai _string_ kosong. `pipeline.mk` menghentikan _step_ tersebut dengan pesan `missing required variables: ...`, dan _step_ Deploy memeriksa `KUBE_CONFIG` sendiri.
 
-Buat _file_ `.forgejo/workflows/transfer.yaml` di akar repository:
+Buat _file_ `.forgejo/workflows/transfer.yaml` di direktori _root_ repository:
 
 #perintah[
 ```yaml
@@ -514,9 +514,9 @@ Di `notification.yaml`, ganti kedua baris komentar di atas `paths:` dengan:
 
 === Langkah 6: `Jenkinsfile` untuk pemetaan ke Jenkins
 
-Banyak organisasi menjalankan CI _on-premise_ dengan Bitbucket dan Jenkins. `Jenkinsfile` _declarative_ berikut menjalankan _target_ `make` yang sama dengan _workflow_ pada Langkah 5. Satu _job_ Jenkins bertipe _Multibranch Pipeline_ dibuat per service, dengan _Script Path_ `studi-kasus/<service>/Jenkinsfile`. Tipe _job_ lain tidak bisa digunakan. Kondisi `when { branch 'main' }` membaca `BRANCH_NAME`, dan variabel ini hanya diisi oleh _job_ _Multibranch_; di _job_ _Pipeline_ biasa semua _stage_ akan dilewati.
+Banyak organisasi menjalankan CI _on-premise_ dengan Bitbucket dan Jenkins. `Jenkinsfile` _declarative_ berikut menjalankan _target_ `make` yang sama dengan _workflow_ pada Langkah 5. Setiap service mendapat satu _job_ Jenkins bertipe _Multibranch Pipeline_ dengan _Script Path_ `studi-kasus/<service>/Jenkinsfile`. Tipe _job_ lain tidak bisa digunakan. Kondisi `when { branch 'main' }` membaca `BRANCH_NAME`, dan variabel ini hanya diisi oleh _job_ _Multibranch_; di _job_ _Pipeline_ biasa semua _stage_ akan dilewati.
 
-_Stage_ `Test` diawali blok `script` yang menghentikan _build_ bila `GIT_COMMIT` kosong. `GIT_COMMIT` diisi oleh _checkout_ SCM bawaan _declarative pipeline_. Bila _checkout_ ini dimatikan, misalnya dengan `options { skipDefaultCheckout() }`, `VERSION = "${env.GIT_COMMIT}"` berisi _string_ `null`, dan pemeriksaan variabel kosong di `pipeline.mk` akan meloloskan _image_ ber-_tag_ `null`. Pemeriksaan ini diletakkan di dalam _stage_ `Test`, bukan di _stage_ tersendiri, agar daftar _stage_ tetap setara satu per satu dengan _step_ _workflow_.
+_Stage_ `Test` diawali blok `script` yang menghentikan _build_ bila `GIT_COMMIT` kosong. `GIT_COMMIT` diisi oleh _checkout_ SCM bawaan _declarative pipeline_. Bila _checkout_ ini dimatikan, misalnya dengan `options { skipDefaultCheckout() }`, `VERSION = "${env.GIT_COMMIT}"` berisi _string_ `null`, dan pemeriksaan variabel kosong di `pipeline.mk` akan meloloskan _image_ dengan _tag_ `null`. Pemeriksaan ini diletakkan di dalam _stage_ `Test`, bukan di _stage_ tersendiri, agar daftar _stage_ tetap setara satu per satu dengan _step_ _workflow_.
 
 Pemetaan antara kedua format:
 
@@ -650,12 +650,12 @@ sed -e 's/transfer/notification/g' -e '/studi-kasus\/proto/d' \
 ```
 ]
 
-`Jenkinsfile` ini belum pernah dijalankan di Jenkins. Di kelas, _file_ ini digunakan sebagai bahan perbandingan, bukan sebagai latihan yang dijalankan.
+`Jenkinsfile` ini belum pernah dijalankan di Jenkins. Di kelas, _file_ ini hanya digunakan sebagai bahan perbandingan.
 // TODO(endy): lint the Jenkinsfile on a Jenkins instance (changeset, branch condition, GIT_COMMIT) before presenting it as working.
 
 === Langkah 7: _Overlay_ server pelatihan
 
-Seperti _manifest_ Lab 9, _overlay_ server disediakan, tidak ditulis dari awal. Ambil dari _tag_ `lab-10`:
+Sama seperti _manifest_ Lab 9, _overlay_ server sudah disediakan sehingga peserta tidak perlu menulisnya dari awal. Ambil dari _tag_ `lab-10`:
 
 #perintah[
 ```bash
@@ -672,22 +672,22 @@ config.yaml  ingress.yaml  kustomization.yaml  secrets.yaml
 
 Perintah yang sama mengambil `studi-kasus/README.md` versi Lab 10, yang menambahkan bagian ringkasan Lab 10.
 
-_Overlay_ `server` sengaja tidak berisi `namespace:` dan blok `images:`. _Namespace_ dan _tag image_ baru diketahui saat _pipeline_ berjalan (`NAMESPACE` dan `VERSION`), dan keduanya diisi oleh _target_ `apply` pada Langkah 1. Dengan demikian peserta tidak perlu memasang _overlay_ secara manual sebelum _pipeline_ pertama, dan tidak ada _tag_ karangan di repository.
+_Overlay_ `server` sengaja tidak berisi `namespace:` dan blok `images:`. _Namespace_ dan _tag image_ baru diketahui saat _pipeline_ berjalan (`NAMESPACE` dan `VERSION`), dan keduanya diisi oleh _target_ `apply` pada Langkah 1. Dengan demikian peserta tidak perlu memasang _overlay_ secara manual sebelum _pipeline_ pertama, dan tidak ada _tag_ fiktif di repository.
 
 Perbedaan _overlay_ `server` dengan _overlay_ `k3d`:
 
 #table(
   columns: (1fr, 1.5fr, 1.5fr),
   [Hal], [_Overlay_ `k3d`], [_Overlay_ `server`],
-  [_Namespace_], [`bank`, dibuat oleh _overlay_ (`namespace.yaml`)], [Tidak ditulis di _overlay_; diisi `apply` dari `NAMESPACE`. _Namespace_ peserta dibuat instruktur bersama _kubeconfig_ ber-RBAC yang hanya berlaku di _namespace_ itu. Tidak ada objek Namespace karena peserta tidak boleh membuat _namespace_],
-  [_Image_], [Di-_import_ ke k3d, tanpa registry. _Tag_ ditulis di `newTag`], [Tidak ditulis di _overlay_; diisi `apply` menjadi `<REGISTRY>/<IMAGE_OWNER>/<service>:<VERSION>`. Ditarik dari _container registry_ git server dengan Secret `registry-credentials` (`imagePullSecrets`, ditambahkan ke setiap Deployment lewat _patch_)],
-  [Secret], [Berisi nilai lokal untuk Docker Compose], [Dihapus dari keluaran (`$patch: delete`). Instruktur membuat Secret `account`, `transfer`, `notification` berisi `DATABASE_URL` (dan `OAUTH_CLIENT_SECRET` untuk `transfer`), sehingga _credential_ tidak pernah masuk ke repository],
+  [_Namespace_], [`bank`, dibuat oleh _overlay_ (`namespace.yaml`)], [Tidak ditulis di _overlay_; diisi `apply` dari `NAMESPACE`. _Namespace_ peserta dibuat instruktur bersama _kubeconfig_ dengan RBAC yang hanya berlaku di _namespace_ itu. Tidak ada objek Namespace karena peserta tidak boleh membuat _namespace_],
+  [_Image_], [Di-_import_ ke k3d, tanpa registry. _Tag_ ditulis di `newTag`], [Tidak ditulis di _overlay_; diisi `apply` menjadi `<REGISTRY>/<IMAGE_OWNER>/<service>:<VERSION>`. Di-_pull_ dari _container registry_ git server dengan Secret `registry-credentials` (`imagePullSecrets`, ditambahkan ke setiap Deployment lewat _patch_)],
+  [Secret], [Berisi nilai lokal untuk Docker Compose], [Dihapus dari hasil _render_ (`$patch: delete`). Instruktur membuat Secret `account`, `transfer`, `notification` berisi `DATABASE_URL` (dan `OAUTH_CLIENT_SECRET` untuk `transfer`), sehingga _credential_ tidak pernah masuk ke repository],
   [Kafka], [`host.k3d.internal:19093`, _topic_ `transfer-events`], [Kafka bersama, _topic_ dan _consumer group_ diberi awalan nama peserta],
   [OAuth2, OTLP], [Hydra dan otel-lgtm di Docker Compose laptop], [Server OAuth2 dan _collector_ bersama],
   [Ingress], [Semua _host_ di `localhost:28080`], [_Host_ per peserta, karena _ingress controller_ digunakan bersama],
 )
 
-Setiap nilai yang ditulis `replace-me` di `config.yaml` dan `ingress.yaml` adalah _placeholder_ untuk alamat atau nama yang dibagikan instruktur ketika server siap. Domain `.invalid` adalah domain tingkat atas yang dicadangkan. Bila ada _placeholder_ yang terlewat, nama tersebut tidak bisa di-_resolve_, sehingga tidak ada koneksi yang sampai ke _host_ sungguhan.
+Setiap nilai yang ditulis `replace-me` di `config.yaml` dan `ingress.yaml` adalah _placeholder_ untuk alamat atau nama yang dibagikan instruktur ketika server siap. Domain `.invalid` adalah _top-level domain_ yang dicadangkan. Bila ada _placeholder_ yang terlewat, nama tersebut tidak bisa di-_resolve_, sehingga tidak ada koneksi yang sampai ke _host_ sungguhan.
 
 _Target_ `apply` memilih objek dengan `kubectl apply -l app.kubernetes.io/name=<service>`. Deployment, Service, dan Ingress dari Lab 9 sudah membawa label itu, tetapi ConfigMap dan Secret belum. Tambahkan blok `labels` ke `k8s/base/<service>/kustomization.yaml` ketiga service, sehingga _kustomize_ memasang label tersebut di setiap objek service. Untuk `transfer`:
 
@@ -722,7 +722,7 @@ make k8s-apply-server SERVICE=transfer VERSION=abc REGISTRY=r IMAGE_OWNER=o NAME
 ```
 ]
 
-Keluarannya menampilkan baris-baris hasil _render_ yang masih berisi `replace-me`, diikuti:
+_Output_-nya menampilkan baris-baris hasil _render_ yang masih berisi `replace-me`, diikuti:
 
 #perintah[
 ```
@@ -736,9 +736,9 @@ Hasil _render_ _overlay_ bisa diperiksa tanpa _cluster_ dengan `kubectl kustomiz
 
 // TODO(endy): hand out the real values for every replace-me (Kafka, OAuth2, OTLP, Ingress host; namespace and registry go into the repository variables) once the training server exists.
 
-=== Langkah 8: Menjalankan _pipeline_ di laptop dengan tujuan k3d
+=== Langkah 8: Menjalankan _pipeline_ di laptop hingga _deploy_ ke k3d
 
-Langkah ini menjalankan tahapan _pipeline_ yang sama dengan runner CI, tetapi di laptop: _test_, _image_ dengan _tag_ = _commit_, _import_ ke k3d sebagai pengganti `push`, lalu _deploy_ dengan `kubectl set image` dan `rollout status`.
+Langkah ini menjalankan tahapan _pipeline_ yang sama dengan runner CI, tetapi di laptop: _test_, _image_ dengan _tag_ berupa SHA _commit_, _import_ ke k3d sebagai pengganti `push`, lalu _deploy_ dengan `kubectl set image` dan `rollout status`.
 
 Siapkan infrastruktur, _cluster_, dan _manifest_ dari Lab 9. Perintah kedua menggunakan _cluster_ `bank` yang sudah ada, dan baru membuatnya bila belum ada:
 
@@ -765,7 +765,7 @@ cd studi-kasus
 ```
 ]
 
-Buat perubahan kecil yang terlihat di log `transfer`. Di `transfer/main.go`, ganti pesan log saat _server_ HTTP mulai berjalan:
+Buat perubahan kecil yang terlihat di log `transfer`. Di `transfer/main.go`, ganti pesan log saat server HTTP mulai berjalan:
 
 #perintah[
 ```go
@@ -782,7 +782,7 @@ make pipeline-k3d SERVICE=transfer
 ```
 ]
 
-Urutan yang terlihat di keluaran: `go vet` dan `go test` untuk `transfer`, `docker build` dengan _tag_ `k3d.local/studi-kasus/transfer:<12 karakter SHA>`, `k3d image import`, lalu perintah `kubectl` dari _target_ `deploy`. Deployment `transfer` sudah ada dari `make k8s-apply`, sehingga `deploy` tidak memanggil `apply` dan langsung menjalankan `kubectl set image`, `kubectl annotate`, dan `kubectl rollout status`. Baris terakhirnya:
+Urutan yang terlihat di _output_: `go vet` dan `go test` untuk `transfer`, `docker build` dengan _tag_ `k3d.local/studi-kasus/transfer:<12 karakter SHA>`, `k3d image import`, lalu perintah `kubectl` dari _target_ `deploy`. Deployment `transfer` sudah ada dari `make k8s-apply`, sehingga `deploy` tidak memanggil `apply` dan langsung menjalankan `kubectl set image`, `kubectl annotate`, dan `kubectl rollout status`. Baris terakhirnya:
 
 #perintah[
 ```
@@ -790,7 +790,7 @@ deployment "transfer" successfully rolled out
 ```
 ]
 
-`k3d.local` hanya nama registry fiktif untuk _tag_ lokal. _Image_ tidak pernah dikirim ke registry; `k3d image import` menyalinnya langsung ke _containerd_ di dalam _cluster_. Karena Deployment menggunakan `imagePullPolicy: IfNotPresent`, _kubelet_ menjalankan salinan itu tanpa menarik _image_ dari registry.
+`k3d.local` hanya nama registry fiktif untuk _tag_ lokal. _Image_ tidak pernah dikirim ke registry; `k3d image import` menyalinnya langsung ke _containerd_ di dalam _cluster_. Karena Deployment menggunakan `imagePullPolicy: IfNotPresent`, _kubelet_ menjalankan salinan itu tanpa mem-_pull_ _image_ dari registry.
 
 === Langkah 9: Menelusuri versi yang berjalan dan mengamati _drift_
 
@@ -811,7 +811,7 @@ REVISION  CHANGE-CAUSE
 ```
 ]
 
-SHA di atas hanya contoh; setiap laptop menghasilkan SHA yang berbeda. Nomor revisi bisa lebih banyak bila latihan _rolling update_ Lab 9 sudah dijalankan. Revisi terakhir membawa nama service dan SHA _commit_ hasil `pipeline-k3d`. Bandingkan dengan `git log`:
+SHA di atas hanya contoh; setiap laptop menghasilkan SHA yang berbeda. Nomor revisi bisa lebih banyak bila latihan _rolling update_ Lab 9 sudah dijalankan. Revisi terakhir mencatat nama service dan SHA _commit_ hasil `pipeline-k3d`. Bandingkan dengan `git log`:
 
 #perintah[
 ```bash
@@ -844,7 +844,7 @@ studi-kasus/transfer:1.0.0
 
 _Image_ kembali ke _tag_ `1.0.0` yang tertulis di `k8s/overlays/k3d/kustomization.yaml`, dan hasil _pipeline_ hilang. Penyebabnya: _pipeline_ mengubah _cluster_ langsung dengan `kubectl set image`, sedangkan repository tetap menyebut `1.0.0`. Isi _cluster_ dan isi repository berbeda (_drift_), dan siapa pun yang meng-_apply_ ulang repository membatalkan _deploy_ terakhir tanpa sadar.
 
-GitOps menghilangkan selisih tersebut dengan menjadikan repository satu-satunya jalan untuk mengubah _cluster_: _pipeline_ tidak memanggil `kubectl set image`, tetapi meng-_commit_ _tag_ baru ke _manifest_, lalu sebuah _agent_ di _cluster_ menyamakan isi _cluster_ dengan isi repository. Lab ini tidak memasang _agent_ GitOps; cukup dipahami bahwa _drift_ yang baru terlihat adalah masalah yang diselesaikan GitOps.
+GitOps menghilangkan selisih tersebut dengan menjadikan repository satu-satunya jalan untuk mengubah _cluster_: _pipeline_ tidak memanggil `kubectl set image`, tetapi meng-_commit_ _tag_ baru ke _manifest_, lalu sebuah _agent_ di _cluster_ menyamakan isi _cluster_ dengan isi repository. Lab ini tidak memasang _agent_ GitOps. Cukup dipahami bahwa _drift_ yang baru saja terlihat itulah masalah yang diselesaikan GitOps.
 
 #note[
   Setelah `make k8s-apply`, kolom `CHANGE-CAUSE` revisi terbaru bisa tetap menampilkan `transfer <sha>` walaupun _image_-nya sudah `1.0.0`. Anotasi `change-cause` ditulis oleh `make deploy`, bukan oleh _manifest_, sehingga `kubectl apply` tidak menghapusnya. Untuk mengetahui _image_ yang benar-benar berjalan, baca `.spec.template.spec.containers[0].image`, bukan anotasi.
@@ -884,7 +884,7 @@ kubectl -n <namespace> rollout restart deployment/transfer
 ```
 ]
 
-_Pod_ membaca ConfigMap hanya saat _start_, sehingga `rollout restart` diperlukan agar nilai baru terbaca. Selisih antara repository dan _cluster_ ini juga termasuk _drift_ yang dihilangkan GitOps.
+_Pod_ membaca ConfigMap hanya saat _startup_, sehingga `rollout restart` diperlukan agar nilai baru terbaca. Selisih antara repository dan _cluster_ ini juga termasuk _drift_ yang dihilangkan GitOps.
 
 Di server pelatihan, sama seperti di k3d, Prometheus tidak mengambil _metric_ dari _pod_. Yang sampai ke _collector_ hanya _trace_ dan log.
 
@@ -919,13 +919,13 @@ git diff --no-index studi-kasus/transfer/Jenkinsfile studi-kasus/account/Jenkins
 
 == Masalah Umum
 
-*`missing separator.  Stop.`* Baris resep di `pipeline.mk` atau `Makefile` diawali spasi. Ganti spasi di awal baris resep dengan satu karakter _Tab_.
+*`missing separator.  Stop.`* Baris _recipe_ di `pipeline.mk` atau `Makefile` diawali spasi. Ganti spasi di awal baris _recipe_ dengan satu karakter _Tab_.
 
-*`uncommitted changes in studi-kasus/`.* `pipeline-k3d` hanya berjalan pada _commit_ yang bersih. Jalankan `git status`, lalu _commit_ atau `git stash` perubahan yang tersisa. Direktori `bin/` hasil _build_ lokal sudah tercantum di `.gitignore`.
+*`uncommitted changes in studi-kasus/`.* `pipeline-k3d` hanya berjalan bila `studi-kasus/` tidak berisi perubahan yang belum di-_commit_. Jalankan `git status`, lalu _commit_ atau `git stash` perubahan yang tersisa. Direktori `bin/` hasil _build_ lokal sudah tercantum di `.gitignore`.
 
 *`deployment/transfer not in namespace bank: first deploy, applying the overlay`, lalu `../k8s/overlays/server still has replace-me placeholders`, saat `pipeline-k3d`.* Deployment `transfer` belum ada di k3d, sehingga `deploy` mencoba memasang _overlay_ server, yang ditolak karena masih berisi _placeholder_. Di laptop, Deployment dibuat oleh `make k8s-apply` dari _overlay_ `k3d`. Jalankan `make k8s-apply`, lalu ulangi `make pipeline-k3d`.
 
-*`The connection to the server ... was refused` saat `make -n -C <service> deploy`.* Opsi `-n` tetap menjalankan baris resep yang berisi `$(MAKE)`, termasuk `kubectl get deployment` di awal `deploy` (Langkah 2). Baca urutan perintahnya langsung di `pipeline.mk`.
+*`The connection to the server ... was refused` saat `make -n -C <service> deploy`.* Opsi `-n` tetap menjalankan baris _recipe_ yang berisi `$(MAKE)`, termasuk `kubectl get deployment` di awal `deploy` (Langkah 2). Baca urutan perintahnya langsung di `pipeline.mk`.
 
 *`rollout status` berhenti setelah 180 detik.* _Pod_ baru tidak lolos _readiness probe_. Periksa `kubectl -n bank get pods` dan `kubectl -n bank logs <pod baru>`. Penyebab yang sering muncul: infrastruktur Docker Compose belum berjalan (`make infra-up`), atau kode baru gagal saat _startup_. _Pod_ lama tetap melayani; kembalikan dengan `kubectl -n bank rollout undo deployment/transfer` bila perlu. `rollout undo` bisa mencetak peringatan tentang anotasi `last-applied-configuration`; peringatan ini tidak berbahaya dan bukan error.
 
@@ -942,7 +942,7 @@ git diff --no-index studi-kasus/transfer/Jenkinsfile studi-kasus/account/Jenkins
 + Ubah _file_ di `studi-kasus/proto/`, lalu tentukan _workflow_ mana yang akan terpicu dengan membaca `on.push.paths` ketiga _file_. Jalankan `make pipeline-k3d` untuk setiap service yang terpicu.
 + Buat _commit_ yang membuat `transfer` gagal saat _startup_ (misalnya mengganti nama _environment variable_ yang wajib di `config.go`), lalu jalankan `make pipeline-k3d SERVICE=transfer`. Amati bahwa `rollout status` gagal, _pod_ lama tetap melayani transfer di `http://localhost:28080/transfers`, dan `kubectl rollout undo` mengembalikan revisi sebelumnya.
 + Coba alur GitOps secara manual: ubah `newTag` `transfer` di `k8s/overlays/k3d/kustomization.yaml` ke _tag_ hasil `pipeline-k3d`, _commit_, lalu `make k8s-apply`. Bandingkan hasilnya dengan Langkah 9: kali ini `make k8s-apply` tidak membatalkan _deploy_.
-+ Tambahkan _stage_ `Approve` berisi langkah `input` sebelum _stage_ `Deploy` di `Jenkinsfile`, sehingga _deploy_ menunggu persetujuan manual. Rancang padanannya di _workflow_, misalnya dengan memindahkan _step_ Deploy ke _workflow_ terpisah yang dipicu manual.
++ Tambahkan _stage_ `Approve` berisi _step_ `input` sebelum _stage_ `Deploy` di `Jenkinsfile`, sehingga _deploy_ menunggu persetujuan manual. Rancang padanannya di _workflow_, misalnya dengan memindahkan _step_ Deploy ke _workflow_ terpisah yang dipicu manual.
 
 == Checkpoint
 
@@ -955,4 +955,4 @@ git checkout lab-10
 ```
 ]
 
-Perbedaan yang wajar dengan _tag_ `lab-10`: perubahan pesan log di `transfer/main.go` dari Langkah 8, yang tidak termasuk di _tag_. Komentar di `account.yaml` dan `notification.yaml` yang ditulis ulang dengan kata-kata sendiri juga wajar berbeda.
+Hasil kerja wajar berbeda dari _tag_ `lab-10` pada perubahan pesan log di `transfer/main.go` dari Langkah 8, karena perubahan itu tidak termasuk di _tag_. Komentar di `account.yaml` dan `notification.yaml` yang ditulis ulang dengan kata-kata sendiri juga wajar berbeda.

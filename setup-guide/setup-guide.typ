@@ -16,7 +16,7 @@
 
 = Ringkasan
 
-Setiap peserta menjalankan seluruh lab di laptop masing-masing. Panduan ini menyiapkan laptop tersebut dalam empat langkah:
+Setiap peserta menjalankan seluruh lab di laptop masing-masing. Persiapan laptop terdiri atas empat langkah:
 
 + Memastikan spesifikasi laptop dan hak akses memenuhi syarat (@spesifikasi).
 + Memastikan jaringan kantor membuka akses ke alamat yang dibutuhkan (@jaringan).
@@ -59,7 +59,7 @@ Jaringan tempat laptop digunakan, baik kantor maupun Wi-Fi ruang training, harus
   [`dl.k8s.io`], [443], [_Download_ kubectl (Linux dan WSL2)],
 )
 
-Jaringan kantor yang mewajibkan HTTP _proxy_ membutuhkan dua pengaturan tambahan:
+Bila jaringan kantor mewajibkan HTTP _proxy_, tambahkan dua pengaturan berikut:
 
 - *Terminal.* Tambahkan baris berikut ke `~/.bashrc` (Linux, WSL2) atau `~/.zshrc` (macOS), dengan alamat _proxy_ dari tim jaringan:
   #perintah[```bash
@@ -78,8 +78,8 @@ SSH ke port 22 tidak melewati HTTP _proxy_. Akses langsung ke `git.training.arti
   [Software], [Versi], [Keterangan],
   [Go], [1.27.x], [Minimal 1.26],
   [protoc], [36.2], [_Protocol Buffers compiler_],
-  [protoc-gen-go], [1.36.12], [Plugin protoc untuk Go],
-  [protoc-gen-go-grpc], [1.6.2], [Plugin protoc untuk gRPC],
+  [protoc-gen-go], [1.36.12], [_Plugin_ protoc untuk Go],
+  [protoc-gen-go-grpc], [1.6.2], [_Plugin_ protoc untuk gRPC],
   [Docker], [Versi terbaru], [Docker Desktop (Windows, macOS) atau Docker Engine dengan Compose _plugin_ (Linux)],
   [k3d], [5.9.0], [Cluster Kubernetes di atas Docker],
   [kubectl], [1.37.x], [Minimal 1.35],
@@ -98,11 +98,11 @@ Buka PowerShell sebagai _Administrator_, lalu jalankan:
 wsl --install -d Ubuntu-24.04
 ```]
 
-Restart laptop. Setelah restart, jendela Ubuntu terbuka dan meminta _username_ serta _password_ baru untuk Ubuntu.
+_Restart_ laptop. Setelah _restart_, jendela Ubuntu terbuka dan meminta _username_ serta _password_ baru untuk Ubuntu.
 
 == Batasi Memori WSL2
 
-WSL2 secara bawaan mengambil setengah RAM laptop. Buat _file_ `%UserProfile%\.wslconfig` dengan Notepad:
+Secara _default_, WSL2 mengambil setengah RAM laptop. Buat _file_ `%UserProfile%\.wslconfig` dengan Notepad:
 
 #perintah[```ini
 [wsl2]
@@ -115,7 +115,7 @@ Simpan, lalu jalankan `wsl --shutdown` di PowerShell agar pengaturan berlaku.
 
 + _Download_ Docker Desktop dari #link("https://docs.docker.com/desktop/setup/install/windows-install/")[`docs.docker.com/desktop/setup/install/windows-install`] dan pasang dengan opsi _Use WSL 2 instead of Hyper-V_.
 + Buka Docker Desktop, menu _Settings_ → _Resources_ → _WSL integration_, aktifkan *Ubuntu-24.04*, lalu klik _Apply & restart_.
-+ Buka terminal Ubuntu dan jalankan `docker version`. Keluaran yang memuat bagian `Server` menandakan Docker dapat diakses dari Ubuntu.
++ Buka terminal Ubuntu dan jalankan `docker version`. Bila _output_ memuat bagian `Server`, Docker sudah dapat diakses dari Ubuntu.
 
 == Lanjutkan di Ubuntu
 
@@ -204,19 +204,19 @@ protoc-gen-go --version
 protoc-gen-go-grpc --version
 ```]
 
-Perintah ini sekaligus menguji akses ke `proxy.golang.org`. Kegagalan _download_ di langkah ini umumnya disebabkan _proxy_ atau _firewall_ kantor (@jaringan).
+Perintah ini sekaligus menguji akses ke `proxy.golang.org`. Bila _download_ di langkah ini gagal, penyebabnya umumnya _proxy_ atau _firewall_ kantor (@jaringan).
 
 Editor: Visual Studio Code dengan ekstensi *Go* (dari Go Team at Google), atau GoLand.
 
 = Pemeriksaan Kesiapan <pemeriksaan>
 
-Skrip pemeriksaan memeriksa versi _software_, memori Docker, ruang disk, dan akses jaringan, melakukan _download_ seluruh image Docker yang digunakan selama training, lalu menguji `docker compose up` dan `k3d cluster create`. Jalankan dari terminal macOS, terminal Ubuntu WSL2, atau terminal Linux, dengan Docker dalam keadaan berjalan:
+Skrip pemeriksaan memeriksa versi _software_, memori Docker, ruang disk, dan akses jaringan, melakukan _download_ seluruh image Docker yang digunakan selama training, lalu menguji `docker compose up` dan `k3d cluster create`. Pastikan Docker sudah berjalan, lalu jalankan skrip dari terminal macOS, terminal Ubuntu WSL2, atau terminal Linux:
 
 #perintah[```bash
 curl -fsSL https://raw.githubusercontent.com/artivisi/training-microservices-2026-01/main/setup-guide/cek-persiapan.sh | bash
 ```]
 
-Pemeriksaan pertama memakan waktu 10 – 20 menit karena _download_ image ±4 GB. Contoh keluaran laptop yang siap:
+Pemeriksaan pertama memakan waktu 10 – 20 menit karena _download_ image ±4 GB. Contoh _output_ dari laptop yang siap:
 
 #perintah[```text
 == Perangkat lunak
@@ -232,7 +232,7 @@ Pemeriksaan pertama memakan waktu 10 – 20 menit karena _download_ image ±4 GB
 HASIL: SEMUA PEMERIKSAAN LULUS
 ```]
 
-Hasil pemeriksaan tersimpan di `~/cek-persiapan.log`. Kirim _file_ tersebut ke PIC paling lambat *Jumat, 23 Oktober 2026*, termasuk bila masih ada pemeriksaan yang gagal.
+Hasil pemeriksaan tersimpan di `~/cek-persiapan.log`. Kirim _file_ tersebut ke PIC paling lambat *Jumat, 23 Oktober 2026*, meskipun masih ada pemeriksaan yang gagal.
 
 == Penanganan Kegagalan
 

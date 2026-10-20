@@ -16,7 +16,7 @@ Setelah menyelesaikan lab ini, peserta mampu:
 
 == Gambaran
 
-Studi kasus training ini adalah sistem simulasi perbankan yang terdiri atas tiga _service_: `account`, `transfer`, dan `notification`. Lab 1 mengerjakan _service_ pertama, yaitu `account`, yang menyimpan data rekening beserta saldonya. _Service_ lain yang membutuhkan data rekening, misalnya `transfer` pada Lab 2, wajib mengaksesnya melalui API milik `account` dan tidak boleh membaca tabel `account` secara langsung.
+Studi kasus pelatihan ini adalah sistem simulasi perbankan yang terdiri atas tiga _service_: `account`, `transfer`, dan `notification`. Lab 1 mengerjakan _service_ pertama, yaitu `account`, yang menyimpan data rekening beserta saldonya. _Service_ lain yang membutuhkan data rekening, misalnya `transfer` pada Lab 2, wajib mengaksesnya melalui API milik `account` dan tidak boleh membaca tabel `account` secara langsung.
 
 Prinsip tersebut disebut _database-per-service_. Setiap _service_ memiliki database sendiri, sehingga struktur tabel dapat diubah tanpa merusak _service_ lain. Karena itu `compose.yaml` pada lab ini menjalankan satu _container_ PostgreSQL khusus untuk `account`. Lab berikutnya menambahkan _container_ PostgreSQL lain untuk `transfer` dan `notification`.
 
@@ -38,7 +38,7 @@ Prinsip tersebut disebut _database-per-service_. Setiap _service_ memiliki datab
   +--------------------+
 ```]
 
-Selama Lab 1 hingga Lab 8, _service_ Go dijalankan langsung di laptop dengan `go run`, sedangkan infrastruktur (database, Kafka, dan lain-lain) berjalan di _container_. Dengan pembagian ini, perubahan kode dapat langsung dicoba dengan menjalankan ulang `go run`, tanpa membangun _image_ baru. Port database sengaja dimulai dari 15432 agar tidak bentrok dengan PostgreSQL yang mungkin sudah terpasang di laptop pada port 5432.
+Selama Lab 1 hingga Lab 8, _service_ Go dijalankan langsung di laptop dengan `go run`, sedangkan infrastruktur (database, Kafka, dan lain-lain) berjalan di _container_. Dengan pembagian ini, perubahan kode dapat langsung dicoba dengan menjalankan ulang `go run`, tanpa mem-_build_ _image_ baru. Port database sengaja dimulai dari 15432 agar tidak bentrok dengan PostgreSQL yang mungkin sudah terpasang di laptop pada port 5432.
 
 Struktur kode di akhir lab ini:
 
@@ -92,7 +92,7 @@ Seluruh perintah pada lab ini dijalankan dari direktori `studi-kasus`, kecuali b
 
 === Membuat Go Module dan Go Workspace
 
-Setiap _service_ adalah Go _module_ tersendiri dengan `go.mod` masing-masing. Pemisahan ini membuat dependensi setiap _service_ tercatat sendiri, dan setiap _service_ dapat di-_build_ menjadi _image_ terpisah pada Lab 9. Agar ketiga _module_ tetap dapat dikerjakan bersama dari satu direktori, Go menyediakan _workspace_ melalui file `go.work`. File tersebut mendaftarkan _module_ yang aktif, sehingga perintah `go` yang dijalankan dari `studi-kasus` mengenali seluruh _service_.
+Setiap _service_ dibuat sebagai Go _module_ tersendiri dengan `go.mod` masing-masing. Pemisahan ini membuat dependensi setiap _service_ tercatat sendiri, dan setiap _service_ dapat di-_build_ menjadi _image_ terpisah pada Lab 9. Agar ketiga _module_ tetap dapat dikerjakan bersama dari satu direktori, Go menyediakan _workspace_ melalui file `go.work`. File tersebut mendaftarkan _module_ yang aktif, sehingga perintah `go` yang dijalankan dari `studi-kasus` mengenali seluruh _service_.
 
 #perintah[```bash
 mkdir -p account/internal/account
@@ -156,7 +156,7 @@ volumes:
 Beberapa bagian perlu diperhatikan:
 
 - `ports: "15432:5432"` membuka port 5432 di dalam _container_ sebagai port 15432 di laptop. _Service_ Go yang berjalan di laptop terhubung ke `localhost:15432`.
-- _Volume_ `db-account` menyimpan data di luar _container_. Data tetap ada walaupun _container_ dihentikan atau dibuat ulang. Mulai PostgreSQL 18, _image_ resmi menyimpan data di bawah `/var/lib/postgresql`, sehingga _volume_ dipasang ke direktori tersebut.
+- _Volume_ `db-account` menyimpan data di luar _container_. Data tetap ada walaupun _container_ dihentikan atau dibuat ulang. Mulai PostgreSQL 18, _image_ resmi menyimpan data di bawah `/var/lib/postgresql`, sehingga _volume_ di-_mount_ ke direktori tersebut.
 - `healthcheck` menjalankan `pg_isready` setiap 2 detik. Compose baru menganggap _container_ siap setelah pemeriksaan ini berhasil.
 
 Perintah Compose dibungkus dalam `Makefile` di direktori `studi-kasus`. Seluruh perintah lab, termasuk langkah _pipeline_ CI/CD pada Lab 10, memanggil _target_ `make`, sehingga perintah yang dijalankan di laptop sama dengan yang dijalankan di server.
@@ -195,9 +195,9 @@ Kolom `STATUS` untuk `db-account` harus menampilkan `healthy`.
 
 === Konfigurasi dari Environment Variable
 
-_Service_ membutuhkan dua nilai konfigurasi: alamat HTTP yang didengarkan dan URL koneksi database. Nilai tersebut berbeda di setiap tempat _service_ dijalankan (laptop, _container_, Kubernetes), sehingga dibaca dari _environment variable_ sesuai prinsip _twelve-factor app_.
+_Service_ membutuhkan dua nilai konfigurasi: alamat _listen_ HTTP _server_ dan URL koneksi database. Nilai tersebut berbeda di setiap tempat _service_ dijalankan (laptop, _container_, Kubernetes), sehingga dibaca dari _environment variable_ sesuai prinsip _twelve-factor app_.
 
-Setiap variabel bersifat wajib. Bila salah satu kosong, _service_ berhenti saat _startup_ dengan pesan error yang menyebutkan nama variabelnya. Nilai _default_ seperti `localhost:5432` sengaja tidak disediakan. Bila _service_ diam-diam menggunakan nilai _default_ dan terhubung ke database yang salah, penyebab masalahnya sulit ditemukan. _Service_ yang langsung berhenti dengan pesan error jauh lebih mudah diperbaiki.
+Setiap variabel bersifat wajib. Bila salah satu kosong, _service_ berhenti saat _startup_ dengan pesan error yang menyebutkan nama variabelnya. Nilai _default_ seperti `localhost:5432` sengaja tidak disediakan. Bila _service_ menggunakan nilai _default_ tanpa pesan apa pun dan terhubung ke database yang salah, penyebab masalahnya sulit ditemukan. _Service_ yang langsung berhenti dengan pesan error jauh lebih mudah diperbaiki.
 
 *File `studi-kasus/account/config.go`*
 
@@ -238,15 +238,15 @@ func LoadConfig() (Config, error) {
 }
 ```]
 
-Fungsi `get` adalah _closure_: fungsi ini mencatat setiap variabel yang kosong ke _slice_ `missing` milik `LoadConfig`. Dengan cara ini, satu kali _startup_ yang gagal langsung menampilkan seluruh variabel yang belum diisi, tidak satu per satu.
+Fungsi `get` merupakan _closure_ yang mencatat setiap variabel kosong ke _slice_ `missing` milik `LoadConfig`. Dengan cara ini, _startup_ yang gagal langsung menampilkan sekaligus seluruh variabel yang belum diisi.
 
 === Model Domain dan Validasi
 
-File `account.go` berisi struktur data rekening, data permintaan pembuatan rekening, aturan validasi, dan _interface_ `Store` untuk penyimpanan.
+File `account.go` berisi struktur data rekening, data _request_ pembuatan rekening, aturan validasi, dan _interface_ `Store` untuk penyimpanan.
 
 Saldo menggunakan `decimal.Decimal` dari _library_ `shopspring/decimal`, tidak menggunakan `float64`. Tipe `float64` menyimpan bilangan dalam basis dua, sehingga nilai seperti 0,1 tidak dapat disimpan secara tepat dan selisih pembulatan menumpuk pada setiap operasi. Untuk nilai uang, selisih sekecil apa pun tidak dapat diterima. Di database, saldo disimpan sebagai `numeric(19,2)` yang juga bersifat desimal tepat.
 
-_Interface_ `Store` mendefinisikan operasi penyimpanan yang dibutuhkan _handler_ HTTP. _Handler_ bergantung pada _interface_ tersebut dan tidak mengenal PostgreSQL secara langsung. Akibatnya, _handler_ dapat diuji dengan implementasi tiruan di memori (langkah pengujian di akhir lab).
+_Interface_ `Store` mendefinisikan operasi penyimpanan yang dibutuhkan _handler_ HTTP. _Handler_ bergantung pada _interface_ tersebut dan tidak mengenal PostgreSQL secara langsung. Akibatnya, _handler_ dapat diuji dengan _fake store_ di memori (langkah pengujian di akhir lab).
 
 *File `studi-kasus/account/internal/account/account.go`*
 
@@ -324,7 +324,7 @@ Hal yang perlu dicermati pada file ini:
 
 === Skema Tabel dan Store PostgreSQL
 
-Skema tabel ditulis dalam file SQL terpisah lalu ditanamkan ke dalam _binary_ dengan `go:embed`. _Service_ menjalankan skema tersebut setiap kali _start_. Klausa `if not exists` membuat perintah aman dijalankan berulang kali. Cara ini cukup untuk lab; sistem sungguhan umumnya menggunakan _tools_ migrasi skema yang mencatat versi skema.
+Skema tabel ditulis dalam file SQL terpisah lalu di-_embed_ ke dalam _binary_ dengan `go:embed`. _Service_ menjalankan skema tersebut pada setiap _startup_. Klausa `if not exists` membuat perintah aman dijalankan berulang kali. Cara ini cukup untuk lab, sedangkan sistem sungguhan umumnya menggunakan _tools_ migrasi skema yang mencatat versi skema.
 
 *File `studi-kasus/account/internal/account/schema.sql`*
 
@@ -339,7 +339,7 @@ create table if not exists account (
 
 _Constraint_ `check (balance >= 0)` menjaga saldo agar tidak pernah negatif, bahkan bila ada kode yang lupa memeriksanya. Aturan bisnis yang paling penting sebaiknya juga dijaga oleh database.
 
-Implementasi `Store` menggunakan `pgxpool`, yaitu _connection pool_ dari pgx. _Pool_ menyimpan beberapa koneksi yang dapat digunakan bergantian oleh _request_ yang datang bersamaan. Kolom `numeric` PostgreSQL dibaca ke `decimal.Decimal`. Tanpa pendaftaran apa pun, pgx sudah dapat membacanya melalui _interface_ `sql.Scanner`, dengan nilai yang dikonversi lewat teks. _Package_ `pgx-shopspring-decimal` mendaftarkan _codec_ khusus pada setiap koneksi baru melalui `AfterConnect`, sehingga konversi `numeric` dilakukan langsung tanpa melalui teks.
+Implementasi `Store` menggunakan `pgxpool`, yaitu _connection pool_ dari pgx. _Pool_ menyimpan beberapa koneksi yang dapat digunakan bergantian oleh _request_ yang datang bersamaan. Kolom `numeric` PostgreSQL dibaca ke `decimal.Decimal`. Tanpa _codec_ tambahan, pgx sudah dapat membacanya melalui _interface_ `sql.Scanner`, tetapi nilainya dikonversi lewat teks terlebih dahulu. _Package_ `pgx-shopspring-decimal` mendaftarkan _codec_ khusus pada setiap koneksi baru melalui `AfterConnect`, sehingga konversi `numeric` dilakukan langsung tanpa melalui teks.
 
 *File `studi-kasus/account/internal/account/store.go`*
 
@@ -437,20 +437,20 @@ func (s *PostgresStore) List(ctx context.Context) ([]Account, error) {
 
 Penjelasan bagian penting:
 
-- *Parameter bernama.* `pgx.NamedArgs` mengisi `@number`, `@owner_name`, dan `@balance`. Nilai dikirim terpisah dari teks SQL, sehingga kode aman dari _SQL injection_. Teks SQL tidak boleh disusun dengan menggabungkan _string_ dari input pengguna.
-- *Pemetaan baris ke struct.* `pgx.RowToStructByPos[Account]` mengisi _field_ `Account` sesuai urutan kolom. Urutan kolom pada `select` dan `returning` harus sama dengan urutan _field_ di _struct_ `Account`.
-- *Penanganan nomor rekening ganda.* Rekening dengan nomor yang sudah ada melanggar _primary key_, dan PostgreSQL mengembalikan kode error `23505` (`unique_violation`). Kode tersebut diterjemahkan menjadi `ErrAlreadyExists`, sehingga _handler_ tidak perlu mengenal kode error PostgreSQL.
-- *Rekening yang tidak ditemukan.* `CollectExactlyOneRow` mengembalikan `pgx.ErrNoRows` bila hasil _query_ kosong, dan `Get` menerjemahkannya menjadi `ErrNotFound`.
+- *_Named parameter_.* `pgx.NamedArgs` mengisi `@number`, `@owner_name`, dan `@balance`. Nilai dikirim terpisah dari teks SQL, sehingga kode aman dari _SQL injection_. Teks SQL tidak boleh disusun dengan menggabungkan _string_ dari input pengguna.
+- *Pemetaan baris ke _struct_.* `pgx.RowToStructByPos[Account]` mengisi _field_ `Account` sesuai urutan kolom. Urutan kolom pada `select` dan `returning` harus sama dengan urutan _field_ di _struct_ `Account`.
+- *Penanganan nomor rekening ganda.* Rekening dengan nomor yang sudah ada melanggar _primary key_, dan PostgreSQL mengembalikan kode error `23505` (`unique_violation`). Kode tersebut dipetakan menjadi `ErrAlreadyExists`, sehingga _handler_ tidak perlu mengenal kode error PostgreSQL.
+- *Rekening yang tidak ditemukan.* `CollectExactlyOneRow` mengembalikan `pgx.ErrNoRows` bila hasil _query_ kosong, dan `Get` memetakannya menjadi `ErrNotFound`.
 - *Batas jumlah data.* `List` dibatasi 100 baris agar satu _request_ tidak memuat seluruh tabel. Pada sistem sungguhan, batas ini digantikan _pagination_.
 
 === Handler HTTP dan Routing
 
 Sejak Go 1.22, `http.ServeMux` bawaan Go mendukung pola yang memuat _method_ dan _path_ sekaligus, misalnya `"GET /accounts/{number}"`. Nilai `{number}` dibaca dengan `r.PathValue("number")`. Fitur ini sudah mencukupi untuk API pada studi kasus, sehingga _router_ pihak ketiga seperti chi atau gin tidak diperlukan. `ServeMux` juga otomatis mengembalikan status `405 Method Not Allowed` bila _path_ cocok tetapi _method_-nya tidak terdaftar.
 
-Bagian ini juga menyediakan dua _endpoint_ pemeriksaan kesehatan yang nanti digunakan Kubernetes pada Lab 9:
+Bagian ini juga menyediakan dua _endpoint_ _health check_ yang nanti digunakan Kubernetes pada Lab 9:
 
-- `/healthz` (_liveness_) memeriksa bahwa proses masih hidup dan dapat melayani HTTP. _Endpoint_ ini tidak memeriksa database. Bila database ikut diperiksa, gangguan database membuat Kubernetes me-_restart_ seluruh _pod_ yang sebenarnya sehat, padahal _restart_ tidak memperbaiki database.
-- `/readyz` (_readiness_) memeriksa bahwa _service_ siap menerima _request_, yaitu database dapat dihubungi. Bila gagal, Kubernetes berhenti mengirim _traffic_ ke _pod_ tersebut tanpa me-_restart_-nya.
+- `/healthz` (_liveness_) memastikan proses masih hidup dan dapat melayani HTTP. _Endpoint_ ini tidak memeriksa database. Bila database ikut diperiksa, gangguan database membuat Kubernetes me-_restart_ seluruh _pod_ yang sebenarnya sehat, padahal _restart_ tidak memperbaiki database.
+- `/readyz` (_readiness_) memastikan _service_ siap menerima _request_, yaitu database dapat dihubungi. Bila gagal, Kubernetes berhenti mengirim _traffic_ ke _pod_ tersebut tanpa me-_restart_-nya.
 
 *File `studi-kasus/account/internal/account/http.go`*
 
@@ -568,12 +568,12 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 
 Alur `create` mengikuti urutan yang umum pada _handler_ REST:
 
-+ *Membaca body.* `http.MaxBytesReader` membatasi ukuran _body_ hingga 1 MiB, sehingga _request_ berukuran sangat besar tidak menghabiskan memori. `DisallowUnknownFields` menolak _field_ yang tidak dikenal; salah ketik seperti `"nomor"` langsung menghasilkan error dan tidak diabaikan begitu saja.
++ *Membaca _body_.* `http.MaxBytesReader` membatasi ukuran _body_ hingga 1 MiB, sehingga _request_ berukuran sangat besar tidak menghabiskan memori. `DisallowUnknownFields` menolak _field_ yang tidak dikenal, sehingga salah ketik seperti `"nomor"` langsung menghasilkan error dan tidak diabaikan begitu saja.
 + *Validasi.* Kesalahan input dijawab dengan status 400 beserta daftar _field_ yang bermasalah.
 + *Menyimpan.* Error dari `Store` dipetakan ke kode status HTTP: `ErrAlreadyExists` menjadi 409, error lain menjadi 500.
-+ *Menjawab.* Rekening baru dijawab dengan status 201 dan _header_ `Location` yang menunjuk ke alamat rekening tersebut.
++ *Menjawab.* _Handler_ mengirim rekening baru dengan status 201 dan _header_ `Location` yang menunjuk ke alamat rekening tersebut.
 
-Error yang tidak terduga ditangani `internalError`: detail error ditulis ke _log_, sedangkan klien hanya menerima `"internal error"`. Detail seperti nama tabel atau alamat database tidak boleh terkirim ke klien. Prinsip yang sama berlaku pada `readyz`.
+Error yang tidak terduga ditangani `internalError`, yang menulis detail error ke _log_ dan hanya mengirim `"internal error"` ke klien. Detail seperti nama tabel atau alamat database tidak boleh terkirim ke klien. Prinsip yang sama berlaku pada `readyz`.
 
 === Program Utama dan Graceful Shutdown
 
@@ -660,7 +660,7 @@ Beberapa konsep Go yang muncul di sini:
 
 === Dependensi dan Makefile per Service
 
-Unduh _library_ yang digunakan, dengan versi yang sama seperti _checkpoint_:
+Tambahkan _library_ yang digunakan dengan `go get`, pada versi yang sama seperti _checkpoint_:
 
 #perintah[```bash
 cd account
@@ -845,9 +845,9 @@ Untuk melihat setiap skenario, jalankan `go test -v ./...` dari direktori `accou
 
 == Verifikasi
 
-Jalankan perintah berikut di terminal kedua, sementara `make -C account run` masih berjalan di terminal pertama. Seluruh respons JSON ditulis dalam satu baris; nama _field_ pada objek JSON yang berasal dari _map_ Go selalu diurutkan secara alfabetis.
+Jalankan perintah berikut di terminal kedua, sementara `make -C account run` masih berjalan di terminal pertama. Setiap respons JSON tampil dalam satu baris. Nama _field_ pada objek JSON yang berasal dari _map_ Go selalu diurutkan secara alfabetis.
 
-*1. Liveness dan readiness.*
+*1. _Liveness_ dan _readiness_.*
 
 #perintah[```bash
 curl -i http://localhost:28081/healthz
@@ -931,7 +931,7 @@ _Output_ yang diharapkan, berurutan:
 
 Kode status tampil di baris berikutnya karena `json.Encoder` menambahkan karakter _newline_ di akhir setiap respons JSON.
 
-*5. Readiness saat database mati.* Hentikan _container_ database, periksa `/readyz` dan `/healthz`, lalu jalankan kembali database:
+*5. _Readiness_ saat database mati.* Hentikan _container_ database, periksa `/readyz` dan `/healthz`, lalu jalankan kembali database:
 
 #perintah[```bash
 docker compose stop db-account
@@ -951,7 +951,7 @@ _Output_ yang diharapkan:
 
 Terminal pertama menampilkan _log_ `level=WARN msg="readiness check failed"` beserta detail error koneksi, sedangkan respons ke klien hanya berisi status. Setelah database kembali berjalan, `/readyz` kembali mengembalikan 200 tanpa perlu me-_restart_ _service_, karena _connection pool_ membuka koneksi baru.
 
-*6. Data tetap tersimpan.* Hentikan _service_ dengan Ctrl+C. _Log_ menampilkan `msg="shutting down"`. Jalankan ulang `make -C account run`, lalu panggil `GET /accounts`: kedua rekening masih ada, karena data tersimpan di _volume_ Docker.
+*6. Data tetap tersimpan.* Hentikan _service_ dengan Ctrl+C. _Log_ menampilkan `msg="shutting down"`. Jalankan ulang `make -C account run`, lalu panggil `GET /accounts`. Kedua rekening masih ada karena data tersimpan di _volume_ Docker.
 
 *7. Konfigurasi wajib.* Jalankan _service_ tanpa _environment variable_ dari direktori `account`:
 
@@ -998,9 +998,9 @@ exit status 1
 
 == Eksplorasi Mandiri
 
-+ *Menambah endpoint penutupan rekening.* Tambahkan `DELETE /accounts/{number}` yang hanya berhasil bila saldo rekening nol. Tentukan kode status yang tepat untuk rekening yang tidak ditemukan dan untuk rekening yang saldonya belum nol, lalu tambahkan skenarionya ke tabel test. Skenario `"wrong method"` yang sudah ada perlu diperbarui.
-+ *Pagination.* Ubah `GET /accounts` agar menerima parameter `limit` dan `after` (nomor rekening terakhir pada halaman sebelumnya), misalnya `GET /accounts?limit=10&after=1234567890`. Validasi `limit` antara 1 dan 100, dan jawab 400 bila nilainya di luar rentang.
-+ *Test ke database sungguhan.* Tulis test untuk `PostgresStore` yang terhubung ke `db-account`. URL database dibaca dari _environment variable_ `TEST_DATABASE_URL`, dan test dilewati dengan `t.Skip` bila variabel tersebut kosong. Uji bahwa rekening ganda menghasilkan `ErrAlreadyExists` dan saldo negatif ditolak oleh _constraint_ `check`.
++ *Menambah _endpoint_ penutupan rekening.* Tambahkan `DELETE /accounts/{number}` yang hanya berhasil bila saldo rekening nol. Tentukan kode status yang tepat untuk rekening yang tidak ditemukan dan untuk rekening yang saldonya belum nol, lalu tambahkan skenarionya ke tabel test. Skenario `"wrong method"` yang sudah ada perlu diperbarui.
++ *_Pagination_.* Ubah `GET /accounts` agar menerima parameter `limit` dan `after` (nomor rekening terakhir pada halaman sebelumnya), misalnya `GET /accounts?limit=10&after=1234567890`. Validasi `limit` antara 1 dan 100, dan jawab 400 bila nilainya di luar rentang.
++ *Test ke database sungguhan.* Tulis test untuk `PostgresStore` yang terhubung ke `db-account`. URL database dibaca dari _environment variable_ `TEST_DATABASE_URL`, dan test dilewati dengan `t.Skip` bila variabel tersebut kosong. Test tersebut harus memastikan bahwa rekening ganda menghasilkan `ErrAlreadyExists` dan saldo negatif ditolak oleh _constraint_ `check`.
 + *Melihat isi database.* Masuk ke database dengan `docker compose exec db-account psql -U account -d account`, lalu jalankan `\d account` dan `select * from account;`. Bandingkan nilai `balance` di database dengan nilai pada respons JSON.
 
 == Checkpoint
