@@ -31,7 +31,7 @@
     [09:45 – 10:45], [*Lab 3*: failsafe-go pada panggilan transfer ke account, simulasi service lambat dan mati], [_Hands-on_],
     [11:00 – 12:30], [gRPC untuk komunikasi internal: kontrak protobuf, _code generation_, _unary call_, _error handling_, _interceptor_], [Presentasi + demo],
     [13:30 – 15:00], [*Lab 4*: memindahkan panggilan transfer ke account dari REST ke gRPC], [_Hands-on_],
-    [15:15 – 16:45], [Konsistensi data terdistribusi: alasan 2PC dihindari, saga, _idempotency key_. Ringkasan Hari 2 pada peta _concern_], [Presentasi + demo],
+    [15:15 – 16:45], [Konsistensi data terdistribusi: alasan 2PC dihindari, saga dengan kompensasi di studi kasus (persiapan Lab 5), _idempotency key_. Ringkasan Hari 2 pada peta _concern_], [Presentasi + demo],
   )
   #v(8pt)
   #note[Hari 2 dimulai dari _checkpoint_ `lab-02`. Peserta yang belum menyelesaikan Lab 2 menjalankan `git checkout lab-02` sebelum Lab 3.]
@@ -40,7 +40,7 @@
 #slide(kicker: "Peta concern microservices", title: [_Concern_ yang dibahas di Hari 2])[
   #concern-map(highlight: (2, 3, 4))
   #v(6pt)
-  #note[Baris yang disorot menjadi fokus hari ini: gRPC untuk komunikasi internal, _resiliency_ di sisi kode, dan pengantar konsistensi data. Setiap _concern_ ditangani di kode (library di dalam setiap service) atau oleh platform (Kubernetes dan infrastruktur). Semua yang dibangun di Hari 2 berada di kode.]
+  #note[Baris yang disorot menjadi fokus hari ini: gRPC untuk komunikasi internal, _resiliency_ di sisi kode, dan desain saga untuk konsistensi data. Setiap _concern_ ditangani di kode (library di dalam setiap service) atau oleh platform (Kubernetes dan infrastruktur). Semua yang dibangun di Hari 2 berada di kode.]
 ]
 
 #slide(kicker: "Titik awal", title: "Kondisi studi kasus di akhir Lab 2")[
@@ -877,8 +877,7 @@ c, err := New("passthrough:///bufnet", s, log,
 
 // ════════════════════════════════════════════════════════════════════════════
 #section-slide(number: "03", title: "Konsistensi Data Terdistribusi",
-  subtitle: [Alasan 2PC dihindari, saga, dan _idempotency key_ untuk operasi finansial])
-
+  subtitle: [Alasan 2PC dihindari, saga dengan kompensasi di studi kasus, dan _idempotency key_ untuk operasi finansial])
 #slide(kicker: "Masalah", title: "Transfer mengubah data di dua database")[
   #flow(
     node("transfer", sub: "db-transfer", width: 130pt),
@@ -935,7 +934,8 @@ c, err := New("passthrough:///bufnet", s, log,
     edge((470pt, 76pt), (690pt, 180pt), label: "reversal gagal", label-dx: 70pt, label-dy: -14pt),
   )
   #bullets(size: 13pt,
-    [Setiap langkah adalah transaksi lokal di satu service. Bila langkah berikutnya gagal, langkah yang sudah selesai dibatalkan dengan transaksi kompensasi, yaitu credit kembali ke rekening sumber (_reversal_).],
+    [Setiap langkah adalah transaksi lokal di satu service yang langsung di-_commit_. Bila langkah berikutnya gagal, langkah yang sudah selesai dibatalkan dengan transaksi kompensasi, yaitu credit kembali ke rekening sumber (_reversal_).],
+    [`COMPENSATION_FAILED` dicatat sebagai log _error_ dan ditangani manual oleh petugas operasional. Status ini tidak diperbaiki otomatis sebelum diperiksa.],
   )
 ]
 
@@ -949,24 +949,27 @@ c, err := New("passthrough:///bufnet", s, log,
     ],
     card([_Choreography_], accent: amber)[
       - Tidak ada pengendali pusat. Setiap service bereaksi terhadap _event_ dari service lain
-      - _Coupling_ antarservice lebih longgar
-      - Alur tersebar di banyak service dan sulit dilacak ketika jumlah langkah bertambah
+      - _Coupling_ antarservice lebih longgar, cocok untuk alur pendek dengan sedikit service
+      - Alur hanya terlihat dengan menggabungkan log semua service, dan makin sulit dilacak ketika jumlah langkah bertambah
       - *Di studi kasus:* tidak ada saga _choreography_. Notification (Hari 3) hanya bereaksi terhadap _event_ transfer, dengan mekanisme seperti _choreography_ tetapi tanpa kompensasi
     ],
   )
   #v(10pt)
-  #note(kind: "tip")[Untuk alur finansial dengan kompensasi, _orchestration_ umumnya lebih aman karena status setiap transfer dapat dibaca dari satu tabel.]
+  #note(kind: "tip")[Transfer dana membutuhkan status yang jelas setiap saat, misalnya untuk menjawab keluhan nasabah. Karena itu studi kasus memilih _orchestration_: status setiap transfer dapat dibaca dari satu tabel.]
 ]
 
-#slide(kicker: "Konsep", title: [Kompensasi berbeda dengan _rollback_])[
-  #bullets(
-    [_Rollback_ database menghapus jejak transaksi seolah tidak pernah terjadi. Kompensasi justru menambah mutasi baru: credit _reversal_ dengan _reference_ `<transfer_id>:reversal`.],
-    [Kedua mutasi (debit asli dan _reversal_) tetap tercatat di riwayat mutasi rekening. Jejak ini dibutuhkan untuk audit dan rekonsiliasi.],
-    [Di antara debit dan _reversal_, saldo rekening sumber sempat berkurang dan dapat terbaca oleh nasabah. Saga menjamin _eventual consistency_ (data akhirnya konsisten), tetapi tidak menjamin isolasi.],
-    [Kompensasi juga dapat gagal. Status `COMPENSATION_FAILED` dicatat dengan log _error_ untuk ditangani manual, dan tidak boleh diabaikan.],
+#slide(kicker: "Saga", title: [Kode HTTP `POST /transfers` sejak Lab 5])[
+  #table(
+    columns: (1.6fr, auto, 1.3fr),
+    [Hasil Saga], [HTTP], [Arti bagi Channel],
+    [`COMPLETED`], [`201`], [Selesai],
+    [Rekening tidak ada atau saldo kurang, termasuk `COMPENSATED` karena rekening tujuan tidak ada], [`422`], [Tidak ada uang yang berpindah. Mengirim ulang data yang sama tetap menghasilkan `422`],
+    [_Circuit breaker_ terbuka saat debit (`FAILED`), atau saat credit lalu debit dikembalikan (`COMPENSATED`)], [`503`], [Tidak ada uang yang berpindah, aman diulang setelah jeda],
+    [_Dependency_ gagal (`FAILED` atau `COMPENSATED`)], [`502`], [Periksa `GET /transfers/{id}`],
+    [`COMPENSATION_FAILED`], [`500`], [Dana tertahan di sisi transfer, ditangani petugas],
   )
-  #v(4pt)
-  #note(kind: "warn")[Setiap perubahan status saga dan _event_-nya ditulis dalam satu transaksi database (_transactional outbox_). Pola ini dibahas dan dipraktikkan di Hari 3.]
+  #v(8pt)
+  #note[Berbeda dengan Lab 3 dan Lab 4, _breaker_ yang terbuka di antara debit dan credit kini menghasilkan `503` karena debit sudah dikembalikan dan tidak ada uang yang berpindah.]
 ]
 
 #slide(kicker: "Konsep", title: [_Idempotency key_ untuk operasi finansial])[
@@ -985,8 +988,116 @@ c, err := New("passthrough:///bufnet", s, log,
       ]
     ],
   )
+]
+
+#slide(kicker: "Saga", title: [Mutasi account dibuat _idempotent_])[
+  #two-col(
+    [
+      ```sql
+      create unique index if not exists
+        mutation_idempotency
+        on mutation (account_number, type, reference);
+
+      insert into mutation (...) values (...)
+      on conflict (account_number, type, reference)
+      do nothing;
+      ```
+      #v(6pt)
+      #bullets(size: 13pt,
+        [Bila tidak ada baris yang masuk, berarti mutasi dengan _reference_ tersebut sudah pernah dicatat. Account lalu membaca saldo dalam transaksi yang sama, menjawab sukses tanpa mutasi baru, dan mencatat log `mutation already applied, not repeated`],
+        [_Reference_ debit = `transfer_id`, _reference_ _reversal_ = `transfer_id:reversal`],
+      )
+    ],
+    [
+      #card("Dampak ke klien gRPC di transfer")[
+        Di Lab 3 dan Lab 4, _retry_ hanya dilakukan untuk `Unavailable`. Setelah mutasi dibuat _idempotent_ di Lab 5, `DeadlineExceeded` juga boleh di-_retry_.
+
+        #v(4pt)
+        Debit yang ternyata sudah diproses sebelum _timeout_ tidak akan dijalankan dua kali.
+      ]
+    ],
+    ratio: (1.2fr, 1fr),
+  )
+  #v(8pt)
+  #note(kind: "warn")[Lab 5 (Hari 3) dimulai dengan `make infra-reset` lalu `make infra-up`. Database dari Lab 1–4 dapat berisi _reference_ ganda, sehingga _unique index_ gagal dibuat dan account berhenti saat _startup_ dengan _error_ `apply schema`.]
+]
+
+#slide(kicker: "Saga", title: "Kompensasi berupa transaksi baru")[
+  #flow(
+    node("Debit", sub: "ref = id transfer", kind: "infra", width: 150pt),
+    arr(label: "commit", length: 60pt),
+    node("Credit", sub: "gagal", kind: "infra", width: 120pt),
+    arr(label: "kompensasi", length: 90pt, color: amber),
+    node("Credit ke sumber", sub: "ref = id:reversal", kind: "infra", width: 170pt),
+  )
+  #v(14pt)
+  #v(14pt)
+  #bullets(size: 13pt,
+    [Kompensasi berbeda dengan _rollback_. _Rollback_ menghapus jejak transaksi seolah tidak pernah terjadi, sedangkan kompensasi membalik efek bisnis (_semantic undo_) dengan mutasi credit baru ber-_reference_ `<transfer_id>:reversal`. Debit asli dan _reversal_ tetap tercatat untuk audit dan rekonsiliasi],
+    [Di antara debit dan _reversal_, saldo rekening sumber sempat berkurang dan dapat terbaca oleh nasabah. Saga menjamin _eventual consistency_ (data akhirnya konsisten), tetapi tidak menjamin isolasi],
+    [Credit yang `DeadlineExceeded` diulang terlebih dahulu dengan _reference_ yang sama. Bila semua percobaan berakhir _timeout_, hasilnya tidak pasti. Lab tetap menjalankan kompensasi, sedangkan sistem _production_ menambahkan _reconciliation job_],
+    [Kompensasi juga bisa gagal atau _timeout_, jadi kompensasi wajib aman untuk diulang. Kompensasi yang gagal berakhir di `COMPENSATION_FAILED`],
+  )
+  #v(4pt)
+  #note(kind: "warn")[Setiap perubahan status saga dan _event_-nya ditulis dalam satu transaksi database (_transactional outbox_). Pola ini dibahas dan dipraktikkan di Hari 3.]
+]
+
+#code-slide(kicker: "Saga", title: [_Reversal_ dengan _policy_ sendiri tanpa _circuit breaker_],
+  side: [
+    - Credit biasanya gagal karena account mati atau _breaker_ baru terbuka. Bila _reversal_ lewat _breaker_ yang sama, _reversal_ langsung ditolak dan transfer berakhir `COMPENSATION_FAILED`
+    - _Reversal_ berjalan di koneksi gRPC kedua dengan _retry_ dan _backoff_ 200 ms–5 detik, paling lama 30 detik
+    - Setiap percobaan membawa _reference_ yang sama, sehingga saldo tidak bertambah dua kali
+    - Log `retrying reversal` menandai setiap _retry_
+  ],
+)[
+```go
+// transfer.Service
+func (s *Service) compensate(ctx context.Context,
+    t Transfer, cause error) (Transfer, error) {
+    reason := fmt.Sprintf("credit failed: %v", cause)
+    err := s.accounts.Reverse(ctx, t.FromAccount,
+        t.Amount, t.ID+ReversalSuffix)
+    if err != nil {
+        reason = fmt.Sprintf("%s; reversal failed: %v",
+            reason, err)
+        return s.finish(ctx, t, Debited, CompensationFailed,
+            reason, "", fmt.Errorf("%w: %w",
+                ErrReversalFailed, errors.Join(cause, err)))
+    }
+    return s.finish(ctx, t, Debited, Compensated,
+        reason, EventCompensated, cause)
+}
+
+// accountclient.New: tanpa breaker, dibatasi durasi
+reversalRetry := retrypolicy.NewBuilder[any]().
+    HandleIf(countsAsFailure).
+    WithMaxRetries(-1). // dibatasi durasi, bukan jumlah
+    WithMaxDuration(s.ReversalMaxDuration). // 30 s
+    WithBackoff(s.ReversalBackoffMin, s.ReversalBackoffMax).
+    WithJitterFactor(jitterFactor).
+    Build()
+```
+]
+
+#slide(kicker: "Saga", title: [Saga dan _graceful shutdown_])[
+  #two-col(
+    card([Durasi terburuk satu saga])[
+      #table(
+        columns: (1fr, auto),
+        [Langkah], [Durasi],
+        [Debit: 4 percobaan × 2 detik + 3 _backoff_ × 1,25 detik], [11,75 detik],
+        [Credit, dengan perhitungan yang sama], [11,75 detik],
+        [_Reversal_: paling lama 30 detik + 1 percobaan terakhir], [32 detik],
+        [*Total*], [*55,5 detik*],
+      )
+    ],
+    card([Akibatnya], accent: gold.darken(15%))[
+      - `shutdownGrace` transfer = 60 detik. `TestShutdownGrace` gagal bila _policy_ bertambah panjang melewati angka ini
+      - Platform harus memberi waktu yang cukup sebelum `SIGKILL`, melalui `terminationGracePeriodSeconds` di Kubernetes (Hari 4) dan `stop_grace_period` di Docker Compose
+    ],
+  )
   #v(10pt)
-  #note[Setelah debit dan credit _idempotent_, `DeadlineExceeded` aman di-_retry_. Pengecualian _timeout_ yang dipasang di Lab 3 dan Lab 4 dicabut di Lab 5.]
+  #note(kind: "warn")[Masih ada satu celah. Bila proses mati paksa (`SIGKILL`, _crash_) di antara dua langkah, baris `PENDING` atau `DEBITED` tertinggal tanpa ada yang melanjutkan. Sistem _production_ menambahkan _recovery job_ yang melanjutkan atau mengompensasi baris tersebut.]
 ]
 
 #slide(kicker: "Ringkasan", title: "Ringkasan pola Hari 2")[
@@ -997,7 +1108,8 @@ c, err := New("passthrough:///bufnet", s, log,
     [_Retry_ + _backoff_], [Gangguan sesaat menggagalkan _request_], [Operasinya _idempotent_ atau terbukti belum diproses],
     [_Circuit breaker_], [Service yang mati terus dibebani dan pemanggil ikut lambat], [Panggilan sinkron ke service yang dapat gagal],
     [gRPC], [Kontrak internal hanya diperiksa saat program berjalan], [Panggilan internal bervolume tinggi antartim yang sama-sama mengendalikan kontrak],
-    [Saga], [Transaksi lintas database tanpa 2PC], [Satu proses bisnis mengubah data di lebih dari satu service],
+    [Saga (_orchestration_)], [Transaksi lintas database tanpa 2PC], [Satu proses bisnis mengubah data di lebih dari satu service dan butuh status yang jelas],
+    [Kompensasi], [Langkah yang sudah di-_commit_ harus dibatalkan], [Ada langkah saga yang bisa gagal setelah langkah lain berhasil],
     [_Idempotency key_], [_Retry_ dan pengiriman ulang menggandakan mutasi], [Setiap operasi yang mengubah saldo],
   )
 ]
@@ -1008,7 +1120,7 @@ c, err := New("passthrough:///bufnet", s, log,
     [_Concern_], [Yang Dibangun di Hari 2 (di Kode)], [Dilanjutkan di],
     [Komunikasi sinkron dan asinkron], [REST untuk channel, gRPC untuk transfer ke account (Lab 4)], [_Messaging_ Kafka untuk notification (Hari 3), Service DNS di Kubernetes (Hari 4)],
     [_Resiliency_], [_Timeout_, _retry_, dan _circuit breaker_ dengan failsafe-go (Lab 3–4)], [Metrik _circuit breaker_ di Grafana (Lab 8). _Probe_, _restart_, dan _rolling update_ di Kubernetes (Lab 9)],
-    [Konsistensi data], [Konsep saga, kompensasi, dan _idempotency key_], [Saga, _transactional outbox_, dan _idempotent consumer_ (Lab 5–6)],
+    [Konsistensi data], [Desain saga transfer: status, kompensasi, kode HTTP, mutasi _idempotent_, _idempotency key_], [Implementasi saga, _transactional outbox_, dan _idempotent consumer_ (Lab 5–6)],
     [_Security_ dan _observability_], [_Interceptor_ gRPC sebagai tempat pemeriksaan bersama untuk semua method], [Validasi JWT (Lab 7), _span_ untuk setiap percobaan panggilan (Lab 8)],
   )
   #v(10pt)
@@ -1018,9 +1130,10 @@ c, err := New("passthrough:///bufnet", s, log,
 #slide(kicker: "Berikutnya", title: [Materi Hari 3])[
   #bullets(
     [*Kafka untuk _messaging_.* _Topic_, _partition_, _consumer group_, dan _at-least-once delivery_.],
-    [*Lab 5.* Transfer menjadi saga dengan kompensasi, _event_ dikirim melalui _transactional outbox_, notification sebagai _consumer_.],
+    [*Lab 5.* Desain saga dari hari ini diimplementasikan di transfer, _event_ dikirim melalui _transactional outbox_, notification sebagai _consumer_.],
     [*Lab 6.* _Idempotent consumer_: _replay event_ tanpa notifikasi ganda, `Idempotency-Key` pada transfer.],
     [*Lab 7, _security_.* OAuth2 _client credentials_ dan validasi JWT pada REST _middleware_ dan gRPC _interceptor_.],
+    [*_Observability_.* Log, metrik, dan _trace_ lintas service sebagai persiapan Lab 8 di awal Hari 4.],
   )
   #v(8pt)
   #note(kind: "tip")[Pastikan _checkpoint_ `lab-04` berjalan di laptop masing-masing sebelum Hari 3 dimulai: `make test` lulus dan transfer melalui gRPC berhasil.]
