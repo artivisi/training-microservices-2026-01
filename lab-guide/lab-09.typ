@@ -985,6 +985,8 @@ Jalankan pemeriksaan berikut dari direktori `studi-kasus/` dengan _cluster_ `ban
 
 *`curl localhost:28080/transfers` menghasilkan `404 page not found`.* Traefik membutuhkan beberapa puluh detik setelah `make k3d-up` hingga siap, dan Ingress baru dikenali setelah _manifest_ diterapkan. Periksa `kubectl -n kube-system get pods` dan `kubectl -n bank get ingress`. _Path_ selain `/transfers` memang tidak diteruskan oleh Ingress.
 
+*`curl: (52) Empty reply from server` tepat setelah `make k8s-apply`.* `rollout status` sudah melaporkan _pod_ siap, tetapi Traefik baru menerima daftar _endpoint_ yang baru satu atau dua detik kemudian. Tunggu sebentar, lalu ulangi _request_. Jawaban `401` untuk _request_ tanpa _token_ menandakan bahwa _request_ sudah sampai ke `transfer`.
+
 *Transfer ditolak `401` dengan _token_ yang baru dibuat.* `OAUTH_ISSUER` di ConfigMap tidak sama dengan nilai `iss` di _token_. Nilainya harus tepat `http://localhost:14444/`, termasuk garis miring di akhir. Jika Hydra di-_restart_, `make infra-up` membuat ulang _client_ OAuth2, dan _token_ lama tidak berlaku lagi.
 
 *Transfer `FAILED` atau `503` dengan alasan `account` tidak tersedia.* _Pod_ `account` belum _ready_ atau DNS _cluster_ belum menjawab `account`. Periksa `kubectl -n bank get endpoints account` dan log `transfer`.
