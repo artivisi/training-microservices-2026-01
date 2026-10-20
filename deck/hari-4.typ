@@ -212,7 +212,7 @@ func (h ctxHandler) WithGroup(n string) slog.Handler {
     [`circuit_breaker_state{target}`], [transfer], [0 = _closed_, 1 = _half-open_, 2 = _open_],
     [Penghitung transisi _breaker_], [transfer], [Berapa kali _breaker_ berganti status],
     [`outbox_pending`], [transfer], [_Event_ yang belum terkirim ke Kafka],
-    [`notifications_processed_total{result}`], [notification], [Jumlah _event_ diproses, termasuk duplikat yang dilewati],
+    [`notifications_processed_total{result}`], [notification], [`sent`, `duplicate`, dan `skipped`. `skipped` = _event_ rusak atau ditolak database; seharusnya tetap 0],
   )
   #v(10pt)
   #note(kind: "warn")[Label `route` diisi pola ServeMux (`GET /transfers/{id}`), tidak diisi _path_ asli. _Path_ asli berisi ID sehingga jumlah _time series_ terus bertambah.]
@@ -222,25 +222,30 @@ func (h ctxHandler) WithGroup(n string) slog.Handler {
   #two-col(ratio: (1.15fr, 1fr),
     [
 ```go
-// transfer: dalam transaksi DB yang sama
-// dengan perubahan status transfer
+// telemetry.Setup: hanya W3C Trace Context
+otel.SetTextMapPropagator(propagation.TraceContext{})
+
+// transfer, outbox.Insert: dalam transaksi DB yang
+// sama dengan perubahan status transfer
 carrier := propagation.MapCarrier{}
 otel.GetTextMapPropagator().Inject(ctx, carrier)
-// carrier disimpan di kolom baris outbox,
+// carrier masuk kolom trace_context,
 // relay menyalinnya ke header Kafka
 
 // notification: saat membaca message
-ctx = otel.GetTextMapPropagator().
-    Extract(ctx, headerCarrier(msg.Headers))
-ctx, span := tracer.Start(ctx,
-    "notification.process")
+headers := m.Headers
+ctx = otel.GetTextMapPropagator().Extract(ctx,
+    telemetry.KafkaHeaders{Headers: &headers})
+ctx, span := c.tracer.Start(ctx, "process "+m.Topic,
+    trace.WithSpanKind(trace.SpanKindConsumer))
 defer span.End()
 ```
     ],
     [
-      #set text(size: 13pt)
+      #set text(size: 12.5pt)
       - HTTP dan gRPC: `otelhttp` dan _stats handler_ `otelgrpc` meneruskan _header_ `traceparent` secara otomatis
       - Kafka: _relay_ berjalan di _goroutine_ terpisah tanpa _context_ dari _request_ asal, dan baru mengirim _event_ hingga ±500 ms kemudian. Karena itu _trace context_ disimpan ke baris _outbox_ saat baris tersebut ditulis
+      - Hanya `traceparent` yang diteruskan. _Baggage_ tidak digunakan: REST API menghadap channel, dan _baggage_ dari pemanggil luar akan ikut terkirim ke semua service di belakangnya
       - Hasilnya, satu transfer tampil sebagai satu _trace_ yang mencakup tiga service
     ],
   )
@@ -325,10 +330,11 @@ defer span.End()
         columns: (1fr, auto),
         [_Base image_], [Ukuran kira-kira],
         [`golang:1.27.2-alpine` (_builder_)], [± 300 MB],
-        [`alpine` + _binary_], [± 25 MB],
-        [`scratch` + _binary_], [± 15 MB],
+        [`alpine` + _binary_], [± 30 MB],
+        [`scratch` + _binary_], [± 22 MB],
+        [`scratch` + _binary_, terkompresi], [± 8 MB],
       )
-      #text(size: 10.5pt, fill: slate)[Angka bergantung pada jumlah dependensi service.]
+      #text(size: 10.5pt, fill: slate)[Studi kasus: _binary_ 21–23 MB per service. `docker images` dengan _containerd image store_ menampilkan `CONTENT SIZE` ± 8 MB dan `DISK USAGE` ± 32 MB.]
     ],
   )
 ]
@@ -338,22 +344,31 @@ defer span.End()
     - _Stage_ pertama: kompilasi dengan _toolchain_ lengkap
     - _Stage_ kedua: `FROM scratch`, hanya menyalin hasil _build_
     - `-trimpath -ldflags "-s -w"`: _path_ lokal dan simbol _debug_ dibuang
-    - _Build context_ `studi-kasus/` karena `go.work` dan modul `proto` ikut dibutuhkan
+    - `GOWORK=off`: hanya modul service dan `proto`, sehingga perubahan service lain tidak membatalkan _cache_
+    - `go.mod` disalin lebih dulu agar _layer_ unduhan dependensi tetap di-_cache_
+    - _Build context_ `studi-kasus/` karena account dan transfer membutuhkan modul `proto` (`replace ../proto`). Notification tidak menyalin `proto/`
   ],
 )[
 ```dockerfile
 FROM golang:1.27.2-alpine AS build
+ENV GOWORK=off CGO_ENABLED=0
 WORKDIR /src
-COPY . .
-RUN CGO_ENABLED=0 go build -trimpath \
-      -ldflags "-s -w" -o /out/app ./transfer
+COPY proto/go.mod proto/go.sum proto/
+COPY transfer/go.mod transfer/go.sum transfer/
+WORKDIR /src/transfer
+RUN go mod download
+COPY proto/ /src/proto/
+COPY transfer/ /src/transfer/
+RUN go build -trimpath -ldflags "-s -w" \
+      -o /out/transfer .
 
 FROM scratch
 COPY --from=build /etc/ssl/certs/ca-certificates.crt \
      /etc/ssl/certs/
-COPY --from=build /out/app /app
+COPY --from=build /out/transfer /transfer
 USER 65532:65532
-ENTRYPOINT ["/app"]
+EXPOSE 8082
+ENTRYPOINT ["/transfer"]
 ```
 ]
 
@@ -393,27 +408,34 @@ ENTRYPOINT ["/app"]
     - _Environment variable_ yang kosong menghentikan _startup_ dengan pesan galat yang menyebut namanya
     - _Pod_ dengan ConfigMap yang salah langsung gagal dan terlihat di `kubectl get pods`
     - Nilai _default_ yang digunakan tanpa terdeteksi, misalnya `localhost`, baru ketahuan saat transaksi pertama gagal
+    - Nilai yang formatnya salah juga ditolak saat _startup_. `OTEL_EXPORTER_OTLP_ENDPOINT` tanpa _port_ membuat gRPC menghubungi _port_ 443, dan semua ekspor gagal tanpa pesan setelah service berjalan
   ],
 )[
 ```go
 func LoadConfig() (Config, error) {
     var missing []string
-    get := func(key string) string {
-        v := os.Getenv(key)
+    get := func(name string) string {
+        v := os.Getenv(name)
         if v == "" {
-            missing = append(missing, key)
+            missing = append(missing, name)
         }
         return v
     }
     cfg := Config{
-        HTTPAddr:    get("HTTP_ADDR"),
-        DatabaseURL: get("DATABASE_URL"),
-        AccountGRPC: get("ACCOUNT_GRPC_ADDR"),
+        HTTPAddr:        get("HTTP_ADDR"),
+        DatabaseURL:     get("DATABASE_URL"),
+        AccountGRPCAddr: get("ACCOUNT_GRPC_ADDR"),
+        // ... Kafka, OAuth, OTel
     }
     if len(missing) > 0 {
         return Config{}, fmt.Errorf(
-            "missing required env: %s",
+            "missing required environment variables: %s",
             strings.Join(missing, ", "))
+    }
+    if err := checkEndpointURL(
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+        cfg.OTelEndpoint); err != nil {
+        return Config{}, err // juga bila port kosong
     }
     return cfg, nil
 }
@@ -466,24 +488,29 @@ func LoadConfig() (Config, error) {
     - `/readyz` gagal → _pod_ dikeluarkan dari Service, tidak di-_restart_. Cocok untuk kondisi database belum terhubung
     - `/healthz` gagal → _container_ di-_restart_. Hanya untuk proses yang macet
     - Kesalahan umum: _liveness_ memeriksa database, sehingga gangguan database menyebabkan semua _pod_ di-_restart_ bersamaan
+    - _Probe_ hanya HTTP. _Health service_ gRPC account tidak memeriksa database, jadi tidak digunakan sebagai _readiness probe_
   ],
 )[
 ```yaml
 containers:
 - name: transfer
-  image: transfer:dev
+  image: studi-kasus/transfer   # tag dari overlay
+  imagePullPolicy: IfNotPresent
+  ports: [{ name: http, containerPort: 8082 }]
   envFrom:
   - configMapRef: { name: transfer }
   - secretRef:    { name: transfer }
   readinessProbe:
-    httpGet: { path: /readyz, port: 8082 }
+    httpGet: { path: /readyz, port: http }
     periodSeconds: 5
+    failureThreshold: 2
   livenessProbe:
-    httpGet: { path: /healthz, port: 8082 }
+    httpGet: { path: /healthz, port: http }
     periodSeconds: 10
+    failureThreshold: 3
   resources:
-    requests: { cpu: 50m,  memory: 64Mi }
-    limits:   { memory: 128Mi }
+    requests: { cpu: 50m, memory: 64Mi }
+    limits:   { cpu: 500m, memory: 256Mi }
 ```
 ]
 
@@ -521,20 +548,44 @@ securityContext:
   #two-col(ratio: (1fr, 1fr),
     [
 ```bash
-kubectl -n bank set image deploy/transfer \
-  transfer=transfer:v2
-kubectl -n bank rollout status deploy/transfer
-kubectl -n bank rollout undo deploy/transfer
+make images VERSION=1.0.1
+make k3d-import VERSION=1.0.1
+kubectl -n bank set image deployment/transfer \
+  transfer=studi-kasus/transfer:1.0.1
+kubectl -n bank rollout status deployment/transfer
+kubectl -n bank rollout undo deployment/transfer
 ```
     ],
     [
-      #set text(size: 13pt)
-      - Nilai _default_ `maxSurge` 25% (dibulatkan ke atas menjadi 1) dan `maxUnavailable` 25% (dibulatkan ke bawah menjadi 0): satu _pod_ tambahan dibuat lebih dulu
-      - _Pod_ lama baru dihentikan setelah _pod_ baru lolos _readiness probe_
-      - _Image_ baru yang gagal _start_ menahan _rollout_; versi lama tetap melayani
-      - `rollout undo` mengembalikan versi sebelumnya
+      #set text(size: 12.5pt)
+      - Manifest menetapkan `maxSurge: 1` dan `maxUnavailable: 0`: satu _pod_ tambahan dibuat lebih dulu, jumlah _pod_ tidak pernah turun
+      - _Pod_ lama baru dihentikan setelah _pod_ baru lolos _readiness probe_. _Image_ yang gagal _start_ menahan _rollout_; versi lama tetap melayani
+      - Setiap perubahan mendapat `VERSION` baru. _Build_ ulang dengan _tag_ yang sama tidak pernah sampai ke _pod_: `IfNotPresent` dan referensi _image_ yang sama tidak memicu _rollout_
+      - `rollout undo` mengembalikan versi sebelumnya; peringatan `last-applied-configuration` yang muncul dapat diabaikan
     ],
   )
+]
+
+#code-slide(kicker: "Rolling update", title: [`preStop` dan batas waktu saat _pod_ dihentikan],
+  side: [
+    - Pengeluaran _pod_ dari _endpoint_ Service dan Ingress berjalan bersamaan dengan penghentiannya. Selama beberapa detik, _request_ baru masih datang
+    - `preStop` `sleep` 5 detik menunda `SIGTERM` sampai _pod_ tidak lagi menerima _request_ baru. Aksi `sleep` bawaan (Kubernetes 1.30+) tidak membutuhkan _shell_, yang memang tidak ada di `scratch`
+    - `terminationGracePeriodSeconds` dihitung sejak `preStop` dimulai: `preStop` + batas _shutdown_ + _flush_ telemetri 5 detik. Account dan notification 30 (5 + 10 + 5), transfer 75 (5 + 60 + 5, ditambah cadangan)
+    - Nilai _default_ 30 detik akan mengirim `SIGKILL` ke transfer di tengah saga
+  ],
+)[
+```yaml
+spec:
+  # 5 s preStop + 60 s shutdownGrace
+  # + 5 s flush telemetri, ditambah cadangan
+  terminationGracePeriodSeconds: 75
+  containers:
+    - name: transfer
+      lifecycle:
+        preStop:
+          sleep:
+            seconds: 5
+```
 ]
 
 #slide(kicker: "Infra dari cluster", title: [_Pod_ menjangkau infrastruktur di _host_])[
@@ -555,14 +606,14 @@ kubectl -n bank rollout undo deploy/transfer
     - Melakukan _scaling_, perubahan konfigurasi, dan _rolling update_
   ],
   [
-    - `make images`, `make k3d-up`, `make k3d-import`, `make k8s-apply`
+    - `make images VERSION=1.0.0`, `make k3d-up`, `make k3d-import VERSION=1.0.0`, `make k8s-apply`
     - Transfer lewat Ingress `localhost:8080`, cek hasilnya di Grafana
-    - `kubectl scale` transfer menjadi 3 _replica_
-    - Ubah satu nilai ConfigMap, jalankan `kubectl rollout restart deploy/transfer`, lalu periksa nilai baru di _pod_
-    - _Build_ _tag_ baru, `set image`, `rollout status`
+    - `kubectl scale` notification menjadi 3 dan 4 _replica_
+    - Hapus `KAFKA_GROUP_ID` dari ConfigMap notification, _apply_, lalu `rollout restart`; kembalikan nilainya dan `rollout restart` lagi
+    - `VERSION=1.0.1`, `set image`, `rollout status`, `rollout undo`
   ],
   "lab-08",
-  [],
+  [#note[`make k3d-up` menunggu 40–60 detik sampai DNS _cluster_ mengenal `host.k3d.internal`. Setelah Docker atau laptop di-_restart_, _pod_ masuk `CrashLoopBackOff` dengan pesan `no such host`: jalankan `k3d cluster stop bank` lalu `k3d cluster start bank`.]],
 )
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -593,8 +644,8 @@ kubectl -n bank rollout undo deploy/transfer
     - Tidak ada `uses:`; setiap _step_ berupa perintah _shell_ biasa
     - Logika _build_ ada di `Makefile`, sehingga bisa dijalankan sama persis di laptop
     - _Checkout_ berupa `git fetch` dengan token yang diterbitkan runner untuk job tersebut; isi lengkapnya ada di `.forgejo/workflows/transfer.yaml`
-    - Memindahkan _pipeline_ ke runner CI lain cukup dengan menyalin urutan perintah yang sama
     - _Tag image_ = SHA _commit_, sehingga setiap _image_ bisa dilacak ke kode sumbernya
+    - `concurrency` mengantrekan _run_ berikutnya tanpa membatalkan yang sedang berjalan, agar dua _deploy_ tidak berebut Deployment yang sama
   ],
 )[
 ```yaml
@@ -604,6 +655,11 @@ on:
     paths:
       - studi-kasus/transfer/**
       - studi-kasus/proto/**
+      - studi-kasus/go.work
+      - studi-kasus/pipeline.mk
+concurrency:
+  group: pipeline-transfer
+  cancel-in-progress: false
 jobs:
   pipeline:
     runs-on: host
@@ -627,6 +683,8 @@ jobs:
     - Target ini ada di `studi-kasus/pipeline.mk` dan di-_include_ oleh `Makefile` setiap service
     - `REGISTRY`, `IMAGE_OWNER`, `VERSION`, `NAMESPACE` wajib diisi; target berhenti dengan pesan `missing required variables` bila ada yang kosong
     - Tidak ada _tag_ `latest`: _rollout_ selalu menunjuk versi yang pasti
+    - _Deploy_ pertama di _namespace_ kosong menjalankan `apply`: ConfigMap, Service, Deployment (dan Ingress transfer) dibuat dari `k8s/overlays/server` dengan _image_ _commit_ ini
+    - `change-cause` diisi setelah `set image`, sehingga `rollout history` mencatat versi per revisi
     - `deploy` menunggu `rollout status`, sehingga _pipeline_ gagal bila _pod_ baru tidak pernah _ready_
   ],
 )[
@@ -635,13 +693,20 @@ IMAGE = $(REGISTRY)/$(IMAGE_OWNER)/$(SERVICE):$(VERSION)
 
 image:
 	$(call require,REGISTRY IMAGE_OWNER VERSION)
-	# Dockerfile di studi-kasus/<service>, context studi-kasus/
-	docker build -f Dockerfile -t $(IMAGE) ..
+	docker build -f Dockerfile --label \
+	  org.opencontainers.image.revision=$(VERSION) \
+	  -t $(IMAGE) ..
 
 deploy:
 	$(call require,REGISTRY IMAGE_OWNER VERSION NAMESPACE)
+	@d=$$(kubectl -n $(NAMESPACE) get deployment/$(SERVICE) \
+	  --ignore-not-found -o name) || exit 1; \
+	if [ -z "$$d" ]; then $(MAKE) apply || exit 1; fi
 	kubectl -n $(NAMESPACE) set image \
 	  deployment/$(SERVICE) $(SERVICE)=$(IMAGE)
+	kubectl -n $(NAMESPACE) annotate deployment/$(SERVICE) \
+	  kubernetes.io/change-cause="$(SERVICE) $(VERSION)" \
+	  --overwrite
 	kubectl -n $(NAMESPACE) rollout status \
 	  deployment/$(SERVICE) --timeout=180s
 ```
@@ -676,41 +741,42 @@ deploy:
         [Lab], [Jenkins],
         [Repositori di git server], [Repositori Bitbucket],
         [_Trigger_ `on: push`], [_Webhook_ Bitbucket ke Jenkins],
-        [Filter `paths:`], [_Multibranch_ + `when { changeset }`],
+        [`branches`, `paths:`], [Hanya _Multibranch Pipeline_ (_job_ lain tidak mengisi `BRANCH_NAME`): `when { branch 'main' }` + `changeset`],
+        [`concurrency`], [`disableConcurrentBuilds()`],
         [_Step_ `run: make test`], [`stage('Test')`],
         [_Step_ `image`, `push`], [`stage('Build Image')`, `stage('Push')`],
         [_Step_ `deploy`], [`stage('Deploy')`],
-        [_Secret_ runner], [Jenkins _credentials_],
+        [_Variable_ dan _secret_ runner], [_Environment_ _folder_ dan Jenkins _credentials_],
       )
     ],
     [
 ```groovy
 pipeline {
   agent any
-  environment {
-    VERSION     = "${env.GIT_COMMIT}"
-    REGISTRY    = 'registry.example.com'
-    IMAGE_OWNER = 'tim-app'
-    NAMESPACE   = 'bank'
-    REG = credentials('registry') // REG_USR, REG_PSW
-  }
-  stages {
-    stage('Test') { steps {
-      sh 'make -C studi-kasus/transfer test' } }
-    stage('Build Image') { steps {
-      sh 'make -C studi-kasus/transfer image' } }
-    stage('Push') { steps {
-      sh 'echo $REG_PSW | docker login -u $REG_USR --password-stdin $REGISTRY'
-      sh 'make -C studi-kasus/transfer push' } }
-    stage('Deploy') { steps {
-      sh 'make -C studi-kasus/transfer deploy' } }
-  }
+  options { disableConcurrentBuilds() }
+  environment { VERSION = "${env.GIT_COMMIT}" }
+  stages { stage('transfer') {
+    when { allOf { branch 'main'
+      anyOf { changeset 'studi-kasus/transfer/**'
+              changeset 'studi-kasus/proto/**' } } }
+    stages {
+      stage('Test') { steps {
+        script { if (!env.GIT_COMMIT ||
+          env.GIT_COMMIT == 'null') error('...') }
+        sh 'make -C studi-kasus/transfer test' } }
+      stage('Build Image') { steps {
+        sh 'make -C studi-kasus/transfer image' } }
+      stage('Push') { steps {
+        withCredentials([usernamePassword(...)]) {
+          sh 'make -C studi-kasus/transfer push' } } }
+      stage('Deploy') { steps {
+        withCredentials([file(...)]) {
+          sh 'make -C studi-kasus/transfer deploy' } } }
+    } } }
 }
 ```
     ],
   )
-  #v(6pt)
-  #note[Karena setiap tahap hanya memanggil `make`, _Jenkinsfile_ deklaratif cukup berisi empat _stage_ yang sama. Repositori studi kasus menyediakan satu _Jenkinsfile_ per service.]
 ]
 
 #slide(kicker: "GitOps", title: [GitOps: keadaan _cluster_ mengikuti isi repositori])[
@@ -748,8 +814,8 @@ pipeline {
   [
     - Membaca _workflow_ `transfer.yaml` dan target `make` yang dipanggilnya
     - Mengubah kode transfer, _commit_, lalu _push_ ke git server
-    - Memantau _log pipeline_: _test_, _build image_, _push_, _deploy_
-    - Memeriksa `kubectl rollout history` dan versi _image_ yang berjalan
+    - Memantau _log pipeline_: _test_, _build image_, _push_, _deploy_. _Run_ pertama di _namespace_ kosong mencatat `first deploy, applying the overlay`
+    - Memeriksa `kubectl rollout history` (versi per revisi) dan versi _image_ yang berjalan
     - Membandingkan _workflow_ tersebut dengan _Jenkinsfile_ yang setara
   ],
   "lab-09",
@@ -908,7 +974,7 @@ spec:
   #bullets(
     [Ulangi Lab 3 dan Lab 8 dengan nilai _fault_ yang berbeda, lalu cocokkan perilaku _breaker_ di _log_, metrik, dan _trace_.],
     [Tambahkan HPA untuk transfer di k3d, lalu beri beban dengan _load generator_ sederhana dan amati jumlah _replica_.],
-    [Tulis _Jenkinsfile_ untuk account dan notification berdasarkan contoh transfer.],
+    [Jalankan _Jenkinsfile_ salah satu service sebagai _Multibranch Pipeline_ di Jenkins, lalu bandingkan log-nya dengan _run_ di runner lab.],
     [Jalankan _image_ setiap service dengan UID acak dan `--read-only` untuk memastikan kecocokan dengan SCC `restricted-v2`.],
     [Pilih satu aplikasi internal, lalu petakan pola mana dari kartu referensi yang benar-benar dibutuhkan aplikasi tersebut.],
   )

@@ -91,8 +91,8 @@ Setiap pola menambah komponen yang harus dioperasikan. Pola yang tidak menjawab 
 
   [*Circuit breaker*],
   [Pemanggil terus mengirim permintaan ke service yang sedang gagal. Antrean menumpuk dan kegagalan merambat ke pemanggil],
-  [Ketergantungan sinkron ke service lain yang dapat gagal dalam waktu lama. Gagal cepat dengan status jelas (HTTP 503) lebih baik dibandingkan menunggu],
-  [_Database_ milik service sendiri (timeout dan _connection pool_ sudah cukup). Volume panggilan terlalu rendah sehingga ambang kegagalan tidak bermakna],
+  [Ketergantungan sinkron ke service lain yang dapat gagal dalam waktu lama. Gagal cepat dengan status jelas lebih baik dibandingkan menunggu. HTTP 503 hanya digunakan bila belum ada perubahan yang diterapkan, sehingga pemanggil aman mengulang],
+  [_Database_ milik service sendiri (timeout dan _connection pool_ sudah cukup). Volume panggilan terlalu rendah sehingga ambang kegagalan tidak bermakna. Kompensasi saga: _breaker_ yang baru terbuka justru menolak _reversal_, jadi _reversal_ menggunakan retry berbatas waktu tanpa _breaker_ (Lab 5)],
   [Ambang dan _delay_ perlu disetel berdasarkan data. Setiap _pod_ memiliki _breaker_ sendiri dengan state berbeda. Perubahan state wajib tercatat di log dan metrik],
   [3, 4, 8],
 )
@@ -104,7 +104,7 @@ Setiap pola menambah komponen yang harus dioperasikan. Pola yang tidak menjawab 
   [Satu transaksi bisnis mengubah data di beberapa _database_. _Two-phase commit_ membuat transaksi bergantung pada ketersediaan semua peserta sekaligus],
   [Proses bisnis lintas service dengan aksi kompensasi untuk setiap langkah (debit dibatalkan dengan kredit balik)],
   [Seluruh data berada dalam satu _database_ (transaksi lokal sudah cukup)],
-  [State antara (`DEBITED`) terlihat oleh pembaca. Kompensasi dapat gagal dan membutuhkan penanganan manual (`COMPENSATION_FAILED`). Setiap langkah dan kompensasi harus idempoten. Langkah yang tidak dapat dikompensasi (misalnya pengiriman dana ke bank lain) diletakkan paling akhir (_pivot transaction_), dan langkah sesudahnya wajib dapat di-retry hingga berhasil],
+  [State antara (`DEBITED`) terlihat oleh pembaca. Kompensasi dapat gagal dan membutuhkan penanganan manual (`COMPENSATION_FAILED`). Setiap langkah dan kompensasi harus idempoten. _Graceful shutdown_ dan batas waktu platform harus mencakup durasi terburuk satu saga; proses yang mati paksa di antara langkah meninggalkan state antara yang perlu _recovery job_. Langkah yang tidak dapat dikompensasi (misalnya pengiriman dana ke bank lain) diletakkan paling akhir (_pivot transaction_), dan langkah sesudahnya wajib dapat di-retry hingga berhasil],
   [5],
 
   [*Transactional outbox*],
@@ -118,14 +118,14 @@ Setiap pola menambah komponen yang harus dioperasikan. Pola yang tidak menjawab 
   [Klien atau retry mengulang permintaan (timeout, tombol ditekan dua kali), dan server memprosesnya dua kali],
   [Operasi pengubah data yang dapat diulang oleh klien atau retry: transfer, debit, kredit, pembayaran],
   [Operasi baca. Operasi yang idempoten secara alami (PUT dengan nilai absolut, DELETE)],
-  [_Key_ disimpan dengan _unique constraint_. Permintaan dengan _key_ sama dan isi berbeda perlu aturan sendiri (HTTP 422). Masa simpan _key_ harus ditetapkan],
+  [_Key_ disimpan dengan _unique constraint_. Permintaan dengan _key_ sama dan isi berbeda perlu aturan sendiri (HTTP 422). Permintaan ulang dijawab dengan kode HTTP yang sama seperti respons pertama, sehingga penyebab kegagalan harus tersimpan. Masa simpan _key_ harus ditetapkan],
   [5, 6],
 
   [*Idempotent consumer*],
   [Broker mengirim ulang _message_ (_rebalance_, _crash_ sebelum _commit offset_, _replay_) sehingga efeknya terjadi dua kali],
   [Setiap _consumer_ dengan pengiriman _at-least-once_ yang efeknya tidak boleh ganda (mutasi saldo, notifikasi ke nasabah)],
   [Efek _consumer_ sudah idempoten secara alami (_upsert_ nilai terbaru, isi _cache_)],
-  [ID _event_ wajib ditulis dalam transaksi yang sama dengan efeknya. Tabel `processed_event` perlu kebijakan retensi. Efek ke sistem luar (SMS, email) tidak dapat ikut transaksi _database_],
+  [ID _event_ wajib ditulis dalam transaksi yang sama dengan efeknya. Tabel `processed_event` perlu kebijakan retensi. Efek ke sistem luar (SMS, email) tidak dapat ikut transaksi _database_. _Event_ yang tidak mungkin diproses (_poison message_) dilewati dengan log `ERROR` atau dikirim ke _dead-letter topic_, agar _partition_ tidak tertahan],
   [6],
 )
 
@@ -160,7 +160,7 @@ Setiap pola menambah komponen yang harus dioperasikan. Pola yang tidak menjawab 
   [Satu transaksi melewati beberapa service dan broker. Log tiap service tidak terhubung, sehingga sumber kelambatan atau kegagalan sulit ditemukan],
   [Sejak sistem memiliki dua service. Konteks diteruskan melalui _header_ HTTP, _metadata_ gRPC, dan _header_ Kafka],
   [Aplikasi tunggal tanpa panggilan ke service lain (log biasa sudah cukup)],
-  [Setiap titik masuk dan keluar wajib meneruskan konteks. Satu titik yang terlewat memutus _trace_. Volume data _trace_ besar sehingga perlu _sampling_],
+  [Setiap titik masuk dan keluar wajib meneruskan konteks. Satu titik yang terlewat memutus _trace_. Volume data _trace_ besar sehingga perlu _sampling_. _Baggage_ dari pemanggil luar tidak diteruskan ke service internal],
   [8],
 
   [*Metrics* (Prometheus)],
@@ -174,7 +174,7 @@ Setiap pola menambah komponen yang harus dioperasikan. Pola yang tidak menjawab 
   [Kubernetes mengirim trafik ke _pod_ yang belum siap, atau membiarkan _pod_ yang macet tetap berjalan],
   [Setiap service di Kubernetes atau di belakang _load balancer_. _Liveness_ (`/healthz`): proses masih merespons. _Readiness_ (`/readyz`): _dependency_ wajib seperti _database_ dapat dijangkau],
   [_Liveness_ tidak perlu memeriksa _dependency_ eksternal. _Database_ yang mati akan memicu _restart_ massal yang tidak memperbaiki apa pun],
-  [Ambang atau timeout probe yang terlalu ketat memicu _restart_ berulang. _Readiness_ yang memeriksa service lain menghasilkan kegagalan berantai],
+  [Ambang atau timeout probe yang terlalu ketat memicu _restart_ berulang. _Readiness_ yang memeriksa service lain menghasilkan kegagalan berantai. _Health service_ gRPC yang tidak memeriksa _database_ tidak cocok sebagai _readiness_],
   [1, 9],
 )
 
@@ -199,7 +199,7 @@ Setiap pola menambah komponen yang harus dioperasikan. Pola yang tidak menjawab 
   [Mengganti semua _pod_ sekaligus menghentikan layanan selama versi baru dijalankan],
   [Versi baru kompatibel dengan versi lama selama masa transisi, baik API maupun skema _database_],
   [Perubahan skema yang tidak kompatibel: gunakan migrasi _expand/contract_ (kolom baru ditambahkan lebih dahulu, kolom lama dihapus setelah versi lama berhenti), atau strategi _recreate_ dengan jeda layanan. API yang tidak kompatibel: gunakan _blue-green_, karena trafik dipindahkan sekaligus],
-  [Dua versi melayani trafik bersamaan. _Readiness_ yang keliru meloloskan _pod_ yang rusak. _Rollback_ membutuhkan _tag image_ yang tidak berubah, sehingga tag `latest` harus dihindari],
+  [Dua versi melayani trafik bersamaan. _Readiness_ yang keliru meloloskan _pod_ yang rusak. _Rollback_ membutuhkan _tag image_ yang tidak berubah, sehingga tag `latest` harus dihindari; _build_ ulang dengan _tag_ yang sama tidak memicu _rollout_. _Pod_ yang dihentikan masih menerima _request_ beberapa detik (`preStop` _sleep_), dan `terminationGracePeriodSeconds` harus mencakup batas _shutdown_ service],
   [9, 10],
 
   [*Horizontal Pod Autoscaler*],

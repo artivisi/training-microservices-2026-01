@@ -337,14 +337,28 @@ func countsAsFailure(resp *http.Response, err error) bool {
     [
       #bullets(size: 13.5pt,
         [Transfer dicatat dengan status `FAILED` beserta alasannya.],
-        [Channel menerima HTTP 503 seketika, tidak menunggu 2 detik.],
+        [Channel menerima HTTP 503 seketika, tidak menunggu 2 detik. Debit belum diterapkan, jadi _request_ aman diulang nanti.],
         [`GET /debug/circuit-breaker` pada transfer menampilkan _state_ saat itu.],
       )
     ],
     [
-      #note(kind: "warn")[_Circuit breaker_ dapat terbuka di antara debit dan credit. Debit sudah diterapkan, credit ditolak, dan uang tertahan di luar kedua rekening. Celah ini sudah ada sejak Lab 2 dan baru ditutup oleh saga di Lab 5.]
+      #note(kind: "warn")[_Circuit breaker_ dapat terbuka di antara debit dan credit. Debit sudah diterapkan, credit ditolak, dan uang tertahan di luar kedua rekening. Channel menerima 502, tidak 503, karena _request_ ini tidak boleh diulang. Celah ini sudah ada sejak Lab 2 dan baru ditutup oleh saga di Lab 5.]
     ],
   )
+]
+
+#slide(kicker: "Perilaku", title: [Kode HTTP `POST /transfers` di Lab 3 dan Lab 4])[
+  #table(
+    columns: (1.5fr, auto, 1.4fr),
+    [Hasil Transfer], [HTTP], [Arti bagi Channel],
+    [Transfer selesai (`COMPLETED`)], [`201`], [Selesai],
+    [Debit ditolak: rekening sumber tidak ada atau saldo kurang], [`422`], [Tidak ada mutasi. Mengulang dengan data yang sama memberi hasil yang sama],
+    [_Circuit breaker_ terbuka saat debit], [`503`], [Tidak ada mutasi, aman diulang setelah jeda],
+    [Debit gagal karena account _error_ atau _timeout_], [`502`], [Hasil debit tidak pasti, periksa `GET /transfers/{id}`],
+    [Credit gagal setelah debit, termasuk rekening tujuan tidak ada dan _breaker_ yang baru terbuka], [`502`], [Debit sudah diterapkan. Jangan diulang; _log_ `ERROR` meminta _reversal_ manual],
+  )
+  #v(8pt)
+  #note[Semua kegagalan credit setelah debit dibungkus `ErrCreditFailed` di `Service.Execute`, dan _handler_ memeriksanya sebelum kasus `422` dan `503`. Demo yang pasti: transfer ke `to_account` yang tidak terdaftar menghasilkan `502` dengan `failure_reason` `credit failed after debit: ... account not found`.]
 ]
 
 #slide(kicker: "Lab 3", title: "Resiliency pada panggilan transfer ke account")[
@@ -450,6 +464,7 @@ func countsAsFailure(resp *http.Response, err error) bool {
   side: [
     - `package account.v1` memuat versi di nama _package_. Perubahan yang merusak kompatibilitas masuk ke `v2`
     - Nomor _field_ (`= 1`, `= 2`) yang dikirim di jaringan, nama _field_ tidak dikirim
+    - Setiap RPC memiliki _message_ _request_ dan _response_ sendiri, sehingga masing-masing dapat ditambah _field_ tanpa memengaruhi yang lain
     - Nominal uang ditulis sebagai _string_ desimal, alasannya di _slide_ berikut
   ],
 )[
@@ -462,14 +477,15 @@ option go_package = ".../studi-kasus/proto/gen/account/v1;accountv1";
 
 service AccountService {
   rpc GetAccount(GetAccountRequest) returns (GetAccountResponse);
-  rpc Debit(MutationRequest) returns (MutationResponse);
-  rpc Credit(MutationRequest) returns (MutationResponse);
+  rpc Debit(DebitRequest) returns (DebitResponse);
+  rpc Credit(CreditRequest) returns (CreditResponse);
 }
 
-message MutationRequest {
-  string account_number = 1;
-  // Desimal sebagai string, contoh "150000.00".
-  // double tidak dapat menyimpan nilai uang secara tepat.
+// Format: digits with at most 2 decimal places
+// ("150000.50"), no sign, no exponent; anything
+// else is INVALID_ARGUMENT, never rounded.
+message DebitRequest {
+  string number = 1;
   string amount = 2;
   string reference = 3;
 }
@@ -495,7 +511,8 @@ fmt.Println(x.Add(y))
         [`double` dan `float` adalah bilangan biner berpresisi terbatas. Nilai 0,1 tidak dapat disimpan secara tepat.],
         [Selisih kecil tersebut menumpuk pada penjumlahan saldo dan membuat rekonsiliasi tidak cocok.],
         [Kontrak mengirim _string_ desimal. Server dan client mengubahnya menjadi `decimal.Decimal` (shopspring/decimal), sama dengan kolom `numeric(19,2)` di database.],
-        [Format _string_ yang tidak valid ditolak dengan `codes.InvalidArgument`.],
+        [Format yang diterima: angka dengan paling banyak 2 desimal, tanpa tanda dan eksponen, kurang dari $10^17$. Selain itu ditolak dengan `codes.InvalidArgument` (REST: `400`).],
+        [Nilai `100.005` ditolak, tidak dibulatkan. Tanpa pemeriksaan ini, `numeric(19,2)` membulatkannya menjadi `100.01` tanpa pesan apa pun.],
       )
     ],
   )
@@ -527,28 +544,28 @@ fmt.Println(x.Add(y))
 #code-slide(kicker: "Server", title: "Account melayani HTTP dan gRPC sekaligus",
   side: [
     - `GRPC_ADDR` wajib diisi. Bila kosong, account berhenti saat _startup_ dan log _error_-nya menyebut nama variabel tersebut
-    - _Health service_ standar gRPC digunakan oleh _probe_ dan _tools_ lain
+    - _Health service_ standar gRPC (`grpc.health.v1`) tidak memeriksa database: statusnya `SERVING` sejak _startup_ hingga _shutdown_. _Readiness_ _pod_ tetap HTTP `/readyz`
     - _Reflection_ memungkinkan _client_ generik membaca daftar method tanpa _file_ `.proto`
     - HTTP dan gRPC berjalan di _goroutine_ terpisah dalam satu proses
   ],
 )[
 ```go
-srv := grpc.NewServer(
-    grpc.ChainUnaryInterceptor(
-        logging(log),
-        faults.UnaryInterceptor(),
-    ),
-)
-accountv1.RegisterAccountServiceServer(srv,
-    account.NewGRPCServer(svc))
-healthpb.RegisterHealthServer(srv, health.NewServer())
-reflection.Register(srv)
+grpcSrv := grpc.NewServer(grpc.ChainUnaryInterceptor(
+    interceptor.Logging(log),
+    faults.UnaryServerInterceptor(notAccountService),
+))
+accountv1.RegisterAccountServiceServer(grpcSrv,
+    account.NewGRPCServer(store, log))
+healthSrv := health.NewServer()
+healthpb.RegisterHealthServer(grpcSrv, healthSrv)
+reflection.Register(grpcSrv)
 
 lis, err := net.Listen("tcp", cfg.GRPCAddr)
 if err != nil {
-    return fmt.Errorf("listen gRPC %s: %w", cfg.GRPCAddr, err)
+    return fmt.Errorf("listen on GRPC_ADDR %s: %w",
+        cfg.GRPCAddr, err)
 }
-go func() { errc <- srv.Serve(lis) }()
+go func() { errCh <- grpcSrv.Serve(lis) }()
 ```
 ]
 
@@ -560,41 +577,47 @@ go func() { errc <- srv.Serve(lis) }()
     [Saldo tidak cukup], [`FailedPrecondition`], [Transfer gagal, tidak di-_retry_],
     [Nominal atau nomor rekening tidak valid], [`InvalidArgument`], [Transfer gagal, tidak di-_retry_],
     [_Fault injection_ menolak sebelum memproses], [`Unavailable`], [Aman di-_retry_],
-    [_Deadline_ terlampaui], [`DeadlineExceeded`], [Status tidak diketahui, tidak di-_retry_ (hingga Lab 5)],
+    [_Deadline_ pemanggil terlampaui saat _query_ masih berjalan], [`DeadlineExceeded`], [Mutasi mungkin sudah diterapkan, tidak di-_retry_ (hingga Lab 5)],
+    [Pemanggil membatalkan panggilan], [`Canceled`], [Sama dengan `DeadlineExceeded`],
     [_Error_ lain yang tidak terduga], [`Internal`], [Tidak di-_retry_, dihitung oleh _circuit breaker_],
   )
   #v(8pt)
-  #note[_Status code_ setara dengan HTTP _status_ pada REST. Kode `NotFound` dan `FailedPrecondition` adalah jawaban bisnis dari service yang sehat, sedangkan `Unavailable` dan `DeadlineExceeded` menandakan service yang bermasalah.]
+  #note[_Status code_ setara dengan HTTP _status_ pada REST. Kode `NotFound` dan `FailedPrecondition` adalah jawaban bisnis dari service yang sehat, sedangkan `Unavailable` dan `DeadlineExceeded` menandakan service yang bermasalah. Account mencatat `DeadlineExceeded` dan `Canceled` sebagai `WARN` `caller gave up before the request finished`, tidak sebagai `ERROR`.]
 ]
 
 #code-slide(kicker: "Error handling", title: [_Status code_ di sisi server dan client],
   side: [
-    - Server mengubah _error_ domain menjadi `status.Error` dengan kode yang sesuai
+    - Server mengubah _error_ domain menjadi `status.Error` dengan kode yang sesuai. _Context_ yang berakhir dipetakan oleh `status.FromContextError`
     - Client membaca kode dengan `status.Code(err)` lalu mengembalikan _error_ domain transfer yang sama seperti versi REST
     - Kode di _package_ `transfer` tidak berubah. Hanya `accountclient` yang diganti
   ],
 )[
 ```go
 // account: error domain -> status gRPC
-func toStatus(err error) error {
-    switch {
-    case errors.Is(err, ErrNotFound):
-        return status.Error(codes.NotFound, err.Error())
-    case errors.Is(err, ErrInsufficientFunds):
-        return status.Error(codes.FailedPrecondition, err.Error())
-    case errors.Is(err, ErrInvalidAmount):
-        return status.Error(codes.InvalidArgument, err.Error())
-    }
+switch {
+case errors.Is(err, context.Canceled),
+    errors.Is(err, context.DeadlineExceeded):
+    st := status.FromContextError(err)
+    s.log.Warn("caller gave up before the request finished",
+        "code", st.Code().String(), "error", err)
+    return st.Err()
+case errors.As(err, &v): // ValidationError
+    return status.Error(codes.InvalidArgument, v.describe())
+case errors.Is(err, ErrNotFound):
+    return status.Error(codes.NotFound, err.Error())
+case errors.Is(err, ErrInsufficientFunds):
+    return status.Error(codes.FailedPrecondition, err.Error())
+default:
+    s.log.Error("grpc request failed", "error", err)
     return status.Error(codes.Internal, "internal error")
 }
 
 // transfer: status gRPC -> error domain
 switch status.Code(err) {
 case codes.NotFound:
-    return transfer.ErrAccountNotFound
-case codes.FailedPrecondition:
-    return transfer.ErrInsufficientFunds
-}
+    return fmt.Errorf("%s %s: %w", kind, number,
+        transfer.ErrAccountNotFound)
+// ...
 ```
 ]
 
@@ -628,21 +651,29 @@ case codes.FailedPrecondition:
     - `handler` adalah method service yang sesungguhnya
     - Kode sebelum `handler` berjalan sebelum method, kode sesudahnya melihat hasil method
     - `info.FullMethod` berisi nama lengkap, contoh `/account.v1.AccountService/Debit`
+    - Jawaban bisnis dicatat `INFO`, kode lain yang gagal dicatat `WARN`
     - Pola yang sama dengan _middleware_ `http.Handler` dari Hari 1
   ],
 )[
 ```go
-func logging(log *slog.Logger) grpc.UnaryServerInterceptor {
+func Logging(log *slog.Logger) grpc.UnaryServerInterceptor {
     return func(ctx context.Context, req any,
         info *grpc.UnaryServerInfo,
         handler grpc.UnaryHandler) (any, error) {
 
         start := time.Now()
         resp, err := handler(ctx, req)
-        log.Info("grpc call",
-            "method", info.FullMethod,
-            "code", status.Code(err).String(),
-            "duration", time.Since(start))
+        code := status.Code(err)
+        level := slog.LevelInfo
+        switch code {
+        case codes.OK, codes.NotFound,
+            codes.FailedPrecondition, codes.InvalidArgument:
+        default:
+            level = slog.LevelWarn
+        }
+        log.Log(ctx, level, "grpc request",
+            "method", info.FullMethod, "code", code.String(),
+            "duration_ms", time.Since(start).Milliseconds())
         return resp, err
     }
 }
@@ -670,30 +701,32 @@ func logging(log *slog.Logger) grpc.UnaryServerInterceptor {
 #code-slide(kicker: "Client", title: "Koneksi gRPC di transfer service",
   side: [
     - `ACCOUNT_GRPC_ADDR` menggantikan `ACCOUNT_SERVICE_URL` dan wajib diisi
-    - `grpc.NewClient` tidak langsung membuka koneksi. Koneksi dibuat saat panggilan pertama dan dibuat ulang otomatis bila terputus
+    - `grpc.NewClient` tidak langsung membuka koneksi. Koneksi dibuat saat panggilan pertama dan dibuat ulang otomatis bila terputus, dengan jeda maksimal 5 detik
     - `insecure.NewCredentials()` hanya untuk lab. Di _production_, koneksi antar service wajib TLS
   ],
 )[
 ```go
-conn, err := grpc.NewClient(cfg.AccountGRPCAddr,
-    grpc.WithTransportCredentials(insecure.NewCredentials()),
-    grpc.WithUnaryInterceptor(resilience.Unary()),
-)
-if err != nil {
-    return fmt.Errorf("account gRPC client: %w", err)
-}
-defer conn.Close()
+// accountclient.New
+resilience := failsafegrpc.NewUnaryClientInterceptor[any](
+    retry, breaker, timeout.New[any](s.AttemptTimeout))
 
-rpc := accountv1.NewAccountServiceClient(conn)
-accounts := accountclient.New(rpc)
+conn, err := grpc.NewClient(target,
+    grpc.WithTransportCredentials(insecure.NewCredentials()),
+    grpc.WithUnaryInterceptor(resilience),
+    grpc.WithConnectParams(grpc.ConnectParams{
+        Backoff: backoff.Config{BaseDelay: time.Second,
+            Multiplier: 1.6, Jitter: 0.2,
+            MaxDelay: 5 * time.Second},
+        MinConnectTimeout: 5 * time.Second,
+    }),
+)
 
 // Deadline per percobaan berasal dari policy timeout
 // dan ikut terkirim ke server (header grpc-timeout).
-_, err = rpc.Debit(ctx, &accountv1.MutationRequest{
-    AccountNumber: number,
-    Amount:        amount.StringFixed(2),
-    Reference:     transferID,
-})
+_, err := c.api.Debit(ctx, &accountv1.DebitRequest{
+    Number: number, Amount: amount.String(),
+    Reference: reference})
+return mapError("debit", number, err)
 ```
 ]
 
@@ -740,20 +773,20 @@ _, err = rpc.Debit(ctx, &accountv1.MutationRequest{
   ],
 )[
 ```go
+fake := &fakeAccountService{answer: answer}
 lis := bufconn.Listen(1 << 20)
 srv := grpc.NewServer()
 accountv1.RegisterAccountServiceServer(srv, fake)
-go srv.Serve(lis)
+go func() { _ = srv.Serve(lis) }()
 t.Cleanup(srv.Stop)
 
-conn, err := grpc.NewClient("passthrough:///bufnet",
+// Client yang sama dengan production, ditambah
+// dialer ke listener di memori.
+c, err := New("passthrough:///bufnet", s, log,
     grpc.WithContextDialer(
         func(ctx context.Context, _ string) (net.Conn, error) {
             return lis.DialContext(ctx)
-        }),
-    grpc.WithTransportCredentials(insecure.NewCredentials()),
-    grpc.WithUnaryInterceptor(resilience.Unary()),
-)
+        }))
 ```
 ]
 
@@ -804,7 +837,7 @@ conn, err := grpc.NewClient("passthrough:///bufnet",
   #bullets(size: 13.5pt,
     [Debit dan credit adalah dua transaksi database yang terpisah, di service yang terpisah. Tidak ada `BEGIN ... COMMIT` yang mencakup keduanya.],
     [Bila credit gagal setelah debit berhasil, saldo rekening A sudah berkurang tetapi rekening B tidak bertambah. Transfer di akhir Lab 2 hanya mencatat log untuk koreksi manual.],
-    [Demo: transfer ke nomor rekening tujuan yang tidak ada. Debit berhasil, credit dijawab `NotFound`, dan saldo sumber tidak kembali.],
+    [Demo: transfer ke nomor rekening tujuan yang tidak ada. Debit berhasil, credit dijawab `NotFound`, channel menerima `502`, dan saldo sumber tidak kembali.],
   )
 ]
 
@@ -891,7 +924,7 @@ conn, err := grpc.NewClient("passthrough:///bufnet",
     [
       #card("Solusi di studi kasus", accent: gold.darken(15%))[
         - *Account (Lab 5).* _Unique constraint_ pada `(account_number, type, reference)`. _Reference_ yang sama tidak diterapkan ulang, account cukup mengembalikan kondisi rekening saat ini.
-        - *Transfer (Lab 6).* _Header_ `Idempotency-Key` pada `POST /transfers`. _Key_ yang sama mengembalikan transfer asli (200), _key_ yang sama dengan isi berbeda ditolak (422).
+        - *Transfer (Lab 6).* _Header_ `Idempotency-Key` pada `POST /transfers`. _Key_ yang sama mengembalikan transfer asli dengan kode HTTP yang sama seperti respons pertama, _key_ yang sama dengan isi berbeda ditolak (422).
       ]
     ],
   )

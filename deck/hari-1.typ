@@ -625,6 +625,7 @@ level=ERROR msg="account service stopped"
   side: [
     - Saat menerima `SIGTERM`, server berhenti menerima koneksi baru.
     - `srv.Shutdown` menunggu _request_ yang sedang berjalan selesai, dengan batas 10 detik.
+    - Batas ini berbeda per service. Sejak Lab 5, transfer menunggu hingga 60 detik agar saga tidak terpotong di antara debit dan credit.
     - _Rolling update_ di Kubernetes (Hari 4) mengandalkan perilaku ini agar tidak ada transfer yang terputus di tengah proses.
   ],
 )[
@@ -637,10 +638,15 @@ srv := &http.Server{
 // ... server berjalan di goroutine, lihat slide sebelumnya
 
 case <-ctx.Done():
+    log.Info("shutting down")
     shutdownCtx, cancel := context.WithTimeout(
         context.Background(), 10*time.Second)
     defer cancel()
-    return srv.Shutdown(shutdownCtx)
+    if err := srv.Shutdown(shutdownCtx); err != nil &&
+        !errors.Is(err, http.ErrServerClosed) {
+        return err
+    }
+    return nil
 ```
 ]
 
