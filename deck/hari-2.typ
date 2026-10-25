@@ -12,8 +12,8 @@
 )
 
 // Nested boxes for the policy order slide.
-#let layer-box(label, accent, body) = block(
-  width: 100%, fill: accent.lighten(92%), stroke: 1.2pt + accent, radius: 6pt,
+#let layer-box(label, accent, dash: none, body) = block(
+  width: 100%, fill: accent.lighten(92%), stroke: (paint: accent, thickness: 1.2pt, dash: dash), radius: 6pt,
   inset: (x: 14pt, top: 10pt, bottom: 12pt),
 )[
   #text(size: 11pt, weight: "bold", fill: accent.darken(15%), label)
@@ -327,10 +327,12 @@ if errors.Is(err, context.DeadlineExceeded) {
 #slide(kicker: "failsafe-go", title: [Pengaruh urutan _policy_ terhadap perilaku])[
   #two-col(ratio: (1fr, 1fr),
     [
-      #layer-box("retry policy", navy)[
-        #layer-box("circuit breaker", amber)[
-          #layer-box("timeout 2 detik", gold.darken(20%))[
-            #align(center, text(size: 12pt, weight: "bold")[HTTP POST ke account])
+      #layer-box("bulkhead (Eksplorasi Mandiri Lab 3)", slate, dash: "dashed")[
+        #layer-box("retry policy", navy)[
+          #layer-box("circuit breaker", amber)[
+            #layer-box("timeout 2 detik", gold.darken(20%))[
+              #align(center, text(size: 12pt, weight: "bold")[HTTP POST ke account])
+            ]
           ]
         ]
       ]
@@ -340,12 +342,12 @@ if errors.Is(err, context.DeadlineExceeded) {
         [*_Timeout_ di dalam.* Setiap percobaan mendapat jatah 2 detik sendiri, tidak berbagi dengan percobaan sebelumnya.],
         [*_Circuit breaker_ di tengah.* Setiap percobaan, termasuk yang berakhir _timeout_, dicatat oleh _circuit breaker_.],
         [*_Retry_ di luar.* Bila _circuit breaker_ sudah OPEN, _retry_ dihentikan seketika karena percobaan berikutnya pasti ditolak.],
+        [*_Bulkhead_ paling luar.* Panggilan yang ditolak _bulkhead_ tidak dicoba ulang oleh _retry_ dan tidak dicatat sebagai kegagalan account oleh _circuit breaker_.],
       )
     ],
   )
   #v(8pt)
   #note(kind: "warn")[Bila _timeout_ diletakkan di luar _retry_, batas 2 detik berlaku untuk seluruh percobaan sekaligus, dan _circuit breaker_ tidak pernah melihat _timeout_ sebagai kegagalan.]
-  #text(size: 12pt)[_Bulkhead_ di Eksplorasi Mandiri Lab 3 dipasang paling luar. Panggilan yang ditolak _bulkhead_ tidak dicoba ulang oleh _retry_ dan tidak dicatat sebagai kegagalan account oleh _circuit breaker_.]
 ]
 
 #code-slide(kicker: "failsafe-go", title: [_Round tripper_ dengan tiga _policy_],
