@@ -106,9 +106,10 @@ go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12
 go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.2
 ```]
 
-Jalankan infrastruktur lab (PostgreSQL) bila belum berjalan:
+Lab ini dimulai dari database kosong, agar saldo rekening uji cukup untuk seluruh skenario Verifikasi, termasuk dua transfer 100000 pada skenario _half-open_. Hapus data lab, lalu jalankan infrastruktur (PostgreSQL):
 
 #perintah[```bash
+make infra-reset
 make infra-up
 ```]
 
@@ -1221,7 +1222,7 @@ Jalankan seluruh _test_ dari folder `studi-kasus`:
 make test
 ```]
 
-Target tersebut menjalankan `go vet` pada modul `proto`, lalu `go vet` dan `go test` pada `account` dan `transfer`. Semua _package_ harus berstatus `ok`.
+Target tersebut menjalankan `go vet` pada modul `proto`, lalu `go vet` dan `go test` pada `account` dan `transfer`. Semua _package_ yang memiliki _test_ harus berstatus `ok`. _Package_ tanpa _test_ menampilkan `[no test files]`, dan modul `proto` hanya menjalankan `go vet`.
 
 == Verifikasi
 
@@ -1250,7 +1251,7 @@ level=INFO msg="transfer service listening" addr=:28082 account_grpc=localhost:2
 
 === Transfer Berhasil melalui gRPC
 
-Buat dua rekening uji melalui REST API `account`. Bila rekening tersebut sudah ada dari lab sebelumnya, `account` menjawab HTTP 409 dan langkah ini boleh dilewati.
+Buat dua rekening uji melalui REST API `account`:
 
 #perintah[```bash
 curl -sS -X POST localhost:28081/accounts \

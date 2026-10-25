@@ -1335,7 +1335,7 @@ TOKEN=$(make -s token)
 while true; do
   curl -sS -o /dev/null -w "%{http_code}\n" -X POST localhost:28082/transfers \
     -H "Authorization: Bearer $TOKEN" \
-    -d '{"from_account":"1111111111","to_account":"2222222222","amount":"1000"}'
+    -d '{"from_account":"1111111111","to_account":"2222222222","amount":"1"}'
   sleep 0.5
 done
 ```]
@@ -1375,7 +1375,7 @@ Beberapa hasil perlu dibaca dengan cermat:
 
 - Latensi `Debit` tercatat sekitar 2 detik, padahal _delay_ simulasi 3 detik. `transfer` memutus setiap percobaan setelah 2 detik (_timeout_ per percobaan dari Lab 3). _Context_ di `account` ikut dibatalkan, sehingga _span_ server juga berhenti di sekitar 2 detik. Nilai p95 di panel diperkirakan dari _histogram bucket_ (batas 1 detik dan 2,5 detik), sehingga angkanya berada di antara kedua batas tersebut.
 - Latensi p95 REST `transfer` dapat terlihat rendah ketika _circuit breaker_ berstatus `open`. Transfer yang ditolak _circuit breaker_ selesai dalam hitungan milidetik, karena panggilan ke `account` tidak pernah dikirim. Latensi yang rendah tidak berarti sistem sehat. Justru panel _Transfer per status_ menunjukkan bahwa hampir semua transfer `FAILED`. Inilah alasan _metric_ bisnis dibutuhkan di samping _metric_ teknis.
-- _Trace_ transfer yang ditolak _circuit breaker_ hanya berisi _span_ `POST /transfers` tanpa _span_ `Debit`.
+- _Trace_ transfer yang ditolak _circuit breaker_ tidak memiliki _span_ `Debit`. _Span_ yang ada hanya dari `transfer` (`POST /transfers` dan `publish transfer-events`) serta `process transfer-events` dari `notification`.
 - Selama gangguan masih aktif, panel _Perubahan status circuit breaker_ menunjukkan siklus `open` → `half-open` → `open`. Setelah 10 detik, panggilan berikutnya menjadi percobaan _half-open_, gagal lagi, dan _circuit breaker_ kembali ke `open`.
 
 Akhiri gangguan:

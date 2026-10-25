@@ -87,9 +87,9 @@ Database dari Lab 5 tidak perlu di-_reset_. Setiap service menjalankan `schema.s
 Contoh di lab ini menggunakan rekening `1111111111` dan `2222222222` dari lab sebelumnya. Bila rekening tersebut belum ada, buat terlebih dahulu:
 
 #perintah[```bash
-curl -X POST localhost:28081/accounts \
+curl -sS -X POST localhost:28081/accounts \
   -d '{"number":"1111111111","owner_name":"Budi","initial_balance":"10000000"}'
-curl -X POST localhost:28081/accounts \
+curl -sS -X POST localhost:28081/accounts \
   -d '{"number":"2222222222","owner_name":"Sari","initial_balance":"0"}'
 ```]
 
@@ -100,7 +100,7 @@ curl -X POST localhost:28081/accounts \
 Sebelum mengubah kode, buktikan masalahnya terlebih dahulu. Buat satu transfer, lalu catat nilai `id` dari _response_-nya:
 
 #perintah[```bash
-curl -X POST localhost:28082/transfers \
+curl -sS -X POST localhost:28082/transfers \
   -d '{"from_account":"1111111111","to_account":"2222222222","amount":"100000"}'
 ```]
 
@@ -870,7 +870,7 @@ make -C notification run
 
 === _Replay_ tanpa notifikasi ganda
 
-Hentikan `notification`, kembalikan _offset_ ke awal, lalu jalankan `notification` lagi:
+Hentikan `notification` dengan `Ctrl+C`, tunggu beberapa detik hingga prosesnya benar-benar berhenti, kembalikan _offset_ ke awal, lalu jalankan `notification` lagi. Bila `make replay` gagal dengan `current state is Stable`, lihat Masalah Umum.
 
 #perintah[```bash
 make replay
@@ -901,10 +901,10 @@ Pada database dari Lab 5, daftar tersebut masih berisi duplikat hasil _replay_ d
 
 === `Idempotency-Key` di `POST /transfers`
 
-Gunakan `curl -i` agar kode status dan _header_ _response_ terlihat. Kirim transfer dengan sebuah _key_:
+Gunakan `curl -sS -i` agar kode status dan _header_ _response_ terlihat. Kirim transfer dengan sebuah _key_:
 
 #perintah[```bash
-curl -i -X POST localhost:28082/transfers \
+curl -sS -i -X POST localhost:28082/transfers \
   -H 'Idempotency-Key: 7f9c2b1e-0d4a-4c1e-9b8f-1a2b3c4d5e6f' \
   -d '{"from_account":"1111111111","to_account":"2222222222","amount":"100000"}'
 ```]
@@ -933,13 +933,13 @@ Location: /transfers/3f1e...
 Log `transfer` mencatat `idempotent replay, returning the original transfer`, dan log `account` tidak mencatat _debit_ baru. Periksa saldo rekening asal: saldo hanya berkurang sekali.
 
 #perintah[```bash
-curl localhost:28081/accounts/1111111111
+curl -sS localhost:28081/accounts/1111111111
 ```]
 
 Kirim _key_ yang sama dengan nominal berbeda:
 
 #perintah[```bash
-curl -i -X POST localhost:28082/transfers \
+curl -sS -i -X POST localhost:28082/transfers \
   -H 'Idempotency-Key: 7f9c2b1e-0d4a-4c1e-9b8f-1a2b3c4d5e6f' \
   -d '{"from_account":"1111111111","to_account":"2222222222","amount":"5000"}'
 ```]
@@ -969,14 +969,14 @@ Kedua _response_ berkode `422`. _Request_ pertama menjalankan _debit_, gagal di 
 Pengujian terakhir mensimulasikan aplikasi yang mengirim ulang _request_ berkali-kali dalam waktu hampir bersamaan. Catat saldo rekening asal, lalu kirim enam _request_ paralel dengan satu _key_ baru:
 
 #perintah[```bash
-curl localhost:28081/accounts/1111111111
+curl -sS localhost:28081/accounts/1111111111
 KEY=$(uuidgen)
 for i in 1 2 3 4 5 6; do
   curl -sS -o /dev/null -w '%{http_code}\n' -X POST localhost:28082/transfers \
     -H "Idempotency-Key: $KEY" \
     -d '{"from_account":"1111111111","to_account":"2222222222","amount":"100000"}' &
 done; wait
-curl localhost:28081/accounts/1111111111
+curl -sS localhost:28081/accounts/1111111111
 ```]
 
 Bila `uuidgen` tidak tersedia, isi `KEY` dengan teks unik apa saja, misalnya `KEY=paralel-001`. Setiap _response_ berupa `201` atau `202`, dengan urutan dan jumlah yang berbeda pada setiap percobaan, misalnya:
@@ -1011,7 +1011,7 @@ Saldo rekening asal berkurang tepat 100000. _Unique index_ pada `idempotency_key
 == Eksplorasi Mandiri
 
 + *_Crash_ di antara _commit_ database dan _commit offset_.* Tambahkan `time.Sleep(10 * time.Second)` sementara di `Run` (`consumer.go`), tepat sebelum `c.reader.CommitMessages`. Buat satu transfer, tunggu hingga log `notification sent` muncul, lalu hentikan proses `notification` secara paksa sebelum 10 detik berlalu. `go run` menjalankan _binary_ hasil kompilasi sebagai _child process_, sehingga proses itulah yang perlu dihentikan dengan`pkill -9 -f exe/notification`. Jalankan lagi `notification` dan amati bahwa _event_ yang sama datang lagi lalu dilewati sebagai duplikat. Hapus kembali `time.Sleep` setelah selesai.
-+ *Dua _instance_ `notification`.* Jalankan _instance_ kedua dari direktori `notification` dengan port HTTP lain: salin _environment variable_ dari _target_ `run` di `notification/Makefile`, ganti `HTTP_ADDR=:8093`, lalu jalankan `go run .`. Amati di log bagaimana tiga _partition_ dibagi ke dua anggota _consumer group_. Hentikan keduanya, jalankan `make replay`, lalu jalankan keduanya lagi. Periksa dengan `make duplicates` bahwa tidak ada notifikasi baru yang ganda.
++ *Dua _instance_ `notification`.* Jalankan _instance_ kedua dari direktori `notification` dengan port HTTP lain: salin _environment variable_ dari _target_ `run` di `notification/Makefile`, ganti `HTTP_ADDR=:28084`, lalu jalankan `go run .`. Amati di log bagaimana tiga _partition_ dibagi ke dua anggota _consumer group_. Hentikan keduanya, jalankan `make replay`, lalu jalankan keduanya lagi. Periksa dengan `make duplicates` bahwa tidak ada notifikasi baru yang ganda.
 + *Lingkup _key_ per klien.* Di lab ini, _key_ berlaku global untuk semua klien. Di _production_, dua klien berbeda bisa saja secara kebetulan membuat _key_ yang sama, sehingga _unique index_ biasanya dibuat pada pasangan (klien, _key_). Rancang perubahan _schema_ dan kode untuk lingkup tersebut, misalnya dengan _header_ `X-Client-ID` sementara. Di Lab 7, identitas klien akan tersedia dari _token_ OAuth2.
 + *Masa berlaku _key_.* _Key_ di lab ini tidak pernah kedaluwarsa. Sistem pembayaran umumnya menghapus _key_ setelah periode tertentu, misalnya 24 jam. Tulis perintah SQL yang mengosongkan `idempotency_key` untuk transfer yang lebih tua dari 24 jam, lalu jelaskan apa yang terjadi bila klien mengulang _request_ setelah _key_-nya dihapus.
 

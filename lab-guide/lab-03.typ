@@ -78,9 +78,10 @@ git diff --staged lab-02 -- studi-kasus
 cd studi-kasus
 ```]
 
-Jalankan infrastruktur lab dan _unit test_:
+Lab ini dimulai dari database kosong, agar rekening uji dibuat dengan saldo yang diharapkan di bagian Verifikasi. Rekening dari Lab 2 sudah berkurang saldonya, dan `account` menjawab `409` bila rekening yang sama dibuat lagi. Hapus data lab, jalankan infrastruktur, lalu jalankan _unit test_:
 
 #perintah[```bash
+make infra-reset
 make infra-up
 make test
 ```]
@@ -846,7 +847,7 @@ make -C transfer run
 
 === Kondisi Normal
 
-Siapkan dua rekening. Bila rekening tersebut sudah dibuat di Lab 2, `account` menjawab `409` dan rekening lama tetap dapat digunakan.
+Siapkan dua rekening:
 
 #perintah[
 ```bash
@@ -862,7 +863,7 @@ make breaker
 ```
 ]
 
-Transfer dijawab `HTTP 201` dengan `"status":"COMPLETED"`, dan `make breaker` menampilkan:
+Transfer dijawab `HTTP 201` dengan `"status":"COMPLETED"`, dan `make breaker` menampilkan hasil berikut. Baris pertama _output_ setiap target `make` adalah perintah yang dijalankan, misalnya `curl -sS http://localhost:28082/debug/circuit-breaker`; contoh di panduan ini hanya menampilkan hasilnya:
 
 ```
 {"account":"closed"}

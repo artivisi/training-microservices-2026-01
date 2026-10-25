@@ -87,7 +87,7 @@ Lab ini dimulai dengan database kosong. Hentikan service `account` dan `transfer
 make infra-reset
 ```]
 
-Langkah ini wajib. _Unique index_ baru di tabel `mutation` (bagian berikutnya) gagal dibuat bila database dari Lab 1–4 sudah berisi mutasi dengan `reference` ganda, dan `account` berhenti saat _startup_ dengan _error_ `apply schema: ... could not create unique index "mutation_idempotency" (SQLSTATE 23505)`. Infrastruktur dijalankan lagi setelah Kafka ditambahkan ke `compose.yaml`.
+Skenario di bab ini mengandalkan saldo rekening uji yang dibuat ulang di bagian Verifikasi, sehingga database dimulai dari kosong. _Unique index_ baru di tabel `mutation` (bagian berikutnya) juga gagal dibuat bila database lama berisi mutasi dengan `reference` ganda, misalnya dari percobaan sendiri di luar langkah lab. Infrastruktur dijalankan lagi setelah Kafka ditambahkan ke `compose.yaml`.
 
 == Langkah
 
@@ -2188,7 +2188,7 @@ Jalankan seluruh _test_ terlebih dahulu:
 make test
 ```]
 
-Semua _package_ di `proto`, `account`, `transfer`, dan `notification` harus berakhir `ok`.
+Semua _package_ yang memiliki _test_ di `account`, `transfer`, dan `notification` harus berakhir `ok`. _Package_ tanpa _test_ menampilkan `[no test files]`, dan modul `proto` hanya menjalankan `go vet`.
 
 Jalankan infrastruktur, lalu ketiga service di tiga terminal terpisah (semuanya dari folder `studi-kasus`):
 
@@ -2280,7 +2280,7 @@ docker compose start kafka
 make outbox
 ```]
 
-Setelah Kafka berstatus `healthy`, log `transfer` menampilkan `outbox events published` dan `published_at` terisi. `notification` membutuhkan waktu lebih lama, sekitar 15–20 detik, karena _consumer group_ harus bergabung ulang terlebih dahulu. Setelah itu notifikasi untuk transfer tersebut muncul di log.
+Setelah Kafka berstatus `healthy`, log `transfer` menampilkan `outbox events published` dan `published_at` terisi. `notification` membutuhkan waktu lebih lama, hingga sekitar 30 detik, karena _consumer group_ harus bergabung ulang terlebih dahulu. Setelah itu notifikasi untuk transfer tersebut muncul di log.
 
 === _Replay_ dan Notifikasi Ganda
 
@@ -2325,7 +2325,7 @@ Dua skenario terakhir membutuhkan pengaturan waktu, karena _debit_ harus berhasi
 
 #perintah[```bash
 curl -sS -X PUT localhost:28081/admin/fault -d '{"delay_ms":1500,"error_rate":0}'
-curl -sS -X POST localhost:28082/transfers -H 'Content-Type: application/json' \
+curl -sS -w '\nHTTP %{http_code}\n' -X POST localhost:28082/transfers -H 'Content-Type: application/json' \
   -d '{"from_account":"1111111111","to_account":"2222222222","amount":10000}' &
 sleep 1
 curl -sS -X PUT localhost:28081/admin/fault -d '{"delay_ms":0,"error_rate":1}'
@@ -2349,7 +2349,7 @@ Skenario terakhir sama dengan sebelumnya, tetapi _fault injection_ baru dihapus 
 
 #perintah[```bash
 curl -sS -X PUT localhost:28081/admin/fault -d '{"delay_ms":1500,"error_rate":0}'
-curl -sS -X POST localhost:28082/transfers -H 'Content-Type: application/json' \
+curl -sS -w '\nHTTP %{http_code}\n' -X POST localhost:28082/transfers -H 'Content-Type: application/json' \
   -d '{"from_account":"1111111111","to_account":"2222222222","amount":10000}' &
 sleep 1
 curl -sS -X PUT localhost:28081/admin/fault -d '{"delay_ms":0,"error_rate":1}'
@@ -2359,7 +2359,7 @@ make fault-clear
 
 Jawaban datang setelah sekitar 32 detik: 2 detik untuk _debit_ dan _credit_, lalu 30 detik _retry_ _reversal_. Transfer dijawab HTTP `500` dengan `"status":"COMPENSATION_FAILED"`, dan `failure_reason` diakhiri `; reversal failed: reverse 1111111111: rpc error: code = Unavailable desc = injected fault`. Log `transfer` menampilkan sekitar sepuluh baris `retrying reversal`, lalu `level=ERROR msg="compensation failed, source account needs manual reversal"`. Tidak ada _event_ yang dikirim ke Kafka untuk transfer ini, sehingga `notification` tidak mencatat apa pun. Saldo `1111111111` berkurang 10000 tanpa ada uang yang masuk ke `2222222222`.
 
-_Reversal_ tidak dihitung oleh _circuit breaker_, sehingga status _breaker_ hanya ditentukan oleh percobaan _debit_ dan _credit_. Periksa dengan `make breaker`. Bila hasilnya `open`, status tersebut tidak berubah tanpa panggilan. Tunggu 10 detik, lalu kirim tiga transfer kecil yang sah (misalnya 1000 dari `2222222222` ke `1111111111`). Ketiga panggilan tersebut menjadi panggilan uji pada status _half-open_. Setelah itu `make breaker` menampilkan `closed`.
+_Reversal_ tidak dihitung oleh _circuit breaker_, sehingga status _breaker_ hanya ditentukan oleh percobaan _debit_ dan _credit_. Periksa dengan `make breaker`. Bila hasilnya `open`, status tersebut tidak berubah tanpa panggilan. Tunggu 10 detik, lalu kirim dua transfer kecil yang sah (misalnya 1000 dari `2222222222` ke `1111111111`). Setiap transfer terdiri atas dua panggilan (_debit_ dan _credit_), sehingga dua transfer menghasilkan empat panggilan sukses, lebih dari tiga panggilan uji yang dibutuhkan pada status _half-open_. Setelah itu `make breaker` menampilkan `closed`.
 
 == Masalah Umum
 
@@ -2373,7 +2373,7 @@ _Reversal_ tidak dihitung oleh _circuit breaker_, sehingga status _breaker_ hany
 
 *`make replay` gagal dengan pesan bahwa _group_ `notification` masih aktif (`Assignments can only be reset if the group 'notification' is inactive, but the current state is Stable`).* `notification` masih berjalan, atau baru saja dihentikan dan Kafka belum mencatat bahwa anggotanya sudah keluar dari _group_. Pastikan `notification` sudah berhenti (`Ctrl+C`), tunggu 10–30 detik, lalu ulangi `make replay`.
 
-*`notification` tidak menerima _event_ baru setelah Kafka dijalankan ulang.* _Consumer group_ kafka-go membutuhkan sekitar 15–20 detik untuk bergabung ulang. Selama itu log menampilkan `fetching event failed, retrying`. Tunggu hingga log `notification sent` muncul.
+*`notification` tidak menerima _event_ baru setelah Kafka dijalankan ulang.* _Consumer group_ kafka-go membutuhkan hingga sekitar 30 detik untuk bergabung ulang. Selama itu log menampilkan `fetching event failed, retrying`. Tunggu hingga log `notification sent` muncul.
 
 *Transfer pertama setelah `transfer` dijalankan terasa lambat, dan log menunjukkan _retry_.* Di macOS, resolusi nama `localhost` untuk koneksi gRPC pertama dapat memakan waktu lebih dari 2 detik saat _cold start_, sehingga percobaan pertama terkena _timeout_. Di lab ini _timeout_ di-_retry_, sehingga transfer tetap berhasil. Bila gejala ini mengganggu, ganti `ACCOUNT_GRPC_ADDR=localhost:29091` menjadi `ACCOUNT_GRPC_ADDR=127.0.0.1:29091` di `transfer/Makefile`.
 
