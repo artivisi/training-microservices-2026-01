@@ -279,11 +279,11 @@ if errors.Is(err, context.DeadlineExceeded) {
 #slide(kicker: "Pola 2", title: [_Retry_ hanya aman bila operasinya _idempotent_])[
   #table(
     columns: (1.3fr, 1fr, auto),
-    [Kondisi yang Diterima Transfer], [Apakah Debit Sudah Diterapkan?], [Apakah Transfer Melakukan _Retry_? (Lab 3)],
+    [Kondisi yang Diterima Transfer], [Apakah Debit Sudah Diterapkan?], [Apakah Transfer Saat Ini Melakukan _Retry_?],
     [Gagal membuka koneksi ke account (_connection refused_, _host_ tidak dikenal)], [Belum, _request_ tidak pernah terkirim], [Ya],
     [HTTP 503 dari account], [Belum, account menolak sebelum memproses], [Ya],
-    [_Timeout_ setelah _request_ terkirim], [Tidak diketahui, bisa saja sudah], [*Tidak*],
-    [HTTP 500 atau jawaban lain yang tidak dikenal], [Tidak diketahui], [*Tidak*],
+    [_Timeout_ setelah _request_ terkirim], [Tidak diketahui, bisa saja sudah], [*Belum*, mulai Lab 5 ya],
+    [HTTP 500 atau jawaban lain yang tidak dikenal], [Tidak diketahui], [*Tidak*, juga setelah Lab 5],
     [HTTP 404 atau 422 (rekening tidak ada, saldo kurang)], [Ditolak oleh aturan bisnis], [Tidak, hasilnya akan sama],
   )
   #v(10pt)
