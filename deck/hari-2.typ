@@ -21,6 +21,13 @@
   #body
 ]
 
+// Decision diamond for flowcharts on this deck.
+#let decide(label, width: 120pt, height: 80pt) = box(width: width, height: height)[
+  #place(top + left, polygon(fill: cream, stroke: 1.2pt + slate,
+    (width / 2, 0pt), (width, height / 2), (width / 2, height), (0pt, height / 2)))
+  #place(center + horizon, box(width: width * 0.7, align(center, text(size: 10.5pt, weight: "bold", fill: ink, label))))
+]
+
 // ════════════════════════════════════════════════════════════════════════════
 #slide(kicker: "Hari 2", title: "Agenda hari ini")[
   #table(
@@ -348,6 +355,34 @@ if errors.Is(err, context.DeadlineExceeded) {
   )
   #v(8pt)
   #note(kind: "warn")[Bila _timeout_ diletakkan di luar _retry_, batas 2 detik berlaku untuk seluruh percobaan sekaligus, dan _circuit breaker_ tidak pernah melihat _timeout_ sebagai kegagalan.]
+]
+
+#slide(kicker: "failsafe-go", title: [Alur satu panggilan melalui keempat _policy_])[
+  #diagram(height: 300pt,
+    at(0pt, 102pt, node("Debit", sub: "dari transfer", kind: "svc", width: 100pt, height: 56pt)),
+    at(130pt, 90pt, decide([_Bulkhead_ penuh?])),
+    at(280pt, 90pt, decide([_Circuit breaker_ OPEN?])),
+    at(430pt, 102pt, node("Kirim ke account", sub: "timeout 2 detik", kind: "infra", width: 120pt, height: 56pt)),
+    at(580pt, 90pt, decide([Jawaban 2xx atau 4xx?], width: 100pt)),
+    at(710pt, 102pt, node("Selesai", sub: "jawaban diteruskan", kind: "svc", width: 150pt, height: 56pt)),
+    at(110pt, 0pt, node("Ditolak seketika", sub: [_bulkhead full_, tanpa _retry_], kind: "ext", width: 160pt, height: 52pt)),
+    at(280pt, 0pt, node("Ditolak seketika", sub: [`ErrOpen`, _retry_ berhenti], kind: "ext", width: 130pt, height: 52pt)),
+    at(565pt, 205pt, decide([Boleh di-_retry_?], width: 130pt)),
+    at(285pt, 217pt, node("Tunggu", sub: [_backoff_ + _jitter_], kind: "infra", width: 110pt, height: 56pt)),
+    at(725pt, 217pt, node("Gagal", sub: "error ke transfer", kind: "ext", width: 135pt, height: 56pt)),
+    edge((100pt, 130pt), (130pt, 130pt)),
+    edge((250pt, 130pt), (280pt, 130pt), label: "tidak", label-dy: -24pt),
+    edge((400pt, 130pt), (430pt, 130pt), label: "tidak", label-dy: -24pt),
+    edge((550pt, 130pt), (580pt, 130pt)),
+    edge((680pt, 130pt), (710pt, 130pt), label: "ya", label-dy: -24pt),
+    edge((190pt, 90pt), (190pt, 52pt), label: "ya", label-dx: 16pt, label-dy: 2pt),
+    edge((345pt, 90pt), (345pt, 52pt), label: "ya", label-dx: 16pt, label-dy: 2pt),
+    edge((630pt, 170pt), (630pt, 205pt), label: "tidak", label-dx: 24pt, label-dy: 4pt),
+    edge((565pt, 245pt), (395pt, 245pt), label: [ya, belum 3 kali], label-dy: -16pt),
+    edge((340pt, 217pt), (340pt, 170pt)),
+    edge((695pt, 245pt), (725pt, 245pt), label: "tidak", label-dy: -24pt),
+  )
+  #text(size: 12pt)[_Bulkhead_ diperiksa sekali per panggilan. _Retry_ kembali ke pemeriksaan _circuit breaker_, sehingga setiap percobaan mendapat _timeout_ sendiri dan hasilnya dicatat _circuit breaker_. Kondisi yang boleh di-_retry_ ada di tabel _Retry_ hanya aman bila operasinya _idempotent_.]
 ]
 
 #code-slide(kicker: "failsafe-go", title: [_Round tripper_ dengan tiga _policy_],
