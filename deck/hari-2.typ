@@ -169,7 +169,7 @@
     [_Circuit breaker_], [Menghentikan sementara panggilan ke service yang terbukti gagal, lalu mencoba kembali secara bertahap], [Kapan berhenti mencoba agar service tujuan sempat kembali aktif?],
   )
   #v(10pt)
-  #note[Ketiga pola ini perlu dipasang bersama karena ketiganya saling melengkapi. Bila hanya ada _timeout_, setiap _request_ ke service yang sudah jelas tidak menjawab tetap menunggu dua detik sebelum gagal. _Circuit breaker_ menghentikan penantian yang sia-sia tersebut. Sebaliknya, _retry_ tanpa _timeout_ tidak berguna untuk service yang lambat. Panggilan ke service tersebut tidak pernah selesai dan tidak pernah dianggap gagal, sehingga _retry_ tidak pernah berjalan.]
+  #note[Ketiga pola ini perlu dipasang bersama karena ketiganya saling melengkapi. Bila hanya ada _timeout_, setiap _request_ ke service yang sudah jelas tidak menjawab tetap menunggu dua detik sebelum gagal. _Circuit breaker_ membatalkan pemanggilan service yang sudah diketahui sedang mati, sehingga tidak perlu menunggu _timeout_. Sebaliknya, _retry_ tanpa _timeout_ tidak berguna untuk service yang lambat. Panggilan ke service tersebut tidak pernah selesai dan tidak pernah dianggap gagal, sehingga _retry_ tidak pernah berjalan.]
 ]
 
 #slide(kicker: "Peta concern microservices", title: [_Resiliency_ di kode dan di platform])[
