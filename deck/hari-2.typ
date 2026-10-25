@@ -89,6 +89,8 @@
   )
   #v(4pt)
   #note(kind: "tip")[Saat meninjau kode yang memanggil service lain, ajukan dulu pertanyaan ini: apa yang terjadi bila service tujuan tidak menjawab selama satu menit?]
+  #v(4pt)
+  #note[*_Chaos engineering_.* Netflix memperkenalkan Chaos Monkey, yang mematikan _instance_ secara acak di _production_ agar tim terbiasa merancang service yang tahan terhadap _partial failure_. Chaos Monkey hanya berjalan bersama Spinnaker dan tidak dirilis lagi sejak Januari 2025. Untuk Kubernetes, gunakan #link("https://chaos-mesh.org")[Chaos Mesh] atau #link("https://litmuschaos.io")[LitmusChaos], yang masih aktif dipelihara. Lab 3 menerapkan versi kecilnya: _fault injection_ di account service.]
 ]
 
 #slide(kicker: "Konsep", title: "Service yang lambat lebih berbahaya dibanding service yang mati")[
