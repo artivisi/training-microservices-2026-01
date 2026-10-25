@@ -273,7 +273,7 @@ if errors.Is(err, context.DeadlineExceeded) {
     ],
   )
   #v(8pt)
-  #note(kind: "warn")[Jumlah percobaan wajib dibatasi (studi kasus: maksimal 3 _retry_). _Retry_ tanpa batas mengubah gangguan sesaat menjadi beban berlipat bagi service yang sedang bermasalah.]
+  #note(kind: "warn")[Jumlah percobaan wajib dibatasi (studi kasus: maksimal 3 _retry_). Dengan _unlimited retry_, service yang sedang bermasalah terus menerima _request_ ulang dari semua pemanggil, sehingga tidak sempat kembali aktif. Kondisi ini dikenal sebagai _retry storm_.]
 ]
 
 #slide(kicker: "Pola 2", title: [_Retry_ hanya aman bila operasinya _idempotent_])[
