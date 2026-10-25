@@ -487,14 +487,14 @@ transfer -> account  POST /accounts/1000000002/credit
     [_Concern_], [Go], [Java], [Node.js], [PHP],
     [HTTP dan REST], [`net/http` (stdlib), chi, gin], [Spring Boot (Spring MVC, WebFlux)], [Express, Fastify, NestJS], [Laravel, Symfony],
     [gRPC], [grpc-go], [grpc-java], [`@grpc/grpc-js`], [_Client_: ekstensi `grpc`; _server_: RoadRunner],
-    [Kafka], [kafka-go, franz-go, confluent-kafka-go], [Kafka _client_ dari Apache, Spring Kafka], [KafkaJS, `@confluentinc/kafka-javascript`], [php-rdkafka (ekstensi)],
+    [Kafka], [kafka-go, franz-go, confluent-kafka-go], [Kafka _client_ dari Apache, Spring Kafka], [`@confluentinc/kafka-javascript`], [php-rdkafka (ekstensi)],
     [_Resiliency_], [failsafe-go, sony/gobreaker], [Resilience4j], [opossum], [Ganesha (_circuit breaker_)],
-    [OAuth2 dan JWT], [golang-jwt, `x/oauth2`], [Spring Security (OAuth2 _resource server_)], [jose, Passport (passport-jwt)], [firebase/php-jwt, lcobucci/jwt],
+    [OAuth2 dan JWT], [golang-jwt, `x/oauth2`], [Spring Security (OAuth2 _resource server_)], [jose, openid-client], [firebase/php-jwt, lcobucci/jwt],
     [OpenTelemetry], [OTel Go SDK], [OTel Java agent, Micrometer], [OTel JS SDK], [OTel PHP],
     [Akses database], [pgx, `database/sql`], [JDBC, Spring Data JPA (Hibernate)], [node-postgres (`pg`), Prisma, TypeORM], [PDO, Doctrine, Eloquent],
   )
   #v(6pt)
-  #note[Keempat ekosistem memiliki _library_ untuk setiap _concern_. Perbedaannya ada pada bentuk paket: Java menyediakan integrasi siap pakai melalui Spring, sedangkan Go merangkai _library_ kecil per _concern_. KafkaJS belum merilis versi baru sejak 2.2.4 (Februari 2023); Confluent menerbitkan `@confluentinc/kafka-javascript` dengan API yang kompatibel dengan KafkaJS.]
+  #note[Keempat ekosistem memiliki _library_ untuk setiap _concern_. Perbedaannya ada pada bentuk paket: Java menyediakan integrasi siap pakai melalui Spring, sedangkan Go merangkai _library_ kecil per _concern_. Tabel ini hanya memuat _library_ yang masih aktif dipelihara (diperiksa Oktober 2026).]
 ]
 
 #slide(kicker: "Ekosistem", title: [Karakter _runtime_ yang berpengaruh pada microservices])[
