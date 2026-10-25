@@ -474,6 +474,7 @@ transfer -> account  POST /accounts/1000000001/debit
 transfer -> account  POST /accounts/1000000002/credit
                      (gagal? debit sudah terjadi)
 ```
+#source(ilustrasi: true)
 ]
 
 // ── 03 Ekosistem Go ────────────────────────────────────────────────────────
@@ -555,6 +556,7 @@ require (
     github.com/shopspring/decimal v1.6.0
 )
 ```
+#source(("studi-kasus/go.work", "lab-02"), ("studi-kasus/account/go.mod", "lab-02"))
 ]
 
 #code-slide(kicker: "Go essentials", title: [_Struct_ dan JSON],
@@ -579,6 +581,7 @@ type CreateRequest struct {
     InitialBalance decimal.Decimal `json:"initial_balance"`
 }
 ```
+#source(("studi-kasus/account/internal/account/account.go", "lab-01"))
 ]
 
 #code-slide(kicker: "Go essentials", title: [_Interface_],
@@ -605,6 +608,7 @@ type Handler struct {
     log   *slog.Logger
 }
 ```
+#source(("studi-kasus/account/internal/account/account.go", "lab-02"), ("studi-kasus/account/internal/account/http.go", "lab-02"))
 ]
 
 #code-slide(kicker: "Go essentials", title: [_Error handling_],
@@ -638,6 +642,7 @@ default:
     writeJSON(w, http.StatusBadGateway, t)
 }
 ```
+#source(("studi-kasus/transfer/internal/transfer/transfer.go", "lab-02"), ("studi-kasus/transfer/internal/accountclient/client.go", "lab-02"), ("studi-kasus/transfer/internal/transfer/http.go", "lab-02"))
 ]
 
 #code-slide(kicker: "Go essentials", title: [_Goroutine_ dan _channel_],
@@ -662,6 +667,7 @@ case <-ctx.Done():
     // lanjut ke graceful shutdown
 }
 ```
+#source(("studi-kasus/account/main.go", "lab-01"))
 ]
 
 #code-slide(kicker: "Go essentials", title: [`context.Context`],
@@ -685,6 +691,7 @@ if err := h.store.Ping(ctx); err != nil {
     // database tidak menjawab dalam 2 detik
 }
 ```
+#source(("studi-kasus/account/main.go", "lab-01"), ("studi-kasus/account/internal/account/http.go", "lab-01"))
 ]
 
 #code-slide(kicker: "Go essentials", title: [`net/http`: _handler_ dan _middleware_],
@@ -710,6 +717,7 @@ func logging(log *slog.Logger, next http.Handler) http.Handler {
     })
 }
 ```
+#source(ilustrasi: true)
 #v(10pt)
 #text(size: 11pt, fill: slate)[Konsep yang sama di ekosistem lain: _middleware_ Koa (`await next()`) dan Laravel (`$next($request)`) juga membungkus _handler_, sehingga kode setelah `next` dipanggil berjalan setelah _response_ siap. _Middleware_ Express berbentuk _chain_ `next()`, sehingga kode sesudah _response_ membutuhkan `res.on('finish')`. Istilah _interceptor_ berbeda arti: _hook_ di Spring, _wrapper_ di NestJS, dan padanan _middleware_ di gRPC.]
 ]
@@ -775,6 +783,7 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
     // ...
 }
 ```
+#source(("studi-kasus/account/internal/account/http.go", "lab-02"))
 ]
 
 #slide(kicker: "Perbandingan", title: [`ServeMux`, chi, gin, echo, dan Fiber])[
@@ -844,6 +853,7 @@ func (r CreateRequest) Validate() error {
     return nil
 }
 ```
+#source(("studi-kasus/account/internal/account/account.go", "lab-01"))
 ```json
 HTTP 400
 {"error": "validation failed",
@@ -906,6 +916,7 @@ func LoadConfig() (Config, error) {
     return cfg, nil
 }
 ```
+#source(("studi-kasus/account/config.go", "lab-01"))
 ```text
 level=ERROR msg="account service stopped"
   error="missing required environment variables: DATABASE_URL"
@@ -980,6 +991,7 @@ case <-ctx.Done():
     }
     return nil
 ```
+#source(("studi-kasus/account/main.go", "lab-02"))
 ]
 
 #slide(kicker: "Anatomi service", title: [Pemetaan _error_ ke status HTTP])[
@@ -1124,7 +1136,6 @@ curl -sS localhost:28081/readyz
     - Karena pemeriksaan saldo berada di klausa `where`, dua debit yang datang bersamaan tidak dapat sama-sama lolos.
     - Perubahan saldo dan baris `mutation` ditulis dalam satu transaksi.
     - _Constraint_ `check (balance >= 0)` di skema menjadi pengaman terakhir bila ada kode lain yang mengubah saldo.
-    - Kode lengkap: #link("https://github.com/artivisi/training-microservices-2026-01/blob/lab-02/studi-kasus/account/internal/account/store.go#L82-L121")[`store.go` baris 82–121] dan #link("https://github.com/artivisi/training-microservices-2026-01/blob/lab-02/studi-kasus/account/internal/account/schema.sql#L4")[`schema.sql` baris 4] (_tag_ `lab-02`).
   ],
 )[
 ```go
@@ -1148,6 +1159,7 @@ return a, tx.Commit(ctx)
 -- schema.sql
 balance numeric(19, 2) not null check (balance >= 0),
 ```
+#source(("studi-kasus/account/internal/account/store.go", "lab-02"), ("studi-kasus/account/internal/account/schema.sql", "lab-02"))
 ]
 
 #code-slide(kicker: "Lab 2", title: [Status transfer dan _response_ HTTP],
@@ -1181,6 +1193,7 @@ func (s *Service) Execute(ctx context.Context,
     return s.store.Finish(ctx, t.ID, Completed, "")
 }
 ```
+#source(("studi-kasus/transfer/internal/transfer/service.go", "lab-02"))
 ]
 
 #slide(kicker: "Lab 2", title: "Celah yang sengaja dibiarkan di Lab 2")[

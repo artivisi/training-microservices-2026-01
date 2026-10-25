@@ -239,6 +239,7 @@ for {
     }
 }
 ```
+#source(("studi-kasus/notification/internal/notification/consumer.go", "lab-05"))
 ]
 
 // ── 02 Outbox ──────────────────────────────────────────────────────────────
@@ -262,6 +263,7 @@ for {
       Notifikasi \"transfer berhasil\" terkirim, padahal status transfer di database tidak berubah.
     ],
   )
+  #source(ilustrasi: true)
   #v(10pt)
   #note[Database dan Kafka tidak bisa digabung dalam satu transaksi. Urutan mana pun tetap menyisakan celah ketika proses mati di antara dua langkah tersebut.]
 ]
@@ -321,6 +323,7 @@ func (s *PostgresStore) Transition(ctx context.Context,
     return t, tx.Commit(ctx)
 }
 ```
+#source(("studi-kasus/transfer/internal/transfer/store.go", "lab-05"))
 ]
 
 #code-slide(kicker: "Outbox", title: [_Relay_ dari outbox ke Kafka],
@@ -353,6 +356,7 @@ _, err = tx.Exec(ctx, `update outbox
     where id = any(@ids::uuid[])`,
     pgx.NamedArgs{"ids": ids})
 ```
+#source(("studi-kasus/transfer/internal/outbox/outbox.go", "lab-05"))
 ]
 
 #slide(kicker: "Kontrak event", title: [_Payload_ event transfer])[
@@ -474,6 +478,7 @@ func (s *PostgresStore) Insert(ctx context.Context,
     return stored, true, tx.Commit(ctx)
 }
 ```
+#source(("studi-kasus/notification/internal/notification/store.go", "lab-06"))
 ]
 
 #slide(kicker: "Lab 6", title: [_Idempotency-Key_ pada `POST /transfers`])[
@@ -697,6 +702,7 @@ func (v *Verifier) Verify(token string) (Claims, error) {
     return c, nil
 }
 ```
+#source(("studi-kasus/transfer/internal/auth/verifier.go", "lab-07"))
 ]
 
 #code-slide(kicker: "Lab 7", title: [_Middleware_ JWT di REST transfer],
@@ -735,6 +741,7 @@ func (m *Middleware) Require(scope string,
     })
 }
 ```
+#source(("studi-kasus/transfer/internal/auth/http.go", "lab-07"))
 ]
 
 #code-slide(kicker: "Lab 7", title: [_Interceptor_ JWT di gRPC account],
@@ -775,6 +782,7 @@ return func(ctx context.Context, req any,
         claimsKey{}, claims), req)
 }
 ```
+#source(("studi-kasus/account/internal/auth/grpc.go", "lab-07"))
 ]
 
 #code-slide(kicker: "Lab 7", title: "Token dikirim otomatis oleh klien gRPC",
@@ -811,10 +819,9 @@ func (c *tokenCredentials) GetRequestMetadata(
 }
 
 // Lab tanpa TLS. Production: TLS dan return true.
-func (*tokenCredentials) RequireTransportSecurity() bool {
-    return false
-}
+func (*tokenCredentials) RequireTransportSecurity() bool { return false }
 ```
+#source(("studi-kasus/transfer/main.go", "lab-07"), ("studi-kasus/transfer/internal/accountclient/credentials.go", "lab-07"))
 ]
 
 #code-slide(kicker: "Lab 7", title: "Token yang ditolak account diganti satu kali",
@@ -846,6 +853,7 @@ grpc.WithPerRPCCredentials(tokens),
 grpc.WithChainUnaryInterceptor(
     tokens.refreshOnUnauthenticated, resilience),
 ```
+#source(("studi-kasus/transfer/internal/accountclient/credentials.go", "lab-07"), ("studi-kasus/transfer/internal/accountclient/client.go", "lab-07"))
 ]
 
 #slide(kicker: "Arsitektur", title: [Posisi API _gateway_])[
@@ -1014,6 +1022,7 @@ func (h ctxHandler) WithGroup(n string) slog.Handler {
     return ctxHandler{h.Handler.WithGroup(n)}
 }
 ```
+#source(("studi-kasus/transfer/internal/telemetry/log.go", "lab-08"))
 ]
 
 #slide(kicker: "Metrik", title: "Metrik yang dipasang di setiap service")[
@@ -1053,6 +1062,7 @@ ctx, span := c.tracer.Start(ctx, "process "+m.Topic,
     trace.WithSpanKind(trace.SpanKindConsumer))
 defer span.End()
 ```
+#source(("studi-kasus/transfer/internal/telemetry/telemetry.go", "lab-08"), ("studi-kasus/transfer/internal/outbox/outbox.go", "lab-08"), ("studi-kasus/notification/internal/notification/consumer.go", "lab-08"))
     ],
     [
       #set text(size: 12.5pt)

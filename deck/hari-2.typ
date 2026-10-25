@@ -207,6 +207,7 @@ if errors.Is(err, context.DeadlineExceeded) {
     // status di account TIDAK diketahui
 }
 ```
+#source(ilustrasi: true)
     ],
   )
 ]
@@ -333,6 +334,7 @@ rt := failsafehttp.NewRoundTripper(nil,
     retry, breaker, timeout.New[*http.Response](2*time.Second))
 client := &http.Client{Transport: rt}
 ```
+#source(("studi-kasus/transfer/internal/accountclient/client.go", "lab-03"))
 ]
 
 #code-slide(kicker: "failsafe-go", title: "Klasifikasi kegagalan ditulis sebagai fungsi",
@@ -359,6 +361,7 @@ func countsAsFailure(resp *http.Response, err error) bool {
     return err != nil || resp.StatusCode >= 500
 }
 ```
+#source(("studi-kasus/transfer/internal/accountclient/client.go", "lab-03"))
 ]
 
 #slide(kicker: "Simulasi", title: [_Fault injection_ pada account service])[
@@ -571,6 +574,7 @@ message DebitRequest {
   string reference = 3;
 }
 ```
+#source(("studi-kasus/proto/account/v1/account.proto", "lab-04"))
 ]
 
 #slide(kicker: "Kontrak", title: [Nominal uang tidak dikirim sebagai `double`])[
@@ -586,6 +590,7 @@ y, _ := decimal.NewFromString("0.2")
 fmt.Println(x.Add(y))
 // 0.3
 ```
+#source(ilustrasi: true)
     ],
     [
       #bullets(size: 13.5pt,
@@ -649,6 +654,7 @@ if err != nil {
 }
 go func() { errCh <- grpcSrv.Serve(lis) }()
 ```
+#source(("studi-kasus/account/main.go", "lab-04"))
 ]
 
 #slide(kicker: "Error handling", title: [Pemetaan _error_ ke _status code_ gRPC])[
@@ -701,6 +707,7 @@ case codes.NotFound:
         transfer.ErrAccountNotFound)
 // ...
 ```
+#source(("studi-kasus/account/internal/account/grpc.go", "lab-04"), ("studi-kasus/transfer/internal/accountclient/client.go", "lab-04"))
 ]
 
 #slide(kicker: [_Interceptor_], title: [_Interceptor_ membungkus setiap panggilan gRPC])[
@@ -760,6 +767,7 @@ func Logging(log *slog.Logger) grpc.UnaryServerInterceptor {
     }
 }
 ```
+#source(("studi-kasus/account/internal/interceptor/logging.go", "lab-04"))
 ]
 
 #slide(kicker: "Resiliency", title: [_Policy_ Lab 3 dalam bentuk _status code_ gRPC])[
@@ -810,6 +818,7 @@ _, err := c.api.Debit(ctx, &accountv1.DebitRequest{
     Reference: reference})
 return mapError("debit", number, err)
 ```
+#source(("studi-kasus/transfer/internal/accountclient/client.go", "lab-04"))
 ]
 
 #slide(kicker: "Konsep", title: [_Deadline_ ikut terkirim ke server])[
@@ -870,6 +879,7 @@ c, err := New("passthrough:///bufnet", s, log,
             return lis.DialContext(ctx)
         }))
 ```
+#source(("studi-kasus/transfer/internal/accountclient/client_test.go", "lab-04"))
 ]
 
 #slide(kicker: "Lab 4", title: "Panggilan transfer ke account berpindah ke gRPC")[
@@ -1027,6 +1037,7 @@ c, err := New("passthrough:///bufnet", s, log,
       on conflict (account_number, type, reference)
       do nothing;
       ```
+      #source(("studi-kasus/account/internal/account/schema.sql", "lab-05"), ("studi-kasus/account/internal/account/store.go", "lab-05"))
       #v(6pt)
       #bullets(size: 13pt,
         [Bila tidak ada baris yang masuk, berarti mutasi dengan _reference_ tersebut sudah pernah dicatat. Account lalu membaca saldo dalam transaksi yang sama, menjawab sukses tanpa mutasi baru, dan mencatat log `mutation already applied, not repeated`],
@@ -1102,6 +1113,7 @@ reversalRetry := retrypolicy.NewBuilder[any]().
     WithJitterFactor(jitterFactor).
     Build()
 ```
+#source(("studi-kasus/transfer/internal/transfer/service.go", "lab-05"), ("studi-kasus/transfer/internal/accountclient/client.go", "lab-05"))
 ]
 
 #slide(kicker: "Saga", title: [Saga dan _graceful shutdown_])[

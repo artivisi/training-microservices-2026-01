@@ -148,6 +148,46 @@
   }
 ]
 
+// Source line under a code snippet: the file it comes from, linked at the
+// checkpoint tag of the lab that holds that version. No line numbers: the
+// code changes, the link stays valid. Each file is (path from the repo root,
+// tag); paths under studi-kasus/ are shown relative to it.
+//   #source(("studi-kasus/account/internal/account/store.go", "lab-02"),
+//           ("studi-kasus/account/internal/account/schema.sql", "lab-02"))
+//   #source(ilustrasi: true)   // snippet not taken from the case-study repo
+#let repo-blob = "https://github.com/artivisi/training-microservices-2026-01/blob/"
+#let source(ilustrasi: false, ..files) = {
+  let items = files.pos()
+  assert(ilustrasi or items.len() > 0, message: "source: give (path, tag) pairs, or ilustrasi: true")
+  assert(not (ilustrasi and items.len() > 0), message: "source: ilustrasi: true takes no files")
+  let groups = ()
+  for f in items {
+    assert(type(f) == array and f.len() == 2, message: "source: each file is (path, tag), got " + repr(f))
+    let (path, tag) = f
+    assert(tag.starts-with("lab-"), message: "source: tag must be lab-NN, got " + repr(tag))
+    assert(not path.contains("#"), message: "source: no line anchors in " + repr(path))
+    if groups.len() > 0 and groups.at(-1).tag == tag {
+      groups.at(-1).paths.push(path)
+    } else {
+      groups.push((tag: tag, paths: (path,)))
+    }
+  }
+  let shown(p) = if p.starts-with("studi-kasus/") { p.slice("studi-kasus/".len()) } else { p }
+  let code(s) = text(font: mono, size: 9pt, fill: navy-dk, s)
+  block(above: 5pt, below: 12pt, width: 100%, {
+    set text(size: 10pt, fill: slate)
+    set par(leading: 0.45em)
+    if ilustrasi [Ilustrasi, tidak diambil dari repositori studi kasus.] else {
+      [Sumber: ]
+      groups.map(g => {
+        g.paths.map(p => link(repo-blob + g.tag + "/" + p, code(shown(p)))).join([, ])
+        [ · _tag_ ]
+        code(g.tag)
+      }).join([; ])
+    }
+  })
+}
+
 // ── Components ─────────────────────────────────────────────────────────────
 #let card(title, body, accent: navy, fill: white) = box(
   fill: fill, stroke: 0.7pt + border, radius: 5pt, inset: 12pt, width: 100%,

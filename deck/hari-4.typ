@@ -272,6 +272,7 @@ USER 65532:65532
 EXPOSE 8082
 ENTRYPOINT ["/transfer"]
 ```
+#source(("studi-kasus/transfer/Dockerfile", "lab-09"))
 ]
 
 #slide(kicker: "Keamanan image", title: [_Non-root_ dan UID acak])[
@@ -351,6 +352,7 @@ func LoadConfig() (Config, error) {
     return cfg, nil
 }
 ```
+#source(("studi-kasus/transfer/config.go", "lab-08"))
 ]
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -509,6 +511,7 @@ containers:
     requests: { cpu: 50m, memory: 64Mi }
     limits:   { cpu: 500m, memory: 256Mi }
 ```
+#source(("studi-kasus/k8s/base/transfer/deployment.yaml", "lab-09"))
 ]
 
 #slide(kicker: "Probe", title: [Tindakan Kubernetes pada setiap skenario])[
@@ -547,6 +550,7 @@ securityContext:
     type: RuntimeDefault
 # runAsUser sengaja tidak diisi
 ```
+#source(("studi-kasus/k8s/base/transfer/deployment.yaml", "lab-09"))
 ]
 
 #slide(kicker: "Rolling update", title: [_Rolling update_ tanpa _downtime_])[
@@ -601,6 +605,7 @@ spec:
           sleep:
             seconds: 5
 ```
+#source(("studi-kasus/k8s/base/transfer/deployment.yaml", "lab-09"))
 ]
 
 #slide(kicker: "Infra dari cluster", title: [_Pod_ mengakses infrastruktur di _host_])[
@@ -691,6 +696,7 @@ jobs:
       - run: make -C studi-kasus/transfer push
       - run: make -C studi-kasus/transfer deploy
 ```
+#source((".forgejo/workflows/transfer.yaml", "lab-10"))
 ]
 
 #code-slide(kicker: "Makefile", title: [Target `image`, `push`, `deploy`],
@@ -725,6 +731,7 @@ deploy:
 	kubectl -n $(NAMESPACE) rollout status \
 	  deployment/$(SERVICE) --timeout=180s
 ```
+#source(("studi-kasus/pipeline.mk", "lab-10"))
 ]
 
 #slide(kicker: "Lab 10", title: [Arsitektur _pipeline_ di lab])[
@@ -788,6 +795,7 @@ pipeline {
     } } }
 }
 ```
+#source(("studi-kasus/transfer/Jenkinsfile", "lab-10"))
     ],
   )
 ]
@@ -881,6 +889,7 @@ spec:
         type: Utilization
         averageUtilization: 70
 ```
+#source(ilustrasi: true)
 ]
 
 #slide(kicker: "Observability", title: [Penempatan _observability stack_])[
@@ -937,6 +946,7 @@ spec:
             name: transfer
             port: { number: 8082 }
 ```
+#source(("studi-kasus/k8s/base/transfer/ingress.yaml", "lab-09"))
     ],
     [
 ```yaml
@@ -954,6 +964,7 @@ spec:
   tls:
     termination: edge
 ```
+#source(ilustrasi: true)
     ],
   )
   #v(8pt)
