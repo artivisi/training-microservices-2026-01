@@ -91,23 +91,23 @@
   #note(kind: "tip")[Saat meninjau kode yang memanggil service lain, ajukan dulu pertanyaan ini: apa yang terjadi bila service tujuan tidak menjawab selama satu menit?]
 ]
 
-#slide(kicker: "Konsep", title: "Service lambat lebih berbahaya dibandingkan service mati")[
+#slide(kicker: "Konsep", title: "Service yang lambat lebih berbahaya dibanding service yang mati")[
   #two-col(
     card("Service tujuan mati")[
-      - Koneksi langsung ditolak (_connection refused_)
-      - Pemanggil menerima _error_ dalam hitungan milidetik
-      - _Goroutine_ dan koneksi segera dilepas
-      - Gejalanya jelas: _error rate_ naik, mudah terdeteksi
+      - Koneksi langsung ditolak (_connection refused_).
+      - Pemanggil mendapat _error_ dalam hitungan milidetik.
+      - _Goroutine_ dan koneksi langsung dilepas.
+      - Masalahnya cepat terlihat karena _error rate_ naik.
     ],
     card("Service tujuan lambat", accent: red)[
-      - Koneksi diterima, jawaban tidak kunjung datang
-      - Pemanggil menunggu tanpa batas bila tidak ada _timeout_
-      - _Goroutine_, koneksi, dan memori tertahan selama menunggu
-      - Gejalanya samar: semua _request_ ikut lambat, tidak ada _error_
+      - Koneksi diterima, tetapi jawabannya tidak kunjung datang.
+      - Tanpa _timeout_, pemanggil menunggu tanpa batas.
+      - Selama menunggu, _goroutine_, koneksi, dan memori tetap tertahan.
+      - Masalahnya sulit terlihat: semua _request_ ikut lambat, tetapi tidak ada _error_.
     ],
   )
   #v(10pt)
-  #note(kind: "warn")[`http.Client{}` tanpa _field_ `Timeout` dan tanpa _deadline_ pada `context` menunggu selamanya. Kondisi ini berlaku pada transfer service di akhir Lab 2.]
+  #note(kind: "warn")[`http.Client{}` tanpa _field_ `Timeout` dan tanpa _deadline_ di `context` akan menunggu selamanya. Transfer service di akhir Lab 2 masih seperti ini.]
 ]
 
 #slide(kicker: "Konsep", title: [_Cascading failure_ (kegagalan berantai)])[
