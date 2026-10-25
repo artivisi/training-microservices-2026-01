@@ -315,7 +315,7 @@ ENTRYPOINT ["/transfer"]
   #text(size: 11.5pt, fill: slate)[Tabel lengkap ada di Hari 1 (anatomi service). Faktor I (_Codebase_: satu _module_ dan satu _pipeline_ per service) dan XII (_Admin processes_: skema database diterapkan saat _startup_) tidak diulang di sini.]
 ]
 
-#code-slide(kicker: "Konfigurasi", title: [_Startup_ dihentikan bila konfigurasi wajib kosong],
+#code-slide(kicker: "Konfigurasi", title: [_Startup_ dihentikan bila ada konfigurasi wajib yang belum diisi],
   side: [
     - _Environment variable_ yang kosong menghentikan _startup_ dengan pesan _error_ yang menyebut nama variabel tersebut
     - _Pod_ dengan ConfigMap yang salah langsung gagal dan terlihat di `kubectl get pods`
