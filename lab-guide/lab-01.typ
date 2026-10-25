@@ -94,6 +94,12 @@ Seluruh perintah pada lab ini dijalankan dari direktori `studi-kasus`, kecuali b
 
 Setiap _service_ dibuat sebagai Go _module_ tersendiri dengan `go.mod` masing-masing. Pemisahan ini membuat dependensi setiap _service_ tercatat sendiri, dan setiap _service_ dapat di-_build_ menjadi _image_ terpisah pada Lab 9. Agar ketiga _module_ tetap dapat dikerjakan bersama dari satu direktori, Go menyediakan _workspace_ melalui file `go.work`. File tersebut mendaftarkan _module_ yang aktif, sehingga perintah `go` yang dijalankan dari `studi-kasus` mengenali seluruh _service_.
 
+#note[
+  *Mengapa _monorepo_?* Studi kasus menyimpan ketiga _service_ dan kontrak protobuf dalam satu repositori (_monorepo_). Pilihan ini mempermudah training: satu `git clone` sudah berisi semua _service_, satu _tag checkpoint_ mencatat kondisi seluruh sistem di akhir setiap lab, dan perubahan kontrak gRPC beserta kode di `account` dan `transfer` masuk dalam satu _commit_. Setiap _service_ tetap memiliki `go.mod`, `Dockerfile`, dan _pipeline_ sendiri. _Pipeline_ di Lab 10 hanya berjalan untuk _service_ yang berubah, berdasarkan _path filter_.
+
+  Di organisasi dengan tim terpisah per _service_, satu repositori per _service_ (_polyrepo_) sering lebih cocok, karena hak akses, riwayat, dan jadwal rilis setiap _service_ terpisah dengan jelas. Konsekuensinya, kontrak bersama seperti modul `proto` harus dirilis sebagai modul berversi dan diimpor dengan versi tersebut, sedangkan di studi kasus modul ini cukup dirujuk dengan _directive_ `replace` ke `../proto` (Lab 4).
+]
+
 #perintah[```bash
 mkdir -p account/internal/account
 cd account
