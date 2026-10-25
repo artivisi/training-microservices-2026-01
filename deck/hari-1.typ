@@ -1069,32 +1069,6 @@ curl -sS localhost:28081/readyz
   ],
 )
 
-#code-slide(kicker: "Lab 1", title: "Mencegah saldo negatif saat dua debit bersamaan",
-  side: [
-    - Pemeriksaan saldo berada di klausa `where`. Dua debit yang datang bersamaan tidak dapat sama-sama lolos: debit kedua menunggu _row lock_, lalu kondisinya dievaluasi ulang dengan saldo terbaru.
-    - Perubahan saldo dan baris `mutation` ditulis dalam satu transaksi.
-    - _Constraint_ `check (balance >= 0)` menjadi pengaman terakhir di database.
-  ],
-)[
-```go
-tx, err := s.pool.Begin(ctx)
-// ...
-defer tx.Rollback(ctx) // no-op after Commit
-
-rows, err := tx.Query(ctx, `
-    update account set balance = balance + @delta
-    where number = @number and balance + @delta >= 0
-    returning number, owner_name, balance, created_at`,
-    pgx.NamedArgs{"number": number, "delta": delta})
-// tidak ada baris: rekening tidak ada, atau saldo kurang
-
-_, err = tx.Exec(ctx, `
-    insert into mutation (account_number, type, amount, reference)
-    values (@number, @type, @amount, @reference)`, ...)
-return a, tx.Commit(ctx)
-```
-]
-
 // ── 07 Lab 2 ───────────────────────────────────────────────────────────────
 
 #section-slide(number: "07", title: "Lab 2: Transfer Service", subtitle: [Dua service, dua database, dan komunikasi REST pertama])
@@ -1142,6 +1116,38 @@ return a, tx.Commit(ctx)
     step-note(442pt, 310pt, [ubah status menjadi `COMPLETED`]),
     msg(340pt, 432pt, 100pt, [`201 Created`], dash: "dashed"),
   )
+]
+
+#code-slide(kicker: "Lab 2", title: "Mencegah saldo negatif saat dua debit bersamaan",
+  side: [
+    - `update` mengunci baris yang diubah secara implisit, sehingga `select ... for update` tidak diperlukan. Debit kedua pada rekening yang sama menunggu transaksi pertama selesai, lalu PostgreSQL mengevaluasi ulang `where` dengan saldo terbaru.
+    - Karena pemeriksaan saldo berada di klausa `where`, dua debit yang datang bersamaan tidak dapat sama-sama lolos.
+    - Perubahan saldo dan baris `mutation` ditulis dalam satu transaksi.
+    - _Constraint_ `check (balance >= 0)` di skema menjadi pengaman terakhir bila ada kode lain yang mengubah saldo.
+    - Kode lengkap: #link("https://github.com/artivisi/training-microservices-2026-01/blob/lab-02/studi-kasus/account/internal/account/store.go#L82-L121")[`store.go` baris 82–121] dan #link("https://github.com/artivisi/training-microservices-2026-01/blob/lab-02/studi-kasus/account/internal/account/schema.sql#L4")[`schema.sql` baris 4] (_tag_ `lab-02`).
+  ],
+)[
+```go
+tx, err := s.pool.Begin(ctx)
+// ...
+defer tx.Rollback(ctx) // no-op after Commit
+
+rows, err := tx.Query(ctx, `
+    update account set balance = balance + @delta
+    where number = @number and balance + @delta >= 0
+    returning number, owner_name, balance, created_at`,
+    pgx.NamedArgs{"number": number, "delta": delta})
+// tidak ada baris: rekening tidak ada, atau saldo kurang
+
+_, err = tx.Exec(ctx, `
+    insert into mutation (account_number, type, amount, reference)
+    values (@number, @type, @amount, @reference)`, ...)
+return a, tx.Commit(ctx)
+```
+```sql
+-- schema.sql
+balance numeric(19, 2) not null check (balance >= 0),
+```
 ]
 
 #code-slide(kicker: "Lab 2", title: [Status transfer dan _response_ HTTP],
