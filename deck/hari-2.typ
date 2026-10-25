@@ -185,12 +185,14 @@
       - _Timeout_ membatasi waktu tunggu setiap panggilan ke account
       - _Retry_ mengulang panggilan yang terbukti belum diproses
       - _Circuit breaker_ menghentikan sementara panggilan ke account yang terus gagal
+      - _Bulkhead_ membatasi jumlah panggilan bersamaan ke account (Eksplorasi Mandiri Lab 3)
       - Keputusan diambil per panggilan, berdasarkan arti setiap _error_ bagi proses bisnis
     ],
     card([Di platform: Kubernetes (Hari 4)], accent: gold.darken(15%))[
       - _Readiness probe_ gagal: _pod_ dikeluarkan dari Service dan tidak menerima _request_ baru
       - _Liveness probe_ gagal: kubelet me-_restart_ _container_ yang macet
       - _Rolling update_ mengganti _pod_ secara bertahap. _Pod_ lama tetap melayani sampai _pod_ baru siap
+      - _Resource limits_ membatasi CPU dan memori setiap _container_, sehingga satu _pod_ tidak menghabiskan kapasitas _node_
       - Keputusan diambil per _pod_, tanpa mengetahui isi _request_
     ],
   )
@@ -200,17 +202,17 @@
 
 #decision(title: [failsafe-go untuk _timeout_, _retry_, dan _circuit breaker_],
   [
-    - Ketiga pola untuk panggilan transfer ke account
+    - Ketiga pola untuk panggilan transfer ke account, ditambah _bulkhead_ bila diperlukan
     - Urutan _policy_ dapat diatur, karena urutan menentukan perilaku
     - Parameter yang sama berlaku untuk HTTP (Lab 3) dan gRPC (Lab 4)
   ],
   [
     - Menulis sendiri _retry loop_ dan _state machine_ _circuit breaker_ beserta _test_-nya
-    - sony/gobreaker: hanya _circuit breaker_, _retry_ dan _timeout_ ditulis terpisah
+    - sony/gobreaker: hanya _circuit breaker_, sedangkan _retry_, _timeout_, dan _bulkhead_ ditulis terpisah
     - failsafe-go
   ],
   [
-    - failsafe-go: ketiga _policy_ dalam satu library, disusun berurutan dalam satu pemanggilan
+    - failsafe-go: keempat _policy_, termasuk _bulkhead_, tersedia dalam satu library dan disusun berurutan dalam satu pemanggilan
     - Adaptor `failsafehttp` (`http.RoundTripper`) dan `failsafegrpc` (_unary client interceptor_), sehingga _policy_ Lab 3 digunakan kembali di Lab 4
     - Klasifikasi kegagalan ditulis sebagai fungsi biasa yang dapat diuji
   ],
@@ -343,6 +345,7 @@ if errors.Is(err, context.DeadlineExceeded) {
   )
   #v(8pt)
   #note(kind: "warn")[Bila _timeout_ diletakkan di luar _retry_, batas 2 detik berlaku untuk seluruh percobaan sekaligus, dan _circuit breaker_ tidak pernah melihat _timeout_ sebagai kegagalan.]
+  #text(size: 12pt)[_Bulkhead_ di Eksplorasi Mandiri Lab 3 dipasang paling luar. Panggilan yang ditolak _bulkhead_ tidak dicoba ulang oleh _retry_ dan tidak dicatat sebagai kegagalan account oleh _circuit breaker_.]
 ]
 
 #code-slide(kicker: "failsafe-go", title: [_Round tripper_ dengan tiga _policy_],
