@@ -1030,19 +1030,19 @@ c, err := New("passthrough:///bufnet", s, log,
   #flow(
     node("transfer", sub: "db-transfer", width: 130pt),
     arr(label: "1. Debit A: sukses", length: 150pt),
-    node("account A", sub: "saldo berkurang", width: 140pt),
+    node("account", sub: "saldo rekening A berkurang", width: 170pt),
   )
   #flow(
     box(width: 130pt),
     arr(label: "2. Credit B: gagal", length: 150pt, color: red, dash: "dashed"),
-    node("account B", sub: "saldo tidak berubah", kind: "ext", width: 140pt),
+    node("account", sub: "saldo rekening B tidak berubah", kind: "ext", width: 170pt),
   )
-  #v(8pt)
-  #bullets(size: 13.5pt,
-    [Debit dan credit berjalan sebagai dua transaksi database terpisah di dua service yang berbeda. Tidak ada `BEGIN ... COMMIT` yang mencakup keduanya.],
+  #bullets(size: 12.5pt,
+    [Debit dan credit dijalankan sebagai dua panggilan terpisah ke account, masing-masing dengan transaksi database sendiri. Tidak ada `BEGIN ... COMMIT` yang mencakup keduanya.],
     [Bila credit gagal setelah debit berhasil, saldo rekening A sudah berkurang tetapi rekening B tidak bertambah. Transfer di akhir Lab 2 hanya mencatat log untuk koreksi manual.],
     [Demo: transfer ke nomor rekening tujuan yang tidak ada. Debit berhasil, credit dijawab `NotFound`, channel menerima `502`, dan saldo sumber tidak kembali.],
   )
+  #note[Kedua rekening berada di account yang sama dan sebenarnya dapat dipindahkan dalam satu transaksi. Debit dan credit sengaja dipisah untuk mensimulasikan transfer antarbank, misalnya melalui BI-FAST. Credit terjadi di bank tujuan, dan bila bank tujuan menolak, debit dibatalkan dengan _reversal_.]
 ]
 
 #slide(kicker: "Konsep", title: [Alasan _distributed transaction_ (2PC) dihindari])[

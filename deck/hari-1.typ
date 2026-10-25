@@ -475,6 +475,7 @@ transfer -> account  POST /accounts/1000000002/credit
                      (gagal? debit sudah terjadi)
 ```
 #source(ilustrasi: true)
+#note[Kedua rekening di studi kasus berada di account service yang sama, sehingga debit dan credit sebenarnya dapat digabung menjadi satu operasi di account dalam satu transaksi database. Studi kasus sengaja memisahkannya untuk mensimulasikan kondisi ketika credit berada di sistem lain, misalnya transfer antarbank melalui BI-FAST. Bila bank tujuan menolak, debit dibatalkan dengan _reversal_, dan _reversal_ inilah kompensasi dalam saga.]
 ]
 
 // ── 03 Ekosistem Go ────────────────────────────────────────────────────────
