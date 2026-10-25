@@ -638,6 +638,8 @@ Tabel berikut menunjukkan hasil kedua _endpoint_ pada beberapa kondisi, beserta 
   )
 }
 
+Baris proses macet menjawab pertanyaan yang sering muncul: mengapa _liveness_ masih diperlukan, padahal _service_ yang hidup tetapi tidak siap juga tidak berguna? _Readiness_ yang gagal tidak pernah me-_restart_ _container_. Proses yang macet, misalnya karena _deadlock_ atau _connection pool_ yang habis tanpa pernah dikembalikan, akan terus gagal _readiness_ dan tetap berada di luar Service selamanya. Bila semua _pod_ mengalaminya, _service_ berhenti total tanpa ada yang menjalankannya ulang. _Liveness_ menangani kondisi yang hanya dapat diatasi dengan _restart_, sedangkan _readiness_ menangani kondisi yang kembali normal dengan sendirinya, seperti database yang sedang tidak dapat dihubungi.
+
 Kubernetes juga menyediakan _startup probe_ untuk _service_ yang membutuhkan waktu lama saat _startup_, misalnya karena memuat data dalam jumlah besar. Selama _startup probe_ belum berhasil, _liveness_ dan _readiness probe_ belum dijalankan, sehingga _service_ tersebut tidak di-_restart_ sebelum selesai _startup_. _Service_ di studi kasus selesai _startup_ dalam waktu kurang dari satu detik, sehingga tidak memerlukan _startup probe_.
 
 === Program Utama dan Graceful Shutdown

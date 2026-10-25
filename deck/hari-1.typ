@@ -933,7 +933,7 @@ level=ERROR msg="account service stopped"
     ],
   )
   #v(8pt)
-  #note[Untuk service yang _startup_-nya lama, Kubernetes menyediakan _startupProbe_: _liveness_ dan _readiness_ baru dijalankan setelah _startupProbe_ berhasil, sehingga _startup_ yang lama tidak dianggap macet. Studi kasus tidak memerlukannya. YAML ketiga _probe_ dibahas di Lab 9.]
+  #text(size: 11pt, fill: slate)[_startupProbe_ menunda _liveness_ dan _readiness_ untuk service yang _startup_-nya lama. Studi kasus tidak memerlukannya. YAML ketiga _probe_ dibahas di Lab 9.]
 ]
 
 #slide(kicker: "Anatomi service", title: [Skenario _liveness_ dan _readiness_])[
@@ -949,7 +949,7 @@ level=ERROR msg="account service stopped"
     [Account service lambat, dilihat dari transfer service], [`200`], [`200`], [Tidak ada], [_Readiness_ transfer hanya memeriksa database transfer. Gangguan account ditangani _timeout_ dan _circuit breaker_ (Hari 2)],
   )
   #v(6pt)
-  #note[_Liveness_ gagal berarti _container_ di-_restart_. _Readiness_ gagal berarti _pod_ tidak menerima _traffic_, tanpa _restart_.]
+  #note(kind: "warn")[*Mengapa _readiness_ saja tidak cukup?* Lihat baris proses macet. _Readiness_ yang gagal tidak pernah me-_restart_ _container_, sehingga _pod_ yang macet tetap hidup tetapi tidak berguna. Bila semua _pod_ mengalaminya, service berhenti total tanpa ada yang me-_restart_. _Liveness_ menangani kondisi yang hanya dapat diatasi dengan _restart_, sedangkan _readiness_ menangani kondisi yang kembali normal dengan sendirinya.]
 ]
 
 #code-slide(kicker: "Anatomi service", title: [_Graceful shutdown_],
