@@ -730,7 +730,7 @@ func logging(log *slog.Logger, next http.Handler) http.Handler {
 studi-kasus/
 ├── go.work
 ├── compose.yaml        # PostgreSQL per service
-├── Makefile            # infra-up, infra-down, test
+├── Makefile            # infra-up, infra-down, infra-reset, test
 ├── account/
 │   ├── go.mod
 │   ├── main.go         # run(): rangkai komponen, server
@@ -1040,14 +1040,17 @@ case <-ctx.Done():
   #v(14pt)
 ```bash
 cd studi-kasus
+make infra-reset              # hapus container dan data lama, mulai dari database kosong
 make infra-up                 # PostgreSQL di Docker Compose
-make -C account run           # HTTP_ADDR=:28081, DATABASE_URL=...localhost:15432
+make -C account run           # terminal tersendiri: HTTP :28081, database localhost:15432
 
-curl -s -X POST localhost:28081/accounts -H 'Content-Type: application/json' \
+curl -sS -X POST localhost:28081/accounts -H 'Content-Type: application/json' \
   -d '{"number":"1000000001","owner_name":"Budi","initial_balance":"500000.00"}'
-curl -s localhost:28081/accounts/1000000001
-curl -s localhost:28081/readyz
+curl -sS localhost:28081/accounts/1000000001
+curl -sS localhost:28081/readyz
 ```
+  #v(6pt)
+  #text(size: 11pt, fill: slate)[`-sS` menyembunyikan _progress bar_ tetapi tetap menampilkan _error_, misalnya `Couldn't connect to server` bila service belum berjalan. Dengan `-s` saja, _error_ tersebut tidak tampil dan _response_ terlihat kosong. `make infra-down` menghentikan _container_ tetapi menyimpan data, sedangkan `make infra-reset` juga menghapus data.]
 ]
 
 #decision(title: "pgx tanpa ORM",
