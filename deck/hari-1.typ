@@ -773,12 +773,37 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 ```
 ]
 
+#slide(kicker: "Perbandingan", title: [`ServeMux`, chi, gin, echo, dan Fiber])[
+  #{
+    show table.cell: set text(size: 10.5pt)
+    table(
+      columns: (1fr, 0.95fr, 0.85fr, 1fr, 1.05fr, 1fr),
+      inset: (x: 5pt, y: 4pt),
+      [Aspek], [`http.ServeMux`], [chi], [gin], [echo], [Fiber],
+      [Mesin HTTP], [`net/http`], [`net/http`], [`net/http`], [`net/http`], [fasthttp],
+      [Bentuk _handler_], [`http.Handler`], [`http.Handler`], [`func(*gin.Context)`], [`func(*echo.Context) error`], [`func(fiber.Ctx) error`],
+      [_Middleware_ `net/http`], [Langsung digunakan], [Langsung digunakan], [Lewat pembungkus], [Lewat pembungkus], [Lewat _adaptor_, dengan _overhead_],
+      [Grup _route_ dengan _middleware_ per grup], [Tidak ada, dirangkai sendiri], [Ada], [Ada], [Ada], [Ada],
+      [_Binding_ dan validasi], [Ditulis sendiri], [Ditulis sendiri], [Bawaan (go-playground/validator)], [_Binding_ bawaan, _validator_ dipasang sendiri], [_Binding_ bawaan, _validator_ dipasang sendiri],
+      [HTTP/2], [Ya], [Ya], [Ya], [Ya], [Belum didukung fasthttp],
+      [Dependensi langsung], [Tidak ada], [Tidak ada], [15], [3], [15],
+      [Versi dan lisensi (Okt 2026)], [Bagian dari Go], [v5.5, MIT], [v1.12, MIT], [v5.4, MIT], [v3.6, MIT],
+    )
+  }
+  #v(5pt)
+  #grid(columns: (1fr, 1fr, 1fr), column-gutter: 12pt,
+    card([Pindah antar-_router_], text(size: 11pt)[_Handler_ `ServeMux` dan chi sama-sama `http.Handler`, sehingga pindah ke chi tidak mengubah _handler_. Pindah ke gin, echo, atau Fiber berarti menulis ulang setiap _handler_.]),
+    card([Catatan Fiber], accent: amber, text(size: 11pt)[Nilai dari `fiber.Ctx` digunakan ulang setelah _handler_ selesai, sehingga tidak boleh disimpan. README fasthttp sendiri menyarankan `net/http` untuk sebagian besar kasus.]),
+    card([_Framework_ layak dipilih], accent: gold.darken(15%), text(size: 11pt)[API dengan banyak grup _route_ dan _middleware_ per grup, _binding_ dan validasi deklaratif, atau tim yang sudah terbiasa dengan _framework_ tersebut.]),
+  )
+]
+
 #decision(title: [_Routing_ dengan `ServeMux` dari _standard library_],
   [_Routing_ REST berdasarkan _method_ dan _path_, dengan parameter di _path_ (`/accounts/{number}`), serta _middleware_ untuk _logging_, JWT, dan metrik.],
   [
     - `http.ServeMux`: pola _method_ dan _path_ sejak Go 1.22
     - chi: _router_ yang kompatibel dengan `http.Handler`
-    - gin, echo: _framework_ dengan _binding_ dan validasi
+    - gin, echo, Fiber: _framework_ dengan _binding_ dan validasi (Fiber di atas fasthttp, bukan `net/http`)
   ],
   [`http.ServeMux` tanpa _router_ pihak ketiga. _Middleware_ ditulis sebagai fungsi yang menerima dan mengembalikan `http.Handler`.],
   [
