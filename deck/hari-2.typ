@@ -454,6 +454,29 @@ func countsAsFailure(resp *http.Response, err error) bool {
 #section-slide(number: "02", title: "gRPC untuk Komunikasi Internal",
   subtitle: [Kontrak protobuf, _code generation_, _unary call_, _error handling_, dan _interceptor_])
 
+#slide(kicker: "Perbandingan", title: [REST dan gRPC])[
+  #{
+    show table.cell: set text(size: 11.5pt)
+    table(
+      columns: (0.9fr, 1fr, 1fr),
+      inset: (x: 6pt, y: 4.5pt),
+      [Aspek], [REST + JSON], [gRPC],
+      [Kontrak], [OpenAPI, ditulis terpisah dan bersifat opsional], [File `.proto`, wajib, menjadi sumber kode hasil _generate_],
+      [Kontrak tidak cocok terdeteksi], [Saat _runtime_], [Saat kompilasi],
+      [_Payload_], [Teks JSON], [Biner protobuf],
+      [_Transport_], [HTTP/1.1 atau HTTP/2], [HTTP/2],
+      [Jenis panggilan], [_Request_ dan _response_], [_Unary_, serta _streaming_ dari server, dari client, atau dua arah],
+      [Batas waktu tunggu pemanggil], [Tidak dikirim ke server], [Dikirim ke server sebagai _deadline_],
+      [_Error_], [_Status code_ HTTP dan isi _response_], [_Status code_ gRPC dan pesan _error_],
+      [Mencoba secara manual], [curl, browser, Postman], [grpcurl atau Postman, dengan _reflection_ atau file `.proto`],
+      [_Load balancing_ di belakang Kubernetes Service], [Client membuka beberapa koneksi, sehingga panggilan tersebar ke beberapa _pod_], [Satu koneksi HTTP/2 untuk semua panggilan, sehingga panggilan menumpuk di satu _pod_ tanpa _client-side load balancing_],
+      [Cocok untuk], [API channel dan pihak eksternal dengan client yang beragam], [Panggilan internal antarservice yang dikembangkan tim sendiri],
+    )
+  }
+  #v(6pt)
+  #note[Keduanya digunakan bersamaan di studi kasus: REST untuk channel, gRPC untuk panggilan transfer ke account.]
+]
+
 #decision(title: "gRPC untuk panggilan internal",
   [
     - Panggilan internal bervolume tinggi: satu _request_ channel memicu beberapa panggilan ke account
