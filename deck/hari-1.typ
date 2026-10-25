@@ -949,7 +949,7 @@ level=ERROR msg="account service stopped"
     [Account service lambat, dilihat dari transfer service], [`200`], [`200`], [Tidak ada], [_Readiness_ transfer hanya memeriksa database transfer. Gangguan account ditangani _timeout_ dan _circuit breaker_ (Hari 2)],
   )
   #v(6pt)
-  #note(kind: "warn")[*Mengapa _readiness_ saja tidak cukup?* _Readiness_ tidak pernah me-_restart_ _container_. Dengan _readiness_ saja, _pod_ yang macet (baris ketiga) dikeluarkan dari Service dan tetap macet selamanya. Hanya _liveness_ yang me-_restart_-nya.]
+  #note(kind: "warn")[*Mengapa perlu dua _probe_?* Gangguan terbagi dua jenis. Sebagian hilang dengan sendirinya, misalnya database yang sementara mati: _pod_ cukup berhenti menerima _traffic_ sambil menunggu (_readiness_). Sebagian lagi hanya hilang dengan _restart_, misalnya proses yang macet (_liveness_). Satu _probe_ tidak dapat membedakan keduanya.]
 ]
 
 #code-slide(kicker: "Anatomi service", title: [_Graceful shutdown_],
