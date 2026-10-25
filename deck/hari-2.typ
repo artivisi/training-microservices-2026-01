@@ -27,7 +27,7 @@
     columns: (auto, 1fr, auto),
     [Waktu], [Sesi], [Format],
     [08:00 – 08:30], [Rekap Hari 1 dan penyamaan posisi dari _checkpoint_ `lab-02` bagi peserta yang tertinggal], [Diskusi],
-    [08:30 – 09:45], [Peta _concern_ Hari 2. Kegagalan komunikasi sinkron: _timeout_, _retry_ dengan _backoff_, _circuit breaker_, dan alasan memilih failsafe-go], [Presentasi],
+    [08:30 – 09:45], [Peta _concern_ Hari 2. Kegagalan komunikasi sinkron: _timeout_, _retry_ dengan _backoff_, _circuit breaker_, _bulkhead_, dan alasan memilih failsafe-go], [Presentasi],
     [09:45 – 10:45], [*Lab 3*: failsafe-go pada panggilan transfer ke account, simulasi service lambat dan mati], [_Hands-on_],
     [11:00 – 12:00], [gRPC untuk komunikasi internal (1): perbandingan REST dan gRPC, kontrak protobuf, _code generation_], [Presentasi + demo],
     [12:00 – 13:00], [Istirahat makan siang], [—],
@@ -160,18 +160,23 @@
   )
 ]
 
-#slide(kicker: "Konsep", title: "Tiga pola proteksi panggilan sinkron")[
+#slide(kicker: "Konsep", title: "Empat pola proteksi panggilan sinkron")[
   #table(
     columns: (auto, 1.3fr, 1fr),
     [Pola], [Fungsi], [Pertanyaan yang Dijawab],
     [_Timeout_], [Memberi batas waktu tunggu eksplisit pada setiap panggilan keluar], [Berapa lama pemanggil bersedia menunggu?],
     [_Retry_ + _backoff_], [Mengulang panggilan yang gagal karena gangguan sesaat, dengan jeda yang makin panjang dan jumlah percobaan terbatas], [Panggilan mana yang aman untuk diulang, dan berapa kali?],
     [_Circuit breaker_], [Menghentikan sementara panggilan ke service yang terbukti gagal, lalu mencoba kembali secara bertahap], [Kapan berhenti mencoba agar service tujuan sempat kembali aktif?],
+    [_Bulkhead_], [Membatasi jumlah panggilan bersamaan ke satu service, dan panggilan yang melebihi batas langsung ditolak], [Berapa banyak panggilan yang boleh menunggu satu service secara bersamaan?],
   )
-  #v(10pt)
-  #note[Ketiga pola ini perlu dipasang bersama karena ketiganya saling melengkapi. _Timeout_ membatasi waktu tunggu sehingga pemanggil tidak menunggu selamanya. _Retry_ mengulang panggilan yang gagal karena gangguan sesaat, misalnya _pod_ yang sedang di-_restart_ atau koneksi yang putus sebentar, sehingga pengguna tidak melihat _error_ untuk gangguan yang hilang dalam hitungan detik. Bila gangguan berlangsung lama, _circuit breaker_ membatalkan panggilan ke service tersebut, sehingga pemanggil tidak perlu menunggu _timeout_ berulang kali.]
-  #v(4pt)
+]
+
+#slide(kicker: "Konsep", title: [Keempat pola saling melengkapi])[
+  #note[Pola-pola ini perlu dipasang bersama karena saling melengkapi. _Timeout_ membatasi waktu tunggu sehingga pemanggil tidak menunggu selamanya. _Retry_ mengulang panggilan yang gagal karena gangguan sesaat, misalnya _pod_ yang sedang di-_restart_ atau koneksi yang putus sebentar, sehingga pengguna tidak melihat _error_ untuk gangguan yang hilang dalam hitungan detik. Bila gangguan berlangsung lama, _circuit breaker_ membatalkan panggilan ke service tersebut, sehingga pemanggil tidak perlu menunggu _timeout_ berulang kali. _Bulkhead_ membatasi jumlah panggilan yang menunggu satu service secara bersamaan, sehingga service yang lambat tidak menghabiskan _goroutine_, koneksi, dan memori yang juga dibutuhkan panggilan ke service lain.]
+  #v(6pt)
   #note(kind: "tip")[*Mengapa tidak mengembalikan _error_ ke client saja?* Setiap gangguan sesaat akan muncul sebagai _error_ di aplikasi pengguna, lalu pengguna harus mengulang seluruh transaksi dari awal. Tanpa _idempotency key_ (Lab 6), pengulangan dari client juga dapat menghasilkan transfer ganda.]
+  #v(6pt)
+  #text(size: 12pt)[Studi kasus menerapkan _timeout_, _retry_, dan _circuit breaker_. _Bulkhead_ tersedia di failsafe-go (`bulkhead.New`) dan dicoba di Eksplorasi Mandiri Lab 3. Nama _bulkhead_ berasal dari sekat di lambung kapal: kebocoran di satu ruang tidak menenggelamkan seluruh kapal.]
 ]
 
 #slide(kicker: "Peta concern microservices", title: [_Resiliency_ di kode dan di platform])[

@@ -118,6 +118,13 @@ Setiap pola menambah komponen yang harus dioperasikan. Pola yang tidak menjawab 
   [_Database_ milik service sendiri (timeout dan _connection pool_ sudah cukup). Volume panggilan terlalu rendah sehingga ambang kegagalan tidak bermakna. Langkah kompensasi saga, karena _breaker_ yang baru berpindah ke _open_ justru menolak _reversal_. Untuk _reversal_, gunakan retry berbatas waktu tanpa _breaker_ (Lab 5)],
   [Ambang dan _delay_ perlu disetel berdasarkan data. Setiap _pod_ memiliki _breaker_ sendiri dengan state berbeda. Perubahan state wajib tercatat di log dan metrik],
   [3, 4, 8],
+
+  [*Bulkhead*],
+  [Service tujuan yang lambat membuat semakin banyak panggilan menunggu bersamaan, sehingga _goroutine_, koneksi, dan memori pemanggil habis untuk satu dependensi],
+  [Service yang memanggil beberapa dependensi, agar dependensi yang lambat tidak menghabiskan sumber daya yang juga dibutuhkan panggilan lain. Batas jumlah panggilan bersamaan juga melindungi service tujuan dari lonjakan],
+  [Service hanya memanggil satu dependensi dan volume panggilannya rendah. _Timeout_ dan _connection pool_ sudah membatasi jumlah panggilan yang menunggu],
+  [Batas yang terlalu kecil menolak _request_ yang sebenarnya dapat dilayani. Batas perlu disetel dari data beban, dan penolakan wajib tercatat di log dan metrik. Di Go, _goroutine_ murah, sehingga _bulkhead_ melindungi koneksi, memori, dan service tujuan, bukan _thread_],
+  [Eksplorasi Lab 3],
 )
 
 = Konsistensi Data

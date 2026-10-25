@@ -1027,6 +1027,22 @@ Bandingkan dengan rekening sumber yang tidak ada, misalnya `"from_account":"8888
 + *_Connection refused_.* Hentikan `account` dengan Ctrl+C di terminal 1, lalu kirim beberapa transfer. Amati jumlah baris `retrying account call` untuk setiap transfer, nilai atribut `cause`, dan transfer ke berapa yang membuat _circuit breaker_ beralih ke _open_. Jalankan lagi `account`, lalu amati perpindahan ke _half-open_ dan _closed_.
 + *Mengubah angka _policy_.* Ubah `BreakerDelay` di `ProductionSettings` menjadi 30 detik dan `AttemptTimeout` menjadi 500 ms, lalu ulangi skenario `make fault-slow`. Catat perubahan lama setiap transfer dan lama _circuit breaker_ bertahan di _open_. Pertimbangkan dampaknya bagi nasabah yang menunggu jawaban transfer.
 + *_Circuit breaker_ terpisah untuk _debit_ dan _credit_.* Ubah `Client` agar _debit_ dan _credit_ masing-masing memiliki _circuit breaker_ sendiri. Bandingkan hasil skenario _half-open_ dengan hasil di bagian Verifikasi, lalu diskusikan: dalam kondisi apa pemisahan tersebut berguna, dan dalam kondisi apa pemisahan tersebut justru menyesatkan?
++ *_Bulkhead_.* failsafe-go juga menyediakan _bulkhead_, yang membatasi jumlah panggilan bersamaan ke satu service. Di `transfer/internal/accountclient/client.go`, impor `github.com/failsafe-go/failsafe-go/bulkhead`, lalu pasang _bulkhead_ sebagai _policy_ paling luar:
+
+  #perintah[```go
+bh := bulkhead.New[*http.Response](5)
+rt := failsafehttp.NewRoundTripper(nil, bh, retry, breaker, timeout.New[*http.Response](s.AttemptTimeout))
+```]
+
+  Jalankan ulang `transfer`, aktifkan `make fault-slow`, lalu kirim 20 transfer sekaligus dan catat _status code_ serta lama setiap _request_:
+
+  #perintah[```bash
+seq 20 | xargs -P 20 -I{} curl -sS -o /dev/null -w '%{http_code} %{time_total}\n' \
+  -X POST localhost:28082/transfers -H 'Content-Type: application/json' \
+  -d '{"from_account":"1111111111","to_account":"2222222222","amount":"1000"}'
+```]
+
+  Lima _request_ menunggu hingga _timeout_, sekitar 2 detik. Sisanya langsung ditolak dalam hitungan milidetik, dengan `failure_reason` yang memuat `bulkhead full`. Diskusikan: bila `transfer` juga memanggil service lain selain `account`, apa yang terjadi pada panggilan tersebut tanpa _bulkhead_ ketika `account` sedang lambat? Setelah selesai, jalankan `make fault-clear` dan kembalikan `client.go` dengan `git checkout -- transfer/internal/accountclient/client.go`.
 + *Celah _credit_ setelah _debit_.* Baca kasus `breaker opens between debit and credit` di `service_test.go`. Kasus tersebut menunjukkan bahwa _circuit breaker_ yang beralih ke _open_ setelah _debit_ berhasil membuat uang keluar dari rekening sumber tanpa masuk ke rekening tujuan. Rancang urutan langkah yang diperlukan untuk mengembalikan dana tersebut secara otomatis. Lab 5 menyelesaikan celah ini dengan pola _saga_ dan kompensasi.
 
 == _Checkpoint_
