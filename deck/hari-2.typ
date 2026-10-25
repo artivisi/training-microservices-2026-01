@@ -26,12 +26,15 @@
   #table(
     columns: (auto, 1fr, auto),
     [Waktu], [Sesi], [Format],
-    [08:00 – 08:45], [Rekap Hari 1 dan penyamaan posisi dari _checkpoint_ `lab-02` bagi peserta yang tertinggal], [Diskusi],
-    [08:45 – 09:45], [Peta _concern_ Hari 2. Kegagalan komunikasi sinkron: _timeout_, _retry_ dengan _backoff_, _circuit breaker_, dan alasan memilih failsafe-go], [Presentasi],
+    [08:00 – 08:30], [Rekap Hari 1 dan penyamaan posisi dari _checkpoint_ `lab-02` bagi peserta yang tertinggal], [Diskusi],
+    [08:30 – 09:45], [Peta _concern_ Hari 2. Kegagalan komunikasi sinkron: _timeout_, _retry_ dengan _backoff_, _circuit breaker_, dan alasan memilih failsafe-go], [Presentasi],
     [09:45 – 10:45], [*Lab 3*: failsafe-go pada panggilan transfer ke account, simulasi service lambat dan mati], [_Hands-on_],
-    [11:00 – 12:30], [gRPC untuk komunikasi internal: perbandingan REST dan gRPC, kontrak protobuf, _code generation_, _unary call_, _error handling_, _interceptor_], [Presentasi + demo],
+    [11:00 – 12:00], [gRPC untuk komunikasi internal (1): perbandingan REST dan gRPC, kontrak protobuf, _code generation_], [Presentasi + demo],
+    [12:00 – 13:00], [Istirahat makan siang], [—],
+    [13:00 – 13:30], [gRPC (2): _unary call_, _error handling_, _interceptor_], [Presentasi + demo],
     [13:30 – 15:00], [*Lab 4*: memindahkan panggilan transfer ke account dari REST ke gRPC], [_Hands-on_],
-    [15:15 – 16:45], [Konsistensi data terdistribusi: alasan 2PC dihindari, saga dengan kompensasi di studi kasus (persiapan Lab 5), _idempotency key_. Ringkasan Hari 2 pada peta _concern_], [Presentasi + demo],
+    [15:15 – 16:45], [Konsistensi data terdistribusi: alasan 2PC dihindari, saga dengan kompensasi di studi kasus (persiapan Lab 5), _idempotency key_], [Presentasi + demo],
+    [16:45 – 17:00], [Ringkasan Hari 2 pada peta _concern_], [Diskusi],
   )
   #v(8pt)
   #note[Hari 2 dimulai dari _checkpoint_ `lab-02`. Peserta yang belum menyelesaikan Lab 2 menjalankan `git checkout lab-02` sebelum Lab 3.]

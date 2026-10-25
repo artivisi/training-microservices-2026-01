@@ -29,15 +29,16 @@
   #table(
     columns: (auto, 1fr, auto),
     [Waktu], [Topik], [Format],
-    [08:00–08:15], [Registrasi dan pembukaan], [—],
-    [08:15–09:15], [Peta _concern_ microservices dan penyedianya (tim, ekosistem, atau platform); monolith dan microservices: _trade-off_, kondisi yang membuat microservices merugikan, gejala _distributed monolith_], [Presentasi],
-    [09:15–10:00], [_Service decomposition_: kapabilitas bisnis, _bounded context_, dekomposisi studi kasus perbankan], [Presentasi dan diskusi],
-    [10:15–10:45], [Ekosistem Go dibandingkan Java, Node.js, dan PHP; alasan memilih Go], [Presentasi],
-    [10:45–12:00], [Go _essentials_ untuk service: _module_, _struct_, _interface_, _error handling_, _goroutine_ dan _channel_, `net/http`], [Presentasi dan demo],
-    [12:00–12:45], [Anatomi service Go: struktur _project_, _routing_ dan perbandingan _router_, validasi, _12-factor_, konfigurasi, _liveness_ dan _readiness_, pemetaan _error_], [Demo],
-    [13:45–15:15], [*Lab 1*: account service dengan REST, PostgreSQL, dan _health check_], [_Hands-on_],
-    [15:30–16:45], [*Lab 2*: transfer service sebagai service kedua, komunikasi REST pertama], [_Hands-on_],
-    [16:45–17:00], [Ringkasan Hari 1 pada peta _concern_], [Diskusi],
+    [08:00–08:45], [Peta _concern_ microservices dan penyedianya (tim, ekosistem, atau platform); ringkasan monolith dan microservices], [Presentasi],
+    [08:45–09:30], [_Service decomposition_: kapabilitas bisnis, _bounded context_, dekomposisi studi kasus perbankan], [Presentasi dan diskusi],
+    [09:30–10:00], [Ekosistem Go dibandingkan Java, Node.js, dan PHP; alasan memilih Go], [Presentasi],
+    [10:15–11:30], [Go _essentials_ untuk service: _module_, _struct_, _interface_, _error handling_, _goroutine_ dan _channel_, `net/http`], [Presentasi dan demo],
+    [11:30–12:00], [Anatomi service Go (1): struktur _project_, _routing_ dan perbandingan _router_, validasi, _12-factor_, konfigurasi], [Demo],
+    [12:00–13:00], [Istirahat makan siang], [—],
+    [13:00–13:30], [Anatomi service Go (2): _liveness_ dan _readiness_, _graceful shutdown_, pemetaan _error_], [Demo],
+    [13:30–15:00], [*Lab 1*: account service dengan REST, PostgreSQL, dan _health check_], [_Hands-on_],
+    [15:15–16:30], [*Lab 2*: transfer service sebagai service kedua, komunikasi REST pertama], [_Hands-on_],
+    [16:30–17:00], [Ringkasan Hari 1 pada peta _concern_, tanya jawab], [Diskusi],
   )
 ]
 
