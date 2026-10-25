@@ -586,6 +586,31 @@ func (s *PostgresStore) Insert(ctx context.Context,
   ],
 )
 
+#slide(kicker: "SSO dan IdP", title: [_Authorization server_: _embedded_ atau _standalone_])[
+  #{
+    show table.cell: set text(size: 11pt)
+    table(
+      columns: (1.25fr, auto, auto, auto, 1.5fr),
+      inset: (x: 6pt, y: 4.5pt),
+      [Produk], [Jenis], [Bahasa], [Lisensi], [Situs],
+      [Spring Security (_Authorization Server_)], [_Embedded_], [Java], [Apache-2.0], [#link("https://spring.io/projects/spring-security")[`spring.io/projects/spring-security`]],
+      [zitadel/oidc (_package_ `op`)], [_Embedded_], [Go], [Apache-2.0], [#link("https://github.com/zitadel/oidc")[`github.com/zitadel/oidc`]],
+      [node-oidc-provider], [_Embedded_], [Node.js], [MIT], [#link("https://github.com/panva/node-oidc-provider")[`github.com/panva/node-oidc-provider`]],
+      [Laravel Passport], [_Embedded_], [PHP], [MIT], [#link("https://laravel.com/docs/passport")[`laravel.com/docs/passport`]],
+      [Keycloak], [_Standalone_], [Semua], [Apache-2.0], [#link("https://www.keycloak.org")[`keycloak.org`]],
+      [Ory Hydra (digunakan di lab)], [_Standalone_], [Semua], [Apache-2.0], [#link("https://www.ory.sh/hydra")[`ory.sh/hydra`]],
+      [ZITADEL], [_Standalone_], [Semua], [AGPL-3.0], [#link("https://zitadel.com")[`zitadel.com`]],
+    )
+  }
+  #v(6pt)
+  #grid(columns: (1fr, 1fr), column-gutter: 14pt,
+    card([_Embedded_: _library_ di dalam aplikasi], text(size: 12pt)[Satu artefak untuk di-_deploy_, tetapi terikat pada satu _tech stack_, dan tim memelihara kode _security_ tersebut.]),
+    card([_Standalone_: produk terpisah], accent: gold.darken(15%), text(size: 12pt)[Dapat digunakan service dalam bahasa apa pun dan siap dijalankan, tetapi menambah satu server yang harus dioperasikan.]),
+  )
+  #v(4pt)
+  #text(size: 11pt, fill: slate)[SSO untuk pengguna (login aplikasi channel atau karyawan) dan _client credentials_ untuk service menggunakan _authorization server_ yang sama. Studi kasus hanya menggunakan _client credentials_ dengan Hydra, karena tidak ada login pengguna. Hydra tidak menyediakan halaman login dan manajemen pengguna, sehingga SSO dengan Hydra membutuhkan aplikasi login terpisah.]
+]
+
 #slide(kicker: "OAuth2", title: [Alur _client credentials_])[
   #diagram(height: 250pt,
     at(0pt, 130pt, node("transfer", sub: "client: transfer-service", width: 150pt)),

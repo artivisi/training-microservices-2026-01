@@ -113,7 +113,7 @@
       [_Service registry_ dan _discovery_], [Consul, etcd, Kubernetes Service], [Spring Cloud Netflix (Eureka), Spring Cloud Consul], [Kubernetes Service DNS, alamat dari `ACCOUNT_GRPC_ADDR`],
       [_Config server_], [Spring Cloud Config Server, Consul KV, ConfigMap], [Spring Cloud Config _client_], [_Environment variable_ dari ConfigMap, dibaca `LoadConfig`],
       [_Secret_], [Vault, _secret manager_ milik _cloud provider_], [Spring Cloud Vault], [Secret Kubernetes, diisi dari Vault oleh External Secrets Operator tanpa perubahan kode],
-      [SSO dan IdP], [Keycloak, Ory Hydra, IdP komersial], [Spring Security (_resource server_, OAuth2 _client_)], [golang-jwt dan keyfunc (JWKS), `x/oauth2/clientcredentials`],
+      [SSO dan IdP], [Keycloak, Ory Hydra, ZITADEL, IdP komersial], [Spring Security: _resource server_, OAuth2 _client_, dan _Authorization Server_ _embedded_], [golang-jwt dan keyfunc (JWKS), `x/oauth2/clientcredentials`],
       [_Log server_], [Loki, Elasticsearch, OpenSearch], [_Appender_ Logback atau Log4j2, _agent_ OpenTelemetry Java], [`slog` JSON ke _stdout_ dan _bridge_ `otelslog`],
       [_Monitoring_ dan _tracing_], [Prometheus, Grafana, OTel Collector, Tempo, Jaeger], [Micrometer (Actuator), _agent_ OpenTelemetry Java], [`prometheus/client_golang`, OTel Go SDK, `otelhttp`, `otelgrpc`],
     )
@@ -130,7 +130,7 @@
       inset: (x: 6pt, y: 4.5pt),
       [_Concern_], [_Build_ (tulis sendiri)], [_Reuse_ (_open source_, dioperasikan sendiri)], [_Buy_ (_managed service_ atau produk komersial)], [Pertimbangan untuk bank],
       [Konfigurasi dan _secret_], [`LoadConfig` dengan validasi saat _startup_], [ConfigMap, OpenBao, External Secrets Operator], [_Secret manager_ milik _cloud provider_, Vault (lisensi BSL, edisi Enterprise atau HCP)], [Lokasi penyimpanan _credential_, audit akses, rotasi],
-      [IdP dan SSO], [_Middleware_ dan _interceptor_ JWT], [Keycloak, Ory Hydra], [IdP komersial atau _managed_], [Semua service bergantung pada IdP, sehingga tim harus sanggup menjaga ketersediaannya],
+      [IdP dan SSO], [_Middleware_ dan _interceptor_ JWT, atau _authorization server_ _embedded_ (Spring Security, zitadel/oidc)], [Keycloak, Ory Hydra], [IdP komersial atau _managed_], [Semua service bergantung pada IdP, sehingga tim harus sanggup menjaga ketersediaannya],
       [_Observability_], [Setup telemetri, _handler_ `slog`], [Prometheus, Grafana, Loki, Tempo, OTel Collector], [Platform _observability_ SaaS], [_Log_ dan _trace_ bisa berisi data nasabah. Lokasi data dan retensi menentukan boleh tidaknya SaaS digunakan],
       [_Messaging_], [—], [Apache Kafka], [Kafka _managed_, distribusi Kafka komersial], [Kemampuan tim melakukan _upgrade_, menambah _broker_, dan memulihkan data],
       [_Container platform_], [—], [Kubernetes, k3s], [OpenShift, Kubernetes _managed_], [Biaya lisensi dibandingkan biaya tim platform, dukungan vendor saat audit],
