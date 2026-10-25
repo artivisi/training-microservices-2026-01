@@ -709,6 +709,8 @@ func logging(log *slog.Logger, next http.Handler) http.Handler {
     })
 }
 ```
+#v(10pt)
+#text(size: 11pt, fill: slate)[Konsep yang sama di ekosistem lain: _middleware_ Koa (`await next()`) dan Laravel (`$next($request)`) juga membungkus _handler_, sehingga kode setelah `next` dipanggil berjalan setelah _response_ siap. _Middleware_ Express berbentuk rantai `next()`, sehingga kode sesudah _response_ membutuhkan `res.on('finish')`. Istilah _interceptor_ berbeda arti: _hook_ di Spring, pembungkus di NestJS, dan padanan _middleware_ di gRPC.]
 ]
 
 // ── 05 Anatomi service Go ──────────────────────────────────────────────────
