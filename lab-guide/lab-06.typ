@@ -64,11 +64,13 @@ Di Lab 5, _idempotency_ sudah diterapkan antarservice pada mutasi saldo. _Header
 
 == Titik Awal
 
-Lab ini dimulai dari kondisi akhir Lab 5. Peserta yang belum menyelesaikan Lab 5 dapat memulai dari tag `lab-05` dengan _branch_ kerja baru:
+Lab ini dimulai dari _checkpoint_ `lab-05`. Ambil kode Lab 6 dari _tag_ `lab-06`, lalu tampilkan perubahannya terhadap Lab 5 (lihat bagian Cara Mengerjakan Lab di Lab 1). Jalankan dari folder repositori:
 
 #perintah[```bash
+git checkout -b lab-06-saya lab-05
+git checkout lab-06 -- studi-kasus
+git diff --staged lab-05 -- studi-kasus
 cd studi-kasus
-git switch -c lab-06-kerja lab-05
 ```]
 
 Jalankan infrastruktur dan ketiga service, masing-masing di terminal tersendiri:
@@ -1015,9 +1017,11 @@ Saldo rekening asal berkurang tepat 100000. _Unique index_ pada `idempotency_key
 
 == Checkpoint
 
-Kondisi kode di akhir lab ini tersedia di tag `lab-06`. Bandingkan hasil kerja dengan tag tersebut, atau lanjutkan langsung dari tag tersebut bila tertinggal:
+
+Kondisi kode di akhir lab ini tersimpan di _tag_ `lab-06`. Setelah `git checkout lab-06 -- studi-kasus` di awal bab, kode di _branch_ kerja sudah sama dengan _tag_ tersebut. Peserta yang mengetik ulang kode sendiri membandingkan hasilnya dari folder repositori:
 
 #perintah[```bash
-git diff lab-06 -- .
-git switch -c lab-07-kerja lab-06
+git diff lab-06 -- studi-kasus
 ```]
+
+Lab 7 dimulai dari _tag_ ini (bagian Titik Awal Lab 7).

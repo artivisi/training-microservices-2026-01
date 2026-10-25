@@ -69,15 +69,45 @@ Kode di dalam `internal/account` disusun dengan pola _package by feature_ (penge
 
 Lab 1 dimulai dari _checkpoint_ `lab-00`, yaitu repositori yang baru berisi materi dan `studi-kasus/README.md`. Bila repositori belum ada di laptop, lakukan _clone_ terlebih dahulu. Peserta Windows menjalankan perintah berikut di terminal Ubuntu (WSL2), dengan repositori di _home_ Ubuntu. Repositori yang di-_clone_ dengan Git for Windows ke folder Windows dapat berisi akhir baris CRLF yang membuat skrip _shell_ dan `Makefile` gagal:
 
-// TODO(endy): create tag lab-00 on the commit before "Add Lab 1" when the wip tags are renamed.
 #perintah[```bash
 git clone https://github.com/artivisi/training-microservices-2026-01.git
 cd training-microservices-2026-01
-git checkout -b lab-saya lab-00
-cd studi-kasus
 ```]
 
-Perintah `git checkout -b lab-saya lab-00` membuat _branch_ kerja baru bernama `lab-saya` dari tag `lab-00`. Seluruh pekerjaan lab disimpan di _branch_ tersebut, sehingga tag _checkpoint_ tetap utuh sebagai pembanding.
+=== Cara Mengerjakan Lab
+
+Kode setiap lab sudah tersedia di repositori sebagai _tag_ `lab-01` sampai `lab-10`. Setiap _tag_ berisi kondisi kode di akhir lab tersebut. Waktu training tidak cukup untuk mengetik seluruh kode, sehingga setiap lab dikerjakan dengan membaca perubahan kode lalu menjalankannya:
+
++ Buat _branch_ kerja dari _checkpoint_ lab sebelumnya.
++ Ambil kode lab dari _tag_-nya ke folder `studi-kasus`.
++ Baca perubahannya bersama instruktur. Bagian Langkah di setiap bab menjelaskan perubahan tersebut secara berurutan.
++ Jalankan service dan kerjakan bagian Verifikasi.
++ Kerjakan Eksplorasi Mandiri sebagai latihan mengubah kode.
+
+Langkah pertama sampai ketiga dijalankan dari folder repositori. Contoh untuk Lab 3:
+
+#perintah[```bash
+git checkout -b lab-03-saya lab-02
+git checkout lab-03 -- studi-kasus
+git diff --staged lab-02 -- studi-kasus
+```]
+
+Perintah pertama membuat _branch_ kerja `lab-03-saya` dari _tag_ `lab-02`. Perintah kedua menyalin folder `studi-kasus` dari _tag_ `lab-03` ke _branch_ kerja. Perintah ketiga menampilkan seluruh perubahan kode Lab 3. Tambahkan `--stat` pada perintah ketiga untuk melihat daftar _file_ yang berubah terlebih dahulu. Lab 10 juga mengambil folder `.forgejo` dan `.github` serta _file_ `.gitignore`, dan perintahnya tercantum di bab tersebut.
+
+Sebelum pindah ke lab berikutnya, simpan perubahan dari Eksplorasi Mandiri dengan `git commit -am "Latihan Lab 3"`, atau buang dengan `git stash`. Perubahan yang belum disimpan ikut terbawa ke _branch_ lab berikutnya.
+
+Bagian Langkah tetap ditulis lengkap, sehingga dapat diikuti untuk mengetik ulang kode dari awal di luar jam training. Untuk cara ini, jalankan hanya perintah pertama, lalu ikuti bagian Langkah dan bandingkan hasilnya di bagian Checkpoint. Salin kode dari _file_ di repositori, bukan dari PDF: karakter _tab_ di `Makefile` dan indentasi YAML tidak selalu terbawa saat disalin dari PDF.
+
+=== Kode Lab 1
+
+Ambil kode Lab 1 dari _tag_ `lab-01`, lalu tampilkan perubahannya terhadap `lab-00`:
+
+#perintah[```bash
+git checkout -b lab-01-saya lab-00
+git checkout lab-01 -- studi-kasus
+git diff --staged lab-00 -- studi-kasus
+cd studi-kasus
+```]
 
 Pastikan Go dan Docker sudah siap. Versi Go minimal 1.26.
 
@@ -1079,19 +1109,13 @@ exit status 1
 
 == Checkpoint
 
-Kondisi kode di akhir lab ini tersimpan di tag `lab-01`. Untuk membandingkan hasil pekerjaan dengan _checkpoint_, jalankan dari direktori `studi-kasus`:
+
+Kondisi kode di akhir lab ini tersimpan di _tag_ `lab-01`. Setelah `git checkout lab-01 -- studi-kasus` di awal bab, kode di _branch_ kerja sudah sama dengan _tag_ tersebut. Peserta yang mengetik ulang kode sendiri membandingkan hasilnya dari folder repositori:
 
 #perintah[```bash
-git diff lab-01 -- .
+git diff lab-01 -- studi-kasus
 ```]
 
-Perbedaan pada `README.md` dapat diabaikan, karena isi file tersebut disediakan oleh _checkpoint_ dan tidak ditulis pada langkah lab.
+Perbedaan pada `README.md` dapat diabaikan, karena isi _file_ tersebut disediakan oleh _checkpoint_ dan tidak ditulis pada langkah lab.
 
-Bila hasil pekerjaan belum selesai atau tidak dapat dijalankan, simpan pekerjaan lalu lanjutkan dari _checkpoint_:
-
-#perintah[```bash
-git add -A && git commit -m "Lab 1 (pekerjaan sendiri)"
-git checkout -b lab-01-checkpoint lab-01
-```]
-
-Lab 2 dimulai dari kondisi ini: _service_ `account` berjalan di port 28081 dengan database `db-account`. Lab 2 menambahkan _service_ `transfer` yang memanggil API `account` melalui REST.
+Lab 2 dimulai dari _tag_ ini (bagian Titik Awal Lab 2).

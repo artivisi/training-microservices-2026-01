@@ -65,12 +65,18 @@ _Correlation ID_ dan _trace ID_ memiliki peran berbeda. _Correlation ID_ merupak
 
 == Titik Awal
 
-Lab ini melanjutkan kode dari akhir Lab 7. Peserta yang belum menyelesaikan Lab 7 dapat memulai dari _checkpoint_:
+Lab ini dimulai dari _checkpoint_ `lab-07`. Ambil kode Lab 8 dari _tag_ `lab-08`, lalu tampilkan perubahannya terhadap Lab 7 (lihat bagian Cara Mengerjakan Lab di Lab 1). Jalankan dari folder repositori:
 
 #perintah[```bash
-cd training-microservices-2026-01
-git switch -c lab-08-kerja lab-07
+git checkout -b lab-08-saya lab-07
+git checkout lab-08 -- studi-kasus
+git diff --staged lab-07 -- studi-kasus
 cd studi-kasus
+```]
+
+Jalankan infrastruktur lab:
+
+#perintah[```bash
 make infra-up
 ```]
 
@@ -1477,14 +1483,11 @@ docker compose exec db-transfer psql -U transfer -d transfer -c \
 
 == Checkpoint
 
-Kondisi kode di akhir lab ini tersimpan di tag `lab-08`. Untuk membandingkan hasil kerja dengan _checkpoint_:
+
+Kondisi kode di akhir lab ini tersimpan di _tag_ `lab-08`. Setelah `git checkout lab-08 -- studi-kasus` di awal bab, kode di _branch_ kerja sudah sama dengan _tag_ tersebut. Peserta yang mengetik ulang kode sendiri membandingkan hasilnya dari folder repositori:
 
 #perintah[```bash
-git diff lab-08 -- .
+git diff lab-08 -- studi-kasus
 ```]
 
-Peserta yang ingin melanjutkan ke Lab 9 dari kondisi _checkpoint_:
-
-#perintah[```bash
-git switch -c lab-09-kerja lab-08
-```]
+Lab 9 dimulai dari _tag_ ini (bagian Titik Awal Lab 9).

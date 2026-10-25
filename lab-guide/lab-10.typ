@@ -55,23 +55,21 @@ Alur yang sama di laptop, tanpa git server dan registry:
 
 == Titik Awal
 
-Lab ini melanjutkan kondisi akhir Lab 9: _image_ ketiga service bisa di-_build_, k3d bisa dibuat, dan _manifest_ `k8s/overlays/k3d` bisa di-_apply_. Peserta yang belum menyelesaikan Lab 9 memulai dari _tag_ `lab-09`:
+Lab ini melanjutkan kondisi akhir Lab 9: _image_ ketiga service bisa di-_build_, k3d bisa dibuat, dan _manifest_ `k8s/overlays/k3d` bisa di-_apply_. Ambil kode Lab 10 dari _tag_ `lab-10`, lalu tampilkan perubahannya terhadap Lab 9 (lihat bagian Cara Mengerjakan Lab di Lab 1). Jalankan dari folder repositori:
 
-#perintah[
-```bash
-cd training-microservices-2026-01
-git checkout lab-09
-git switch -c lab-10-saya
-```
-]
+#perintah[```bash
+git checkout -b lab-10-saya lab-09
+git checkout lab-10 -- studi-kasus .forgejo .github .gitignore
+git diff --staged lab-09 -- studi-kasus .forgejo .github .gitignore
+cd studi-kasus
+```]
 
-Perintah `git switch -c` membuat _branch_ kerja. Langkah 8 mengharuskan peserta membuat _commit_, padahal _commit_ yang dibuat langsung di atas _tag_ berada dalam kondisi _detached HEAD_ dan mudah hilang setelah `git checkout` berikutnya.
+Selain folder `studi-kasus`, Lab 10 menambahkan _workflow_ di `.forgejo` dan `.github` serta satu baris di `.gitignore`. Langkah 8 membuat _commit_ di _branch_ kerja `lab-10-saya`.
 
 Pastikan prasyarat Lab 9 masih berjalan:
 
 #perintah[
 ```bash
-cd studi-kasus
 make infra-up
 k3d version
 kubectl version --client
@@ -1025,13 +1023,11 @@ git diff --no-index studi-kasus/transfer/Jenkinsfile studi-kasus/account/Jenkins
 
 == Checkpoint
 
-Kondisi akhir lab ini tersedia di _tag_ `lab-10`. Bandingkan hasil kerja dengan _tag_ tersebut, atau lanjutkan dari sana:
 
-#perintah[
-```bash
-git diff lab-10 -- studi-kasus .forgejo .gitignore
-git checkout lab-10
-```
-]
+Kondisi kode di akhir lab ini tersimpan di _tag_ `lab-10`. Setelah `git checkout lab-10 -- studi-kasus .forgejo .github .gitignore` di awal bab, kode di _branch_ kerja sudah sama dengan _tag_ tersebut. Peserta yang mengetik ulang kode sendiri membandingkan hasilnya dari folder repositori:
 
-Hasil kerja wajar berbeda dari _tag_ `lab-10` pada perubahan pesan log di `transfer/main.go` dari Langkah 8, karena perubahan itu tidak termasuk di _tag_. Komentar di `account.yaml` dan `notification.yaml` yang ditulis ulang dengan kata-kata sendiri juga wajar berbeda.
+#perintah[```bash
+git diff lab-10 -- studi-kasus .forgejo .github .gitignore
+```]
+
+Hasil ketikan sendiri wajar berbeda dari _tag_ `lab-10` pada perubahan pesan log di `transfer/main.go` dari Langkah 8, karena perubahan itu tidak termasuk di _tag_. Komentar di `account.yaml` dan `notification.yaml` yang ditulis ulang dengan kata-kata sendiri juga wajar berbeda.

@@ -81,11 +81,13 @@ studi-kasus/
 
 == Titik Awal
 
-Lab ini melanjutkan kondisi kode di akhir Lab 3. Peserta yang menyelesaikan Lab 3 sendiri dapat langsung melanjutkan dari kode miliknya. Peserta yang tertinggal memulai dari _checkpoint_ `lab-03`:
+Lab ini dimulai dari _checkpoint_ `lab-03`. Ambil kode Lab 4 dari _tag_ `lab-04`, lalu tampilkan perubahannya terhadap Lab 3 (lihat bagian Cara Mengerjakan Lab di Lab 1). Jalankan dari folder repositori:
 
 #perintah[```bash
+git checkout -b lab-04-saya lab-03
+git checkout lab-04 -- studi-kasus
+git diff --staged lab-03 -- studi-kasus
 cd studi-kasus
-git switch -c kerja-lab-04 lab-03
 ```]
 
 Pastikan `protoc` dan kedua _plugin_ Go sudah terpasang (bagian dari panduan persiapan). Kedua _plugin_ berada di `$(go env GOPATH)/bin`, sehingga folder tersebut perlu ada di `PATH`:
@@ -1441,14 +1443,11 @@ Jalankan `account` kembali dengan `make -C account run`. Setelah _circuit breake
 
 == Checkpoint
 
-Kondisi kode di akhir lab ini tersedia di _tag_ `lab-04`. Untuk membandingkan hasil kerja sendiri dengan _checkpoint_:
+
+Kondisi kode di akhir lab ini tersimpan di _tag_ `lab-04`. Setelah `git checkout lab-04 -- studi-kasus` di awal bab, kode di _branch_ kerja sudah sama dengan _tag_ tersebut. Peserta yang mengetik ulang kode sendiri membandingkan hasilnya dari folder repositori:
 
 #perintah[```bash
 git diff lab-04 -- studi-kasus
 ```]
 
-Untuk melanjutkan ke Lab 5 dari _checkpoint_:
-
-#perintah[```bash
-git switch -c kerja-lab-05 lab-04
-```]
+Lab 5 dimulai dari _tag_ ini (bagian Titik Awal Lab 5).

@@ -70,10 +70,12 @@ Kafka menyimpan _event_ di _log_ dengan masa retensi tertentu. _Event_ tetap ter
 
 == Titik Awal
 
-Lab ini melanjutkan kondisi akhir Lab 4. Peserta yang belum menyelesaikan Lab 4 dapat memulai dari _checkpoint_-nya:
+Lab ini dimulai dari _checkpoint_ `lab-04`. Ambil kode Lab 5 dari _tag_ `lab-05`, lalu tampilkan perubahannya terhadap Lab 4 (lihat bagian Cara Mengerjakan Lab di Lab 1). Jalankan dari folder repositori:
 
 #perintah[```bash
-git checkout lab-04
+git checkout -b lab-05-saya lab-04
+git checkout lab-05 -- studi-kasus
+git diff --staged lab-04 -- studi-kasus
 cd studi-kasus
 ```]
 
@@ -2390,9 +2392,11 @@ _Reversal_ tidak dihitung oleh _circuit breaker_, sehingga status _breaker_ hany
 
 == Checkpoint
 
-Kondisi kode di akhir lab ini tersedia di tag `lab-05`. Bandingkan hasil kerja dengan _checkpoint_, atau lanjutkan dari _checkpoint_ bila tertinggal:
+
+Kondisi kode di akhir lab ini tersimpan di _tag_ `lab-05`. Setelah `git checkout lab-05 -- studi-kasus` di awal bab, kode di _branch_ kerja sudah sama dengan _tag_ tersebut. Peserta yang mengetik ulang kode sendiri membandingkan hasilnya dari folder repositori:
 
 #perintah[```bash
-git diff lab-05 -- .
-git checkout lab-05
+git diff lab-05 -- studi-kasus
 ```]
+
+Lab 6 dimulai dari _tag_ ini (bagian Titik Awal Lab 6).

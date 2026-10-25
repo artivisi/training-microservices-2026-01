@@ -69,16 +69,21 @@ Pembagian kode 503 dan 502 di atas menjadi pegangan bagi aplikasi pemanggil. Kod
 
 == Titik Awal
 
-Lab ini berangkat dari kondisi akhir Lab 2. Peserta yang belum menyelesaikan Lab 2 dapat memulai dari _tag_ `lab-02`, lalu membuat _branch_ kerja sendiri.
+Lab ini dimulai dari _checkpoint_ `lab-02`. Ambil kode Lab 3 dari _tag_ `lab-03`, lalu tampilkan perubahannya terhadap Lab 2 (lihat bagian Cara Mengerjakan Lab di Lab 1). Jalankan dari folder repositori:
 
-#perintah[
-```bash
-git switch -c kerja-lab-03 lab-02
+#perintah[```bash
+git checkout -b lab-03-saya lab-02
+git checkout lab-03 -- studi-kasus
+git diff --staged lab-02 -- studi-kasus
 cd studi-kasus
+```]
+
+Jalankan infrastruktur lab dan _unit test_:
+
+#perintah[```bash
 make infra-up
 make test
-```
-]
+```]
 
 Seluruh perintah di lab ini dijalankan dari folder `studi-kasus`, kecuali disebutkan lain.
 
@@ -1047,26 +1052,13 @@ seq 20 | xargs -P 20 -I{} curl -sS -o /dev/null -w '%{http_code} %{time_total}\n
 
 == _Checkpoint_
 
-Kondisi kode di akhir lab ini tersimpan di _tag_ `lab-03`. Bandingkan hasil kerja dengan _checkpoint_ tersebut:
 
-#perintah[
-```bash
-git diff lab-03 -- .
-```
-]
+Kondisi kode di akhir lab ini tersimpan di _tag_ `lab-03`. Setelah `git checkout lab-03 -- studi-kasus` di awal bab, kode di _branch_ kerja sudah sama dengan _tag_ tersebut. Peserta yang mengetik ulang kode sendiri membandingkan hasilnya dari folder repositori:
 
-Perbedaan pada `README.md` dan `go.work.sum` memang wajar. `README.md` di _checkpoint_ memuat bagian baru tentang rekening contoh dan _resiliency_, sedangkan isi `go.work.sum` bergantung pada dependensi yang sudah di-_download_ di laptop masing-masing. Keduanya dapat diambil dari _checkpoint_:
+#perintah[```bash
+git diff lab-03 -- studi-kasus
+```]
 
-#perintah[
-```bash
-git checkout lab-03 -- README.md go.work.sum
-```
-]
+Perbedaan pada `README.md` dan `go.work.sum` memang wajar. `README.md` di _checkpoint_ memuat bagian baru tentang rekening contoh dan _resiliency_, sedangkan isi `go.work.sum` bergantung pada dependensi yang sudah di-_download_ di laptop masing-masing.
 
-Peserta yang tertinggal dapat langsung melanjutkan dari _checkpoint_ tersebut ke Lab 4:
-
-#perintah[
-```bash
-git checkout lab-03
-```
-]
+Lab 4 dimulai dari _tag_ ini (bagian Titik Awal Lab 4).

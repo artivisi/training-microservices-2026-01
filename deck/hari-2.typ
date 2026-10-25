@@ -44,7 +44,7 @@
     [16:45 – 17:00], [Ringkasan Hari 2 pada peta _concern_], [Diskusi],
   )
   #v(8pt)
-  #note[Hari 2 dimulai dari _checkpoint_ `lab-02`. Peserta yang belum menyelesaikan Lab 2 menjalankan `git checkout lab-02` sebelum Lab 3.]
+  #note[Hari 2 dimulai dari _checkpoint_ `lab-02`. Lab 3 dimulai dari _tag_ `lab-02` dengan tiga perintah di awal bab Lab 3 Panduan Lab.]
 ]
 
 #slide(kicker: "Peta concern microservices", title: [_Concern_ yang dibahas di Hari 2])[
@@ -541,8 +541,8 @@ func countsAsFailure(resp *http.Response, err error) bool {
     [
       #card("Rujukan", accent: gold.darken(15%))[
         - Panduan lab: bab *Lab 3*
-        - Titik awal: `git checkout lab-02`
-        - Hasil akhir: _checkpoint_ `lab-03`
+        - Titik awal: _tag_ `lab-02`
+        - Kode lab: `git checkout lab-03 -- studi-kasus`
         - Waktu: ± 60 menit
       ]
       #v(8pt)
@@ -1013,8 +1013,8 @@ c, err := New("passthrough:///bufnet", s, log,
     [
       #card("Rujukan", accent: gold.darken(15%))[
         - Panduan lab: bab *Lab 4*
-        - Titik awal: `git checkout lab-03`
-        - Hasil akhir: _checkpoint_ `lab-04`
+        - Titik awal: _tag_ `lab-03`
+        - Kode lab: `git checkout lab-04 -- studi-kasus`
         - Waktu: ± 90 menit
       ]
       #v(8pt)

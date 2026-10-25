@@ -94,7 +94,30 @@
     [10], [_Pipeline_ CI/CD per service: _test_, _build image_, _push_, _deploy_],
   )
   #v(6pt)
-  #text(size: 12.5pt)[Setiap kondisi akhir lab tersedia sebagai _git tag_ (`lab-01` … `lab-10`). Peserta yang tertinggal melanjutkan dari _tag_ lab sebelumnya dengan `git checkout lab-NN`.]
+  #text(size: 12.5pt)[Setiap kondisi akhir lab tersedia sebagai _git tag_ (`lab-01` … `lab-10`). Setiap lab dimulai dari _tag_ lab sebelumnya, sehingga peserta yang tertinggal tidak perlu menyusul.]
+]
+
+#slide(kicker: "Studi kasus", title: "Cara mengerjakan lab")[
+  #two-col(ratio: (1.15fr, 1fr),
+    [
+      #bullets(size: 13pt,
+        [Kode setiap lab sudah tersedia sebagai _tag_ `lab-01` … `lab-10`. Lab dikerjakan dengan membaca perubahan kode bersama instruktur, lalu menjalankannya.],
+        [Bagian Langkah di Panduan Lab menjelaskan perubahan tersebut secara berurutan, sehingga tetap dapat diikuti untuk mengetik ulang kode di luar jam training.],
+        [Hands-on: menjalankan service, Verifikasi, dan Eksplorasi Mandiri (latihan mengubah kode dan menyimulasikan gangguan).],
+        [Salin kode dari _file_ di repositori, bukan dari PDF: _tab_ di `Makefile` dan indentasi YAML tidak selalu terbawa.],
+      )
+    ],
+    [
+      #card("Tiga perintah di awal setiap lab (contoh Lab 3)", accent: gold.darken(15%))[
+```bash
+git checkout -b lab-03-saya lab-02
+git checkout lab-03 -- studi-kasus
+git diff --staged lab-02 -- studi-kasus
+```
+        #text(size: 11.5pt)[Dijalankan dari folder repositori. Lab 10 juga mengambil `.forgejo`, `.github`, dan `.gitignore`.]
+      ]
+    ],
+  )
 ]
 
 #slide(kicker: "Peta training", title: [Peta _concern_ microservices])[
@@ -1025,7 +1048,6 @@ case <-ctx.Done():
       #v(8pt)
       #card("Yang dikerjakan", accent: gold.darken(15%))[
         - `POST /accounts`, `GET /accounts`, `GET /accounts/{number}`
-        - `POST /accounts/{number}/debit` dan `/credit` beserta tabel `mutation`
         - `GET /healthz` dan `GET /readyz`
         - `LoadConfig` dengan variabel wajib `HTTP_ADDR` dan `DATABASE_URL`
       ]
@@ -1033,7 +1055,8 @@ case <-ctx.Done():
     [
       #card("Rujukan", accent: slate)[
         - Langkah lengkap: *Panduan Lab, bab Lab 1*
-        - Kondisi akhir: _tag_ `lab-01`
+        - Titik awal: _tag_ `lab-00`
+        - Kode lab: `git checkout lab-01 -- studi-kasus`
         - Port: HTTP `28081`, PostgreSQL `15432`
       ]
       #v(8pt)
@@ -1095,6 +1118,7 @@ curl -sS localhost:28081/readyz
       #v(8pt)
       #card("Yang dikerjakan", accent: gold.darken(15%))[
         - `POST /transfers` dan `GET /transfers/{id}`
+        - `POST /accounts/{number}/debit` dan `/credit` di account, beserta tabel `mutation`
         - Tabel `transfer` dengan status `PENDING`, `COMPLETED`, `FAILED`
         - _Package_ `accountclient`: client REST ke account service
         - Variabel wajib baru: `ACCOUNT_SERVICE_URL` (faktor IV: account service diakses melalui alamat dari konfigurasi)
@@ -1103,7 +1127,8 @@ curl -sS localhost:28081/readyz
     [
       #card("Rujukan", accent: slate)[
         - Langkah lengkap: *Panduan Lab, bab Lab 2*
-        - Kondisi akhir: _tag_ `lab-02`
+        - Titik awal: _tag_ `lab-01`
+        - Kode lab: `git checkout lab-02 -- studi-kasus`
         - Port: HTTP `28082`, PostgreSQL `15433`
       ]
       #v(8pt)

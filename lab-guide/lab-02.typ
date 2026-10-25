@@ -41,12 +41,18 @@ Perubahan pada lab ini terbagi dua bagian. Bagian pertama melengkapi account ser
 
 == Titik Awal
 
-Lab ini dimulai dari _checkpoint_ `lab-01`. Peserta yang sudah menyelesaikan Lab 1 dapat melanjutkan dari kode sendiri. Peserta yang tertinggal atau ingin memulai dari kondisi yang bersih dapat membuat _branch_ kerja dari tag `lab-01`:
+Lab ini dimulai dari _checkpoint_ `lab-01`. Ambil kode Lab 2 dari _tag_ `lab-02`, lalu tampilkan perubahannya terhadap Lab 1 (lihat bagian Cara Mengerjakan Lab di Lab 1). Jalankan dari folder repositori:
 
 #perintah[```bash
-cd training-microservices-2026-01
-git switch -c kerja-lab-02 lab-01
+git checkout -b lab-02-saya lab-01
+git checkout lab-02 -- studi-kasus
+git diff --staged lab-01 -- studi-kasus
 cd studi-kasus
+```]
+
+Jalankan infrastruktur lab bila belum berjalan:
+
+#perintah[```bash
 make infra-up
 ```]
 
@@ -1353,16 +1359,13 @@ Transfer menghasilkan `502 Bad Gateway` dengan `"status":"FAILED"` dan `failure_
 
 == Checkpoint
 
-Kondisi akhir lab ini tersedia sebagai tag `lab-02`. Bandingkan hasil kerja dengan _checkpoint_ untuk menemukan bagian yang terlewat. Jalankan perintah berikut dari folder `studi-kasus/`:
+
+Kondisi kode di akhir lab ini tersimpan di _tag_ `lab-02`. Setelah `git checkout lab-02 -- studi-kasus` di awal bab, kode di _branch_ kerja sudah sama dengan _tag_ tersebut. Peserta yang mengetik ulang kode sendiri membandingkan hasilnya dari folder repositori:
 
 #perintah[```bash
-git diff lab-02 -- .
+git diff lab-02 -- studi-kasus
 ```]
 
-Tag `lab-02` juga sudah berisi _fault injector_ yang dibutuhkan Lab 3, yaitu _package_ `account/internal/fault` dan perubahan `account/main.go` yang memasangnya. Perbedaan pada kedua bagian tersebut, serta pada `go.work.sum`, dapat diabaikan karena tidak ditulis pada langkah lab ini. Karena _package_ tersebut ada di _checkpoint_, `make test` pada tag `lab-02` juga menampilkan baris `ok` untuk `account/internal/fault`.
+_Tag_ `lab-02` juga sudah berisi _fault injector_ yang dibutuhkan Lab 3, yaitu _package_ `account/internal/fault` dan perubahan `account/main.go` yang memasangnya. Perbedaan pada kedua bagian tersebut, serta pada `go.work.sum`, dapat diabaikan karena tidak ditulis pada langkah lab ini.
 
-Peserta yang ingin langsung melanjutkan ke Lab 3 dari kondisi _checkpoint_ dapat menjalankan:
-
-#perintah[```bash
-git switch -c kerja-lab-03 lab-02
-```]
+Lab 3 dimulai dari _tag_ ini (bagian Titik Awal Lab 3).

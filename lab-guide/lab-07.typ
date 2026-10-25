@@ -81,10 +81,12 @@ Hasil pemeriksaan dibedakan menjadi dua jenis penolakan:
 
 == Titik Awal
 
-Lab ini dimulai dari kondisi akhir Lab 6. Peserta yang menyelesaikan Lab 6 dapat melanjutkan dari kode sendiri. Peserta yang tertinggal mengambil _checkpoint_ Lab 6 dan membuat _branch_ kerja:
+Lab ini dimulai dari _checkpoint_ `lab-06`. Ambil kode Lab 7 dari _tag_ `lab-07`, lalu tampilkan perubahannya terhadap Lab 6 (lihat bagian Cara Mengerjakan Lab di Lab 1). Jalankan dari folder repositori:
 
 #perintah[```bash
-git switch -c lab-07-kerja lab-06
+git checkout -b lab-07-saya lab-06
+git checkout lab-07 -- studi-kasus
+git diff --staged lab-06 -- studi-kasus
 cd studi-kasus
 ```]
 
@@ -1132,14 +1134,13 @@ Format baru hanya berlaku untuk transfer yang dibuat setelah kode Lab 7 berjalan
 
 == Checkpoint
 
-Kondisi kode di akhir lab ini tersimpan di tag `lab-07`. Bagian OAuth2 dan JWT di `studi-kasus/README.md` tersedia di tag tersebut: `git checkout lab-07 -- README.md`. Bandingkan hasil kerja dengan _checkpoint_:
+
+Kondisi kode di akhir lab ini tersimpan di _tag_ `lab-07`. Setelah `git checkout lab-07 -- studi-kasus` di awal bab, kode di _branch_ kerja sudah sama dengan _tag_ tersebut. Peserta yang mengetik ulang kode sendiri membandingkan hasilnya dari folder repositori:
 
 #perintah[```bash
-git diff lab-07 -- .
+git diff lab-07 -- studi-kasus
 ```]
 
-Peserta yang ingin langsung melanjutkan ke Lab 8 dari kode referensi membuat _branch_ kerja baru dari tag tersebut:
+Bagian OAuth2 dan JWT di `studi-kasus/README.md` tersedia di _tag_ tersebut dan tidak ditulis pada langkah lab.
 
-#perintah[```bash
-git switch -c lab-08-kerja lab-07
-```]
+Lab 8 dimulai dari _tag_ ini (bagian Titik Awal Lab 8).

@@ -66,10 +66,13 @@ Dibandingkan k3d, minikube menyediakan banyak _add-on_ dan dapat berjalan di dal
 
 == Titik Awal
 
-Lanjutkan dari kode hasil Lab 8. Peserta yang tertinggal mengambil _checkpoint_ Lab 8:
+Lab ini dimulai dari _checkpoint_ `lab-08`. Ambil kode Lab 9 dari _tag_ `lab-09`, lalu tampilkan perubahannya terhadap Lab 8 (lihat bagian Cara Mengerjakan Lab di Lab 1). Jalankan dari folder repositori:
 
 #perintah[```bash
-git checkout lab-08
+git checkout -b lab-09-saya lab-08
+git checkout lab-09 -- studi-kasus
+git diff --staged lab-08 -- studi-kasus
+cd studi-kasus
 ```]
 
 Lab ini membutuhkan Docker, k3d, dan kubectl yang sudah dipasang sesuai panduan persiapan. Periksa versinya:
@@ -1068,14 +1071,11 @@ Jalankan pemeriksaan berikut dari direktori `studi-kasus/` dengan _cluster_ `ban
 
 == Checkpoint
 
-Kondisi kode di akhir lab ini tersedia di _tag_ `lab-09`. Bandingkan hasil kerja dengan _checkpoint_ tersebut:
+
+Kondisi kode di akhir lab ini tersimpan di _tag_ `lab-09`. Setelah `git checkout lab-09 -- studi-kasus` di awal bab, kode di _branch_ kerja sudah sama dengan _tag_ tersebut. Peserta yang mengetik ulang kode sendiri membandingkan hasilnya dari folder repositori:
 
 #perintah[```bash
-git diff lab-09 -- .
+git diff lab-09 -- studi-kasus
 ```]
 
-Peserta yang ingin langsung melanjutkan ke Lab 10 dari kondisi akhir Lab 9:
-
-#perintah[```bash
-git checkout lab-09
-```]
+Lab 10 dimulai dari _tag_ ini (bagian Titik Awal Lab 10).

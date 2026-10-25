@@ -18,7 +18,7 @@
   )
   #v(12pt)
   #note(kind: "tip")[
-    Langkah lengkap ada di *Panduan Lab, bab Lab #number*. Titik awal: _tag_ #raw(start). Peserta yang tertinggal cukup melakukan `git checkout` ke _tag_ tersebut.
+    Langkah lengkap ada di *Panduan Lab, bab Lab #number*. Titik awal: _tag_ #raw(start). Kode lab diambil dengan #raw("git checkout lab-" + (if number.len() == 1 { "0" + number } else { number }) + " -- studi-kasus" + (if number == "10" { " .forgejo .github .gitignore" } else { "" })).
   ]
   #v(4pt)
   #guide
