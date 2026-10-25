@@ -880,6 +880,7 @@ HTTP 400
     - Konfigurasi hanya dibaca dari _environment variable_ (faktor III, _Config_), sehingga _image_ yang sama berjalan di laptop, CI, dan Kubernetes.
     - Semua variabel wajib diisi dan tidak ada nilai _default_.
     - Bila ada variabel yang kosong, service berhenti saat _startup_ dengan _error_ yang menyebut nama variabel tersebut.
+    - Di proyek sungguhan, _library_ seperti caarlos0/env membaca _environment variable_ langsung ke _struct_ (`env:"DATABASE_URL,required"`), termasuk konversi tipe. Viper dan koanf menambahkan _file_ konfigurasi (YAML/TOML) dan _flag_, dan umum digunakan di aplikasi CLI.
   ],
 )[
 ```go
