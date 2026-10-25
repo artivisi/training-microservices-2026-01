@@ -812,7 +812,7 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
   [
     - Tidak ada dependensi tambahan. _Handler_ tetap berupa `http.Handler` biasa, sehingga dapat dipasang di chi bila kelak dibutuhkan
     - Tidak tersedia pengelompokan _route_ dengan _middleware_ per grup, maupun _binding_ dan validasi otomatis seperti di gin
-    - Validasi ditulis sendiri (slide berikutnya)
+    - Validasi ditulis sendiri (slide "Validasi input")
   ],
 )
 
@@ -966,7 +966,7 @@ srv := &http.Server{
     Handler:           mux,
     ReadHeaderTimeout: 5 * time.Second,
 }
-// ... server berjalan di goroutine, lihat slide sebelumnya
+// ... server berjalan di goroutine (slide "Goroutine dan channel")
 
 case <-ctx.Done():
     log.Info("shutting down")
@@ -1048,7 +1048,7 @@ curl -s localhost:28081/readyz
 ]
 
 #decision(title: "pgx tanpa ORM",
-  [Akses PostgreSQL dengan SQL yang terlihat jelas, kendali penuh atas transaksi, dan kondisi saldo yang diperiksa di klausa `where` (slide berikutnya).],
+  [Akses PostgreSQL dengan SQL yang terlihat jelas, kendali penuh atas transaksi, dan kondisi saldo yang diperiksa di klausa `where` (slide "Mencegah saldo negatif saat dua debit bersamaan").],
   [
     - pgx langsung (`pgxpool`)
     - `database/sql` dengan _driver_ PostgreSQL
