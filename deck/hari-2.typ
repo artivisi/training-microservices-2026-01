@@ -321,7 +321,7 @@ if errors.Is(err, context.DeadlineExceeded) {
   #v(10pt)
   #note[HTTP 4xx berarti account sehat dan menjawab sesuai aturan bisnis. Bila 4xx ikut dihitung, nasabah yang berulang kali mencoba transfer dengan saldo kurang dapat membuka _circuit breaker_ dan menghentikan transfer semua nasabah lain.]
   #v(4pt)
-  #note(kind: "tip")[Cukup satu _circuit breaker_ untuk seluruh account service karena debit dan credit berada pada service yang sama. Bila account mati, keduanya ikut gagal.]
+  #note(kind: "tip")[*Menentukan cakupan _circuit breaker_.* Satu _circuit breaker_ mencakup panggilan yang gagal bersamaan (_failure domain_ yang sama). Umumnya satu _circuit breaker_ untuk satu service tujuan. Bila beberapa service berbagi satu _circuit breaker_, satu service yang mati ikut memblokir panggilan ke service lain yang sehat. Satu _circuit breaker_ untuk beberapa service hanya tepat bila semua service tersebut diakses melalui satu titik yang sama, misalnya satu _gateway_ milik pihak lain. Sebaliknya, satu service diberi beberapa _circuit breaker_ per operasi bila operasi-operasinya bergantung pada sumber daya berbeda dan dapat gagal sendiri-sendiri. Debit dan credit di studi kasus berada di service dan database yang sama, sehingga cukup satu _circuit breaker_.]
 ]
 
 #slide(kicker: "failsafe-go", title: [Pengaruh urutan _policy_ terhadap perilaku])[
