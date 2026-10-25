@@ -1052,7 +1052,7 @@ func countsAsFailure(_ any, err error) bool {
 }
 ```
 
-Aturan _retry_ di Lab 3 menggunakan dua sinyal untuk "_request_ pasti belum diproses": kegagalan _dial_ dan HTTP 503. Di gRPC kedua sinyal tersebut sama-sama muncul sebagai `Unavailable`. Kode `DeadlineExceeded` dan _timeout_ milik failsafe-go tetap tidak di-_retry_ dengan alasan yang sama seperti di Lab 3: _debit_ mungkin sudah dijalankan di `account` dan hanya jawabannya yang terlambat, sedangkan _debit_ belum _idempotent_ (aman dijalankan berulang tanpa memotong saldo dua kali). Komentar di atas `notProcessed` juga mencatat satu celah: gRPC mengembalikan `Unavailable` pula ketika koneksi yang sudah terbentuk putus setelah _request_ terkirim. Celah tersebut ditutup di Lab 5, ketika mutasi saldo menjadi _idempotent_ berdasarkan `reference`.
+Aturan _retry_ di Lab 3 menggunakan dua sinyal untuk "_request_ pasti belum diproses": koneksi yang gagal dibuka dan HTTP 503. Di gRPC kedua sinyal tersebut sama-sama muncul sebagai `Unavailable`. Kode `DeadlineExceeded` dan _timeout_ milik failsafe-go tetap tidak di-_retry_ dengan alasan yang sama seperti di Lab 3: _debit_ mungkin sudah dijalankan di `account` dan hanya jawabannya yang terlambat, sedangkan _debit_ belum _idempotent_ (aman dijalankan berulang tanpa memotong saldo dua kali). Komentar di atas `notProcessed` juga mencatat satu celah: gRPC mengembalikan `Unavailable` pula ketika koneksi yang sudah terbentuk putus setelah _request_ terkirim. Celah tersebut ditutup di Lab 5, ketika mutasi saldo menjadi _idempotent_ berdasarkan `reference`.
 
 Ringkasan perlakuan setiap kode status di sisi `transfer`:
 

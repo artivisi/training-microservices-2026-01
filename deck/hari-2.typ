@@ -280,7 +280,7 @@ if errors.Is(err, context.DeadlineExceeded) {
   #table(
     columns: (1.3fr, 1fr, auto),
     [Kondisi yang Diterima Transfer], [Apakah Debit Sudah Diterapkan?], [Apakah Transfer Melakukan _Retry_? (Lab 3)],
-    [Gagal membuka koneksi ke account (_dial error_: _connection refused_, _host_ tidak dikenal)], [Belum, _request_ tidak pernah terkirim], [Ya],
+    [Gagal membuka koneksi ke account (_connection refused_, _host_ tidak dikenal)], [Belum, _request_ tidak pernah terkirim], [Ya],
     [HTTP 503 dari account], [Belum, account menolak sebelum memproses], [Ya],
     [_Timeout_ setelah _request_ terkirim], [Tidak diketahui, bisa saja sudah], [*Tidak*],
     [HTTP 500 atau jawaban lain yang tidak dikenal], [Tidak diketahui], [*Tidak*],
@@ -383,6 +383,7 @@ client := &http.Client{Transport: rt}
   side: [
     - `notProcessed` menjawab pertanyaan _retry_: apakah _request_ terbukti belum diproses?
     - `countsAsFailure` menjawab pertanyaan _circuit breaker_: apakah account sedang bermasalah?
+    - Go menyebut langkah membuka koneksi TCP sebagai _dial_ (`net.Dial`), istilah yang berasal dari memutar nomor telepon. `Op == "dial"` berarti koneksi belum terbentuk dan _request_ belum terkirim
     - Kedua fungsi diuji terpisah dengan `httptest`, tanpa account sungguhan
   ],
 )[
@@ -467,7 +468,7 @@ func countsAsFailure(resp *http.Response, err error) bool {
       #v(8pt)
       #card("Yang dikerjakan")[
         - _Timeout_ 2 detik per percobaan di `transfer/internal/accountclient`
-        - _Retry_ maksimal 3 kali dengan _backoff_ 100 ms hingga 1 detik dan _jitter_, hanya untuk _dial error_ dan 503
+        - _Retry_ maksimal 3 kali dengan _backoff_ 100 ms hingga 1 detik dan _jitter_, hanya bila koneksi ke account gagal dibuka atau account menjawab 503
         - _Circuit breaker_ 5 dari 10, jeda 10 detik, 3 sukses untuk menutup kembali
         - `GET /debug/circuit-breaker` dan log perubahan _state_
         - _Unit test_ dengan `httptest`: _retry_ pada 503, tanpa _retry_ pada _timeout_, _circuit breaker_ menolak dengan cepat

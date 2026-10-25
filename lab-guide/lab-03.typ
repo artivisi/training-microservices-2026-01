@@ -404,7 +404,7 @@ func countsAsFailure(resp *http.Response, err error) bool {
 }
 ```
 
-Kedua fungsi menerima pasangan `(resp, err)` yang sama dengan hasil `RoundTrip`. Bila `err` tidak `nil`, `resp` bernilai `nil`, sehingga `resp` hanya dibaca setelah `err` diperiksa. Pada `notProcessed`, error _timeout_ dari failsafe-go bukan `*net.OpError` dengan operasi `dial`, sehingga fungsi tersebut mengembalikan `false` dan _timeout_ tidak di-_retry_.
+Kedua fungsi menerima pasangan `(resp, err)` yang sama dengan hasil `RoundTrip`. Bila `err` tidak `nil`, `resp` bernilai `nil`, sehingga `resp` hanya dibaca setelah `err` diperiksa. Go menyebut langkah membuka koneksi TCP ke alamat tujuan sebagai _dial_ (`net.Dial`), istilah yang berasal dari memutar nomor telepon. Error `*net.OpError` dengan operasi `dial` berarti koneksi belum terbentuk, sehingga _request_ belum terkirim ke `account`. Pada `notProcessed`, error _timeout_ dari failsafe-go bukan `*net.OpError` dengan operasi `dial`, sehingga fungsi tersebut mengembalikan `false` dan _timeout_ tidak di-_retry_.
 
 === Langkah 7: Menyusun _Policy_ di Fungsi `New`
 
