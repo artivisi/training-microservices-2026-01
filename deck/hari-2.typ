@@ -79,15 +79,16 @@
 #section-slide(number: "01", title: "Kegagalan Komunikasi Sinkron",
   subtitle: [_Timeout_, _retry_ dengan _backoff_, dan _circuit breaker_])
 
-#slide(kicker: "Konsep", title: "Kegagalan parsial terjadi setiap hari")[
+#slide(kicker: "Konsep", title: "Panggilan antarservice bisa gagal kapan saja")[
   #bullets(
-    [Pada monolith, pemanggilan fungsi selalu sampai ke tujuannya. Pada microservices, setiap pemanggilan melewati jaringan dan dapat gagal di tengah jalan.],
-    [Service tujuan bisa mati, lambat, kehabisan koneksi database, atau sedang di-_deploy_ ulang. Kondisi tersebut terjadi setiap hari, tidak hanya saat insiden besar.],
-    [Pemanggil tidak dapat membedakan "service tujuan belum memproses" dari "service tujuan sudah memproses tetapi jawabannya hilang".],
-    [Karena itu setiap panggilan keluar perlu keputusan eksplisit: berapa lama menunggu, kapan mengulang, dan kapan berhenti mencoba.],
+    [Di monolith, pemanggilan fungsi tidak pernah hilang di tengah jalan. Di microservices, panggilan ke service lain melewati jaringan, sehingga bisa gagal sebelum sampai atau saat jawabannya kembali.],
+    [Service tujuan bisa mati, lambat, kehabisan koneksi database, atau sedang di-_deploy_ ulang. Gangguan seperti ini terjadi hampir setiap hari, tanpa harus menunggu insiden besar.],
+    [Sebagian sistem gagal sementara bagian lain tetap berjalan. Kondisi ini disebut _partial failure_.],
+    [Pemanggil tidak bisa tahu apakah service tujuan belum memproses _request_, atau sudah memproses tetapi _response_-nya hilang di jalan.],
+    [Karena itu, setiap panggilan ke service lain butuh aturan yang jelas: berapa lama menunggu, kapan mengulang, dan kapan berhenti mencoba.],
   )
   #v(4pt)
-  #note(kind: "tip")[Pertanyaan pertama saat meninjau kode panggilan antarservice: apa yang terjadi bila service tujuan tidak menjawab selama satu menit?]
+  #note(kind: "tip")[Saat meninjau kode yang memanggil service lain, ajukan dulu pertanyaan ini: apa yang terjadi bila service tujuan tidak menjawab selama satu menit?]
 ]
 
 #slide(kicker: "Konsep", title: "Service lambat lebih berbahaya dibandingkan service mati")[
