@@ -282,7 +282,7 @@ if errors.Is(err, context.DeadlineExceeded) {
     [Kondisi yang Diterima Transfer], [Apakah Debit Sudah Diterapkan?], [Apakah Transfer Saat Ini Melakukan _Retry_?],
     [Gagal membuka koneksi ke account (_connection refused_, _host_ tidak dikenal)], [Belum, _request_ tidak pernah terkirim], [Ya],
     [HTTP 503 dari account], [Belum, account menolak sebelum memproses], [Ya],
-    [_Timeout_ setelah _request_ terkirim], [Tidak diketahui, bisa saja sudah], [*Belum*, mulai Lab 5 ya],
+    [_Timeout_ setelah _request_ terkirim], [Tidak diketahui, bisa saja sudah], [*Belum*. Akan dibuat di Lab 5],
     [HTTP 500 atau jawaban lain yang tidak dikenal], [Tidak diketahui], [*Tidak*, juga setelah Lab 5],
     [HTTP 404 atau 422 (rekening tidak ada, saldo kurang)], [Ditolak oleh aturan bisnis], [Tidak, hasilnya akan sama],
   )
