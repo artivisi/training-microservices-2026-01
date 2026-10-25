@@ -110,16 +110,16 @@
       inset: (x: 5pt, y: 4pt),
       [_Concern_], [_Standalone_ di VM (misalnya beberapa service Laravel atau Express.js)], [Platform Spring Cloud], [Platform Kubernetes],
       [_Service discovery_], [Alamat tetap di `.env` atau DNS internal], [Eureka: _registry server_ dan _client_ di setiap service], [Kubernetes Service dan DNS],
-      [_Load balancing_], [Nginx atau HAProxy di depan setiap service], [Spring Cloud LoadBalancer (dulu Ribbon) di sisi pemanggil], [Kubernetes Service (kube-proxy)],
+      [_Load balancing_], [Nginx atau HAProxy di depan setiap service], [Spring Cloud LoadBalancer di sisi pemanggil], [Kubernetes Service (kube-proxy)],
       [_Configuration_], [`.env` per server, disalin oleh skrip _deploy_], [Spring Cloud Config Server dan _client_-nya], [ConfigMap dan Secret],
       [_Restart_ dan _rollout_], [PM2 atau supervisor, skrip _deploy_ per server], [Di luar _framework_: skrip dan prosedur operasional], [Deployment: _probe_, _restart_ otomatis, _rolling update_],
-      [_Circuit breaker_], [_Library_ per bahasa: opossum (Node.js), Ganesha (PHP)], [Resilience4j (dulu Hystrix)], [Tetap di kode: failsafe-go (Go), Resilience4j (Java)],
+      [_Circuit breaker_], [_Library_ per bahasa: opossum (Node.js), Ganesha (PHP)], [Resilience4j], [Tetap di kode: failsafe-go (Go), Resilience4j (Java)],
       [Konsistensi, pemeriksaan token, instrumentasi], [_Library_ di setiap service], [_Library_ di setiap service], [Tetap di kode],
       [*Disediakan oleh*], [Tim sendiri, untuk setiap service], [Ekosistem Java, hanya untuk service JVM], [Platform, untuk service dalam bahasa apa pun],
     )
   }
   #v(6pt)
-  #note[Platform Spring Cloud adalah dukungan ekosistem satu _tech stack_. Platform Kubernetes adalah dukungan platform yang berlaku untuk semua bahasa. Studi kasus menggunakan platform Kubernetes, sehingga kode Go hanya memuat kebijakan _resiliency_, konsistensi data, pemeriksaan token, dan instrumentasi. Sejak Desember 2018, Spring Cloud menetapkan Hystrix dan Ribbon sebagai _maintenance mode_.]
+  #note[Platform Spring Cloud adalah dukungan ekosistem satu _tech stack_. Platform Kubernetes adalah dukungan platform yang berlaku untuk semua bahasa. Studi kasus menggunakan platform Kubernetes, sehingga kode Go hanya memuat kebijakan _resiliency_, konsistensi data, pemeriksaan token, dan instrumentasi.]
 ]
 
 #slide(kicker: "Peta concern microservices", title: [_Concern_ yang dibahas di Hari 1])[

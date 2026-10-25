@@ -153,7 +153,7 @@
     ],
   )
   #v(10pt)
-  #note[Keduanya saling melengkapi. Selama account di-_restart_ oleh Kubernetes, transfer tetap membutuhkan _timeout_ dan _circuit breaker_ agar tidak ikut lambat. Pada platform Spring Cloud, _circuit breaker_ dipasang sebagai _library_ (Resilience4j, dulu Hystrix). Pada platform Kubernetes, _restart_ dan _rollout_ ditangani platform, sedangkan _policy_ per panggilan tetap ditulis di kode karena hanya kode yang tahu panggilan mana yang aman diulang.]
+  #note[Keduanya saling melengkapi. Selama account di-_restart_ oleh Kubernetes, transfer tetap membutuhkan _timeout_ dan _circuit breaker_ agar tidak ikut lambat. Pada platform Spring Cloud, _circuit breaker_ dipasang sebagai _library_ (Resilience4j). Pada platform Kubernetes, _restart_ dan _rollout_ ditangani platform, sedangkan _policy_ per panggilan tetap ditulis di kode karena hanya kode yang tahu panggilan mana yang aman diulang.]
 ]
 
 #decision(title: [failsafe-go untuk _timeout_, _retry_, dan _circuit breaker_],
@@ -165,7 +165,6 @@
   [
     - Menulis sendiri _retry loop_ dan _state machine_ _circuit breaker_ beserta _test_-nya
     - sony/gobreaker: hanya _circuit breaker_, _retry_ dan _timeout_ ditulis terpisah
-    - hystrix-go: tidak ada _commit_ sejak 2018 dan tanpa rilis bertag
     - failsafe-go
   ],
   [
