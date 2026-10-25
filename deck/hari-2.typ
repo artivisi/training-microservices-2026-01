@@ -89,8 +89,37 @@
   )
   #v(4pt)
   #note(kind: "tip")[Saat meninjau kode yang memanggil service lain, ajukan dulu pertanyaan ini: apa yang terjadi bila service tujuan tidak menjawab selama satu menit?]
+]
+
+#slide(kicker: "Konsep", title: [Kegagalan antarservice sengaja diuji dengan _chaos engineering_])[
+  #text(size: 13pt)[_Partial failure_ begitu sering terjadi sehingga muncul disiplin tersendiri untuk mengujinya. _Chaos engineering_ menguji sistem dengan sengaja menimbulkan gangguan, agar tim yakin sistem tetap berfungsi saat gangguan sungguhan terjadi di _production_.]
   #v(4pt)
-  #note[*_Chaos engineering_.* Netflix memperkenalkan Chaos Monkey, yang mematikan _instance_ secara acak di _production_ agar tim terbiasa merancang service yang tahan terhadap _partial failure_. Chaos Monkey hanya berjalan bersama Spinnaker dan tidak dirilis lagi sejak Januari 2025. Untuk Kubernetes, gunakan #link("https://chaos-mesh.org")[Chaos Mesh] atau #link("https://litmuschaos.io")[LitmusChaos], yang masih aktif dipelihara. Lab 3 menerapkan versi kecilnya: _fault injection_ di account service.]
+  #two-col(ratio: (1.25fr, 1fr), gutter: 16pt,
+    {
+      show table.cell: set text(size: 11pt)
+      table(
+        columns: (auto, 1fr),
+        inset: (x: 6pt, y: 4pt),
+        [Prinsip], [Artinya],
+        [_Build a hypothesis around steady state behavior_], [Tentukan dulu ukuran kondisi normal, misalnya jumlah transfer berhasil per menit],
+        [_Vary real-world events_], [Tiru gangguan sungguhan: service mati, lambat, atau jaringan putus],
+        [_Run experiments in production_], [Hasil yang paling jujur didapat dari sistem yang melayani _traffic_ sungguhan],
+        [_Automate experiments to run continuously_], [Eksperimen dijalankan rutin, tidak hanya sekali],
+        [_Minimize blast radius_], [Mulai dari cakupan kecil agar dampaknya terbatas],
+      )
+    },
+    [
+      #card([Sudah menjadi industri], accent: gold.darken(15%), text(size: 11.5pt)[
+        - Netflix memperkenalkan Chaos Monkey, yang mematikan _instance_ secara acak di _production_. Chaos Monkey tidak dirilis lagi sejak Januari 2025.
+        - _Open source_ untuk Kubernetes: #link("https://chaos-mesh.org")[Chaos Mesh] dan #link("https://litmuschaos.io")[LitmusChaos], keduanya proyek CNCF tahap _incubating_ sejak 2022.
+        - Layanan berbayar: #link("https://www.gremlin.com")[Gremlin], #link("https://aws.amazon.com/fis/")[AWS Fault Injection Service], dan #link("https://azure.microsoft.com/en-us/products/chaos-studio")[Azure Chaos Studio].
+      ])
+      #v(6pt)
+      #text(size: 11.5pt)[Lab 3 menerapkan versi kecilnya: _fault injection_ di account service untuk meniru service yang lambat dan yang gagal.]
+    ],
+  )
+  #v(2pt)
+  #text(size: 10pt, fill: slate)[Referensi: #link("https://principlesofchaos.org")[`principlesofchaos.org`].]
 ]
 
 #slide(kicker: "Konsep", title: "Service yang lambat lebih berbahaya dibanding service yang mati")[
