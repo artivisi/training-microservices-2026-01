@@ -777,16 +777,18 @@ make k8s-apply
 
 `make k3d-up` membuat _cluster_ bernama `bank` dan menjadikan _context_ `k3d-bank` sebagai _context_ aktif kubectl. Setelah baris `waiting until the cluster DNS resolves host.k3d.internal`, perintah ini biasanya menunggu sekitar 40–60 detik sebelum selesai. `make k8s-apply` selesai jika ketiga Deployment sudah _rolled out_:
 
-// TODO(endy): confirm the exact rollout status lines on a real k3d 5.9.0 run before D-1.
 #perintah[```
 namespace/bank created
 configmap/account created
 ...
 ingress.networking.k8s.io/transfer created
+Waiting for deployment "account" rollout to finish: 0 of 1 updated replicas are available...
 deployment "account" successfully rolled out
 deployment "transfer" successfully rolled out
 deployment "notification" successfully rolled out
 ```]
+
+Baris `Waiting for deployment ...` dapat muncul beberapa kali, atau tidak muncul sama sekali bila _pod_ sudah siap saat diperiksa.
 
 Periksa objek yang dibuat:
 

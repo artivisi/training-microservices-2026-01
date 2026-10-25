@@ -878,9 +878,18 @@ _Image_ kembali ke _tag_ `1.0.0` yang tertulis di `k8s/overlays/k3d/kustomizatio
 GitOps menghilangkan selisih tersebut dengan menjadikan repository satu-satunya jalan untuk mengubah _cluster_: _pipeline_ tidak memanggil `kubectl set image`, tetapi meng-_commit_ _tag_ baru ke _manifest_, lalu sebuah _agent_ di _cluster_ menyamakan isi _cluster_ dengan isi repository. Lab ini tidak memasang _agent_ GitOps. Cukup dipahami bahwa _drift_ yang baru saja terlihat itulah masalah yang diselesaikan GitOps.
 
 #note[
-  Setelah `make k8s-apply`, kolom `CHANGE-CAUSE` revisi terbaru bisa tetap menampilkan `transfer <sha>` walaupun _image_-nya sudah `1.0.0`. Anotasi `change-cause` ditulis oleh `make deploy`, bukan oleh _manifest_, sehingga `kubectl apply` tidak menghapusnya. Untuk mengetahui _image_ yang benar-benar berjalan, baca `.spec.template.spec.containers[0].image`, bukan anotasi.
+  Setelah `make k8s-apply`, kolom `CHANGE-CAUSE` revisi terbaru tetap menampilkan `transfer <sha>` walaupun _image_-nya sudah `1.0.0`:
+
+  #perintah[
+  ```
+  REVISION  CHANGE-CAUSE
+  2         transfer 3c9a2d36c5aa
+  3         transfer 3c9a2d36c5aa
+  ```
+  ]
+
+  Anotasi `change-cause` ditulis oleh `make deploy`, bukan oleh _manifest_, sehingga `kubectl apply` tidak menghapusnya. Revisi 1 hilang dari daftar karena ReplicaSet `1.0.0` digunakan kembali dan menjadi revisi 3. Untuk mengetahui _image_ yang benar-benar berjalan, baca `.spec.template.spec.containers[0].image`, bukan anotasi.
 ]
-// TODO(endy): confirm on k3d what CHANGE-CAUSE shows for the revision created by make k8s-apply after pipeline-k3d (the annotation stays on the Deployment and is copied to the reused ReplicaSet).
 
 Untuk mengulang latihan, ubah kode lagi, _commit_, lalu jalankan `make pipeline-k3d SERVICE=transfer` sekali lagi.
 
