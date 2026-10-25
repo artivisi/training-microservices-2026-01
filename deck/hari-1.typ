@@ -119,7 +119,7 @@
     )
   }
   #v(6pt)
-  #note[Platform Spring Cloud adalah dukungan ekosistem satu _tech stack_. Platform Kubernetes adalah dukungan platform yang berlaku untuk semua bahasa. Studi kasus menggunakan platform Kubernetes, sehingga kode Go hanya memuat kebijakan _resiliency_, konsistensi data, pemeriksaan token, dan instrumentasi.]
+  #note[Platform Spring Cloud adalah dukungan ekosistem satu _tech stack_. Platform Kubernetes adalah dukungan platform yang bisa digunakan untuk semua bahasa. Studi kasus menggunakan platform Kubernetes, sehingga kode Go hanya memuat kebijakan _resiliency_, konsistensi data, pemeriksaan token, dan instrumentasi.]
 ]
 
 #slide(kicker: "Peta concern microservices", title: [_Concern_ yang dibahas di Hari 1])[
