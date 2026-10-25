@@ -313,7 +313,7 @@
 // ── Peta concern microservices ─────────────────────────────────────────────
 // The ten concerns, same order and wording in every deck.
 #let concern-rows = (
-  (concern: [_Decomposition_ dan kepemilikan data], question: [Batas service dan pemilik data], when: [H1, Lab 1–2], code: [—], platform: [_Database per service_]),
+  (concern: [_Decomposition_ dan kepemilikan data], question: [_Service boundary_ dan pemilik data], when: [H1, Lab 1–2], code: [—], platform: [_Database per service_]),
   (concern: [Komunikasi sinkron dan asinkron], question: [REST, gRPC, _messaging_], when: [H1–H3, Lab 2, 4, 5], code: [`net/http`, grpc-go, kafka-go], platform: [Kafka]),
   (concern: [_Resiliency_], question: [Tetap berfungsi saat dependensi lambat atau mati], when: [H2, Lab 3–4], code: [failsafe-go], platform: [_Probe_, _restart_, _rolling update_ (H4)]),
   (concern: [Konsistensi data], question: [Perubahan data lintas database], when: [H2–H3, Lab 5–6], code: [Saga, _outbox_, _idempotency_], platform: [—]),

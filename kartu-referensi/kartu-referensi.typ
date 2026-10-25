@@ -44,7 +44,7 @@ Setiap sistem microservices harus menjawab sepuluh _concern_ berikut. Setiap _co
     columns: (0.25fr, 1.35fr, 1.5fr, 1.9fr, 1.5fr, 1.7fr, 0.55fr),
     inset: 4pt,
     table.header([], [_Concern_], [Pertanyaan yang Dijawab], [Pola dan Teknik di Studi Kasus], [Di Kode (_Library_)], [Di Platform atau Infrastruktur], [Lab]),
-    [1], [_Decomposition_ dan kepemilikan data], [Batas service dan pemilik data], [Service per domain bisnis, _database per service_, data milik service lain diambil melalui API atau _event_], [—], [_Database per service_], [1, 2],
+    [1], [_Decomposition_ dan kepemilikan data], [_Service boundary_ dan pemilik data], [Service per domain bisnis, _database per service_, data milik service lain diambil melalui API atau _event_], [—], [_Database per service_], [1, 2],
     [2], [Komunikasi sinkron dan asinkron], [REST, gRPC, _messaging_], [REST untuk _channel_, gRPC untuk panggilan internal, Kafka untuk _event_], [`net/http`, grpc-go, kafka-go], [Kafka], [2, 4, 5],
     [3], [_Resiliency_], [Tetap berfungsi saat dependensi lambat atau mati], [_Timeout_, _retry_ dengan _backoff_, _circuit breaker_], [failsafe-go], [_Probe_, _restart_, _rolling update_], [3, 4, 9],
     [4], [Konsistensi data], [Perubahan data lintas database], [_Saga_ dengan kompensasi, _transactional outbox_, _idempotency key_, _idempotent consumer_], [Kode service (pgx, kafka-go)], [—], [5, 6],
@@ -235,7 +235,7 @@ Setiap pola menambah komponen yang harus dioperasikan. Pola yang tidak menjawab 
   [*CI/CD per service*],
   [Rilis satu service menunggu service lain. _Deployment_ manual tidak seragam dan tidak tercatat],
   [Service dirilis independen. Setiap _commit_ diuji, dijadikan _image_ dengan _tag_ berupa _commit hash_, lalu di-_deploy_ otomatis. _Pipeline_ hanya memanggil target `make`, sehingga dapat dipetakan ke Jenkinsfile],
-  [Service selalu dirilis bersamaan. Kondisi ini menandakan _distributed monolith_, sehingga batas service perlu diperbaiki lebih dahulu],
+  [Service selalu dirilis bersamaan. Kondisi ini menandakan _distributed monolith_, sehingga _service boundary_ perlu diperbaiki lebih dahulu],
   [Jumlah _pipeline_ sebanding dengan jumlah service. Perubahan modul bersama (`proto`) memicu _pipeline_ beberapa service. _Credential_ _registry_ dan _cluster_ harus dikelola di _runner_],
   [10],
 
@@ -249,7 +249,7 @@ Setiap pola menambah komponen yang harus dioperasikan. Pola yang tidak menjawab 
 
 = Gejala _Distributed Monolith_
 
-Sistem yang sudah dipecah menjadi beberapa service tetapi masih harus diubah, diuji, dan dirilis bersamaan memikul beban _microservices_ tanpa mendapatkan manfaatnya. Tiga gejala atau lebih yang tercentang menandakan batas service perlu ditinjau ulang.
+Sistem yang sudah dipecah menjadi beberapa service tetapi masih harus diubah, diuji, dan dirilis bersamaan memikul beban _microservices_ tanpa mendapatkan manfaatnya. Tiga gejala atau lebih yang tercentang menandakan _service boundary_ perlu ditinjau ulang.
 
 #{
   set text(size: 8pt)
@@ -257,7 +257,7 @@ Sistem yang sudah dipecah menjadi beberapa service tetapi masih harus diubah, di
     columns: (0.25fr, 2.6fr, 2.2fr, 2.6fr),
     inset: 4pt,
     table.header([], [Gejala], [Penyebab Umum], [Arah Perbaikan]),
-    [#cek], [Fitur baru hampir selalu mengubah beberapa service sekaligus], [Batas service mengikuti _layer_ teknis (API, logika, data) dan tidak mengikuti domain bisnis], [Tetapkan ulang batas service menurut domain. Gabungkan service yang selalu berubah bersamaan],
+    [#cek], [Fitur baru hampir selalu mengubah beberapa service sekaligus], [_Service boundary_ mengikuti _layer_ teknis (API, logika, data) dan tidak mengikuti domain bisnis], [Tetapkan ulang _service boundary_ menurut domain. Gabungkan service yang selalu berubah bersamaan],
     [#cek], [Service harus dirilis bersamaan dengan urutan tertentu], [Kontrak API berubah tanpa _backward compatibility_], [Perubahan kontrak bersifat aditif. Versi kontrak lama tetap dilayani selama masa transisi],
     [#cek], [Beberapa service membaca atau menulis tabel yang sama], [_Database_ bersama dipertahankan setelah pemecahan service], [_Database per service_. Data milik service lain diambil melalui API atau _event_],
     [#cek], [Satu service mati menghentikan hampir semua alur], [Rantai panggilan sinkron panjang tanpa timeout dan _circuit breaker_], [Timeout dan _breaker_ di setiap panggilan. Langkah yang tidak perlu ditunggu dipindahkan ke _messaging_],

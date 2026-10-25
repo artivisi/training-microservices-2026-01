@@ -4,7 +4,7 @@
 
 #show: deck.with(
   title: "Arsitektur Microservices dan Fondasi Service Go",
-  subtitle: "Hari 1: monolith dan microservices, penentuan batas service, Go essentials, serta account service dan transfer service",
+  subtitle: [Hari 1: monolith dan microservices, penentuan _service boundary_, Go _essentials_, serta account service dan transfer service],
   day-label: "Hari 1",
   client: sys.inputs.at("client"),
   date: "Oktober 2026",
@@ -120,7 +120,7 @@
 
 #slide(kicker: "Peta concern microservices", title: [_Concern_ yang dibahas di Hari 1])[
   #let day1 = (
-    [Lab 1–2: batas service dari kapabilitas bisnis, satu database per service],
+    [Lab 1–2: _service boundary_ dari kapabilitas bisnis, satu database per service],
     [Lab 2: panggilan REST pertama dari transfer ke account],
     [Lab 2: celah _client_ tanpa _timeout_ dicatat, ditangani Hari 2],
     [Lab 2: celah credit gagal setelah debit dicatat, ditangani Hari 2–3],
@@ -191,7 +191,7 @@
 #slide(kicker: "Konsep", title: "Kondisi yang membuat microservices merugikan")[
   #bullets(
     [*Tim kecil.* Bila semua service dikelola satu tim, pemecahan service tidak mengurangi koordinasi antartim, sedangkan beban operasionalnya tetap bertambah.],
-    [*Batas domain belum jelas.* Batas service yang salah jauh lebih sulit diperbaiki dibandingkan batas modul di dalam satu aplikasi.],
+    [*_Domain boundary_ belum jelas.* _Service boundary_ yang salah jauh lebih sulit diperbaiki dibandingkan _module boundary_ di dalam satu aplikasi.],
     [*Belum ada otomasi.* Tanpa _pipeline_ dan _observability_, setiap service tambahan menambah pekerjaan manual.],
     [*Beban merata.* Bila semua fitur menerima beban yang serupa, pemecahan service tidak meningkatkan skalabilitas.],
   )
@@ -227,14 +227,14 @@
 
 // ── 02 Service decomposition ──────────────────────────────────────────────
 
-#section-slide(number: "02", title: "Service Decomposition", subtitle: [Batas service menurut kapabilitas bisnis dan _bounded context_])
+#section-slide(number: "02", title: "Service Decomposition", subtitle: [_Service boundary_ menurut kapabilitas bisnis dan _bounded context_])
 
 #slide(kicker: "Konsep", title: [Kapabilitas bisnis dan _bounded context_])[
   #two-col(
     card("Kapabilitas bisnis")[
       Hal yang dikerjakan organisasi, terlepas dari cara aplikasi mengerjakannya: mengelola rekening, memindahkan dana, memberi tahu nasabah.
 
-      Kapabilitas bisnis jarang berubah, sehingga menjadi acuan batas service yang stabil.
+      Kapabilitas bisnis jarang berubah, sehingga menjadi acuan _service boundary_ yang stabil.
     ],
     card([_Bounded context_], accent: gold.darken(15%))[
       Batas berlakunya model domain. Di dalam batas tersebut, setiap istilah hanya memiliki satu arti.
@@ -244,15 +244,15 @@
   )
 ]
 
-#slide(kicker: "Konsep", title: "Tiga acuan penentuan batas service")[
+#slide(kicker: "Konsep", title: [Tiga acuan penentuan _service boundary_])[
   #enum(
     spacing: 14pt,
     [*Service memiliki datanya sendiri.* Service lain hanya boleh mengakses data tersebut melalui API, tanpa _query_ langsung ke tabelnya.],
     [*Service dapat dirilis tanpa koordinasi lintas tim.* Rilis account service tidak menunggu jadwal rilis transfer service.],
-    [*Perubahan satu kebutuhan bisnis idealnya cukup di satu service.* Bila setiap fitur baru menyentuh tiga service, batasnya perlu ditinjau ulang.],
+    [*Perubahan satu kebutuhan bisnis idealnya cukup di satu service.* Bila setiap fitur baru menyentuh tiga service, _service boundary_ tersebut perlu ditinjau ulang.],
   )
   #v(10pt)
-  #note[Ketiga acuan ini sekaligus menjadi kriteria uji: batas service yang melanggar salah satunya akan mengarah ke _distributed monolith_.]
+  #note[Ketiga acuan ini sekaligus menjadi kriteria uji: _service boundary_ yang melanggar salah satunya akan mengarah ke _distributed monolith_.]
 ]
 
 #slide(kicker: "Kesalahan umum", title: "Pemecahan service yang keliru")[
@@ -283,7 +283,7 @@
 ]
 
 #decision(title: [_Database per service_],
-  [Setiap service dapat mengubah skema dan dirilis tanpa koordinasi dengan pemilik service lain (acuan pertama dan kedua penentuan batas service).],
+  [Setiap service dapat mengubah skema dan dirilis tanpa koordinasi dengan pemilik service lain (acuan pertama dan kedua penentuan _service boundary_).],
   [
     - Satu database bersama untuk semua service
     - Satu server database, dengan _schema_ dan kredensial terpisah per service
@@ -1037,7 +1037,7 @@ func (s *Service) Execute(ctx context.Context,
 #slide(kicker: "Penutup Hari 1", title: "Ringkasan dan persiapan Hari 2")[
   #two-col(
     card([Hasil Hari 1 pada peta _concern_])[
-      - *\#1 _Decomposition_:* batas service dari kapabilitas bisnis, satu database per service
+      - *\#1 _Decomposition_:* _service boundary_ dari kapabilitas bisnis, satu database per service
       - *\#2 Komunikasi:* transfer memanggil account melalui REST
       - *\#7 _Configuration_:* variabel wajib dari _environment variable_, tanpa nilai _default_ (faktor III)
       - *\#9 _Deployment_ (konsep):* _liveness_ dan _readiness_ dipisahkan sejak awal, _graceful shutdown_ (faktor IX)
