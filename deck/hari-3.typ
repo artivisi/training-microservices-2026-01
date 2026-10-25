@@ -20,7 +20,7 @@
     [08:30 – 09:30], [Peta _concern_ Hari 3, komunikasi asinkron dengan Kafka, _at-least-once delivery_, _transactional outbox_], [Presentasi + demo],
     [09:30 – 11:15], [*Lab 5*: transfer sebagai saga, event ke Kafka melalui outbox, notification sebagai _consumer_], [_Hands-on_],
     [11:30 – 12:30], [*Lab 6*: _idempotent consumer_ dan _Idempotency-Key_ pada API transfer], [_Hands-on_],
-    [13:30 – 14:30], [OAuth2 _client credentials_, pemilihan _authorization server_, validasi JWT, posisi API _gateway_], [Presentasi + demo],
+    [13:30 – 14:30], [OAuth2 _client credentials_, SSO dan _authorization server_ (_embedded_ atau _standalone_), validasi JWT, posisi API _gateway_], [Presentasi + demo],
     [14:45 – 15:45], [*Lab 7*: _middleware_ JWT pada REST dan _interceptor_ JWT pada gRPC], [_Hands-on_],
     [15:45 – 16:50], [_Observability_ lintas service: log, metrik, _trace_, posisinya di kode dan platform, persiapan Lab 8], [Presentasi + demo],
     [16:50 – 17:00], [Ringkasan hari ini pada peta _concern_, tanya jawab], [Diskusi],
