@@ -149,7 +149,6 @@ docker compose ps otel-lgtm
 
 Buka http://localhost:13000. Port Grafana 3000 dan port OTLP 4317/4318 di dalam _container_ dipetakan ke 13000 dan 14317/14318 di laptop agar tidak bentrok dengan aplikasi lain yang menggunakan port bawaan tersebut. Grafana di _container_ ini berjalan dengan akses anonim sebagai admin, tanpa halaman _login_. Folder _Dashboards_ → _Studi Kasus_ sudah berisi _Studi Kasus: Transfer_, tetapi semua panel masih kosong karena service belum menyediakan `/metrics`.
 
-// TODO(endy): host.docker.internal + host-gateway was only tested on socktainer; run once on Docker Desktop and on a Linux Docker Engine before delivery.
 
 === Menambahkan _Dependency_
 

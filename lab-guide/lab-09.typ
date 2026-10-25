@@ -1034,7 +1034,6 @@ Jalankan pemeriksaan berikut dari direktori `studi-kasus/` dengan _cluster_ `ban
   Hasilnya _array_ JSON berisi satu notifikasi dengan `"event_type":"TransferCompleted"`.
 + _Trace_ transfer dari _pod_ tetap masuk ke Grafana (`http://localhost:13000`, Tempo), dengan _span_ dari `transfer`, `account`, dan `notification` dalam satu _trace_.
 
-// TODO(endy): run the whole Verifikasi list once on Docker Desktop with k3d 5.9.0 (verified on Linux Docker Engine 29.9.1, 20 Okt).
 
 == Masalah Umum
 
