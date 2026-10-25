@@ -308,7 +308,7 @@
     [_Deployment_], [Seluruh aplikasi dirilis sekaligus], [Setiap service dirilis terpisah],
     [Skalabilitas], [Seluruh aplikasi diperbanyak bersama], [Hanya service yang sibuk yang diperbanyak],
     [Konsistensi data], [Satu transaksi database], [Saga, _outbox_, dan _idempotency_ (Hari 2–3)],
-    [Kegagalan], [Bila proses mati, seluruh aplikasi ikut berhenti], [Kegagalan parsial, perlu _timeout_ dan _circuit breaker_ (Hari 2)],
+    [Kegagalan], [Bila proses mati, seluruh aplikasi ikut berhenti], [_Partial failure_, perlu _timeout_ dan _circuit breaker_ (Hari 2)],
     [_Debugging_], [_Stack trace_ dalam satu proses], [_Distributed tracing_ lintas service (Hari 3–4)],
     [Beban operasional], [Satu aplikasi, satu database], [Banyak _deployable unit_, _pipeline_, dan database],
   )
