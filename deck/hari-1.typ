@@ -610,7 +610,7 @@ type Handler struct {
   side: [
     - _Error_ berupa nilai biasa yang dikembalikan fungsi dan diperiksa tepat setelah pemanggilan.
     - `%w` membungkus _error_ dengan konteks tambahan tanpa menghilangkan identitas _error_ asalnya.
-    - `errors.Is` memeriksa seluruh rantai _error_ yang dibungkus, sehingga _handler_ transfer tetap mengenali `ErrInsufficientFunds`.
+    - `errors.Is` memeriksa seluruh _error chain_ yang dibungkus, sehingga _handler_ transfer tetap mengenali `ErrInsufficientFunds`.
   ],
 )[
 ```go
@@ -710,7 +710,7 @@ func logging(log *slog.Logger, next http.Handler) http.Handler {
 }
 ```
 #v(10pt)
-#text(size: 11pt, fill: slate)[Konsep yang sama di ekosistem lain: _middleware_ Koa (`await next()`) dan Laravel (`$next($request)`) juga membungkus _handler_, sehingga kode setelah `next` dipanggil berjalan setelah _response_ siap. _Middleware_ Express berbentuk rantai `next()`, sehingga kode sesudah _response_ membutuhkan `res.on('finish')`. Istilah _interceptor_ berbeda arti: _hook_ di Spring, pembungkus di NestJS, dan padanan _middleware_ di gRPC.]
+#text(size: 11pt, fill: slate)[Konsep yang sama di ekosistem lain: _middleware_ Koa (`await next()`) dan Laravel (`$next($request)`) juga membungkus _handler_, sehingga kode setelah `next` dipanggil berjalan setelah _response_ siap. _Middleware_ Express berbentuk _chain_ `next()`, sehingga kode sesudah _response_ membutuhkan `res.on('finish')`. Istilah _interceptor_ berbeda arti: _hook_ di Spring, _wrapper_ di NestJS, dan padanan _middleware_ di gRPC.]
 ]
 
 // ── 05 Anatomi service Go ──────────────────────────────────────────────────
@@ -785,7 +785,7 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
       [Aspek], [`http.ServeMux`], [chi], [gin], [echo], [Fiber],
       [_HTTP engine_], [`net/http`], [`net/http`], [`net/http`], [`net/http`], [fasthttp],
       [Bentuk _handler_], [`http.Handler`], [`http.Handler`], [`func(*gin.Context)`], [`func(*echo.Context) error`], [`func(fiber.Ctx) error`],
-      [_Middleware_ `net/http`], [Langsung digunakan], [Langsung digunakan], [Lewat pembungkus], [Lewat pembungkus], [Lewat _adaptor_, dengan _overhead_],
+      [_Middleware_ `net/http`], [Langsung digunakan], [Langsung digunakan], [Lewat _wrapper_], [Lewat _wrapper_], [Lewat _adaptor_, dengan _overhead_],
       [Grup _route_ dengan _middleware_ per grup], [Tidak ada, dirangkai sendiri], [Ada], [Ada], [Ada], [Ada],
       [_Binding_ dan validasi], [Ditulis sendiri], [Ditulis sendiri], [Bawaan (go-playground/validator)], [_Binding_ bawaan, _validator_ dipasang sendiri], [_Binding_ bawaan, _validator_ dipasang sendiri],
       [HTTP/2], [Ya], [Ya], [Ya], [Ya], [Belum didukung fasthttp],

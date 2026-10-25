@@ -695,7 +695,7 @@ Tambahkan _import_ `promhttp`, `otelhttp`, `golang.org/x/oauth2`, dan paket `tel
 
 === Telemetri pada Client gRPC dan _Circuit Breaker_
 
-Di `transfer/internal/accountclient/client.go`, client gRPC mendapat tiga tambahan. _Interceptor_ `UnaryClientCorrelation` dipasang paling depan di rantai _interceptor_ agar _correlation ID_ ditambahkan satu kali, sebelum _token_ dan _policy_ _resiliency_. `otelgrpc.NewClientHandler` dipasang sebagai _stats handler_, sehingga setiap percobaan, termasuk setiap _retry_, menjadi satu _span_ tersendiri. Kedua opsi ini ditambahkan di fungsi `dial`, sehingga berlaku baik untuk koneksi utama (`Debit`, `Credit`) maupun untuk koneksi _reversal_ dari Lab 5. Ganti bagian opsi di `dial`:
+Di `transfer/internal/accountclient/client.go`, client gRPC mendapat tiga tambahan. _Interceptor_ `UnaryClientCorrelation` dipasang paling depan di _interceptor chain_ agar _correlation ID_ ditambahkan satu kali, sebelum _token_ dan _policy_ _resiliency_. `otelgrpc.NewClientHandler` dipasang sebagai _stats handler_, sehingga setiap percobaan, termasuk setiap _retry_, menjadi satu _span_ tersendiri. Kedua opsi ini ditambahkan di fungsi `dial`, sehingga berlaku baik untuk koneksi utama (`Debit`, `Credit`) maupun untuk koneksi _reversal_ dari Lab 5. Ganti bagian opsi di `dial`:
 
 ```go
 		grpc.WithPerRPCCredentials(tokens),
