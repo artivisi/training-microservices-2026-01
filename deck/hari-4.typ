@@ -402,8 +402,29 @@ func LoadConfig() (Config, error) {
     - k3s berbeda dengan OpenShift: SCC dan Route dibahas di bagian OpenShift
     - Komponen bawaan k3s (Traefik, metrics-server) belum tentu ada di _cluster_ lain
     - Akses ke infrastruktur lewat `host.k3d.internal` hanya berlaku di lab laptop
+    - k3d, kind, dan minikube hanya untuk pengembangan dan pengujian, bukan untuk _production_
   ],
 )
+
+#slide(kicker: "Production", title: [Pilihan _cluster_ Kubernetes untuk _production_])[
+  #{
+    show table.cell: set text(size: 10pt)
+    table(
+      columns: (1.45fr, auto, 1.1fr, 1fr, 1.9fr),
+      inset: (x: 5pt, y: 3.5pt),
+      [Pilihan], [Jenis], [Pengelola _Control Plane_], [Lisensi dan Dukungan], [Biaya Berjalan],
+      [OpenShift Container Platform \ #text(size: 9pt)[#link("https://www.redhat.com/en/technologies/cloud-computing/openshift")[`redhat.com/openshift`]]], [_Self-managed_], [Tim bank], [Langganan Red Hat], [Langganan per _core_, server, dan tim platform],
+      [OKD (versi komunitas OpenShift) \ #text(size: 9pt)[#link("https://okd.io")[`okd.io`]]], [_Self-managed_], [Tim bank], [Apache-2.0, dukungan komunitas], [Server dan tim platform, tanpa langganan],
+      [RKE2 (SUSE Rancher) \ #text(size: 9pt)[#link("https://docs.rke2.io")[`docs.rke2.io`]]], [_Self-managed_], [Tim bank], [Apache-2.0, dukungan SUSE opsional], [Server dan tim platform, ditambah langganan SUSE bila membutuhkan dukungan vendor],
+      [kubeadm (_vanilla_) \ #text(size: 9pt)[#link("https://kubernetes.io/docs/reference/setup-tools/kubeadm/")[`kubernetes.io/docs/…/kubeadm`]]], [_Self-managed_], [Tim bank], [Apache-2.0, tanpa vendor], [Server dan tim platform. CNI, Ingress, dan _storage_ dipilih dan dirawat sendiri],
+      [k3s \ #text(size: 9pt)[#link("https://k3s.io")[`k3s.io`]]], [_Self-managed_], [Tim bank], [Apache-2.0], [Server kecil, cocok untuk _edge_ atau kantor cabang],
+      [EKS, GKE, AKS \ #text(size: 9pt)[#link("https://aws.amazon.com/eks/pricing/")[`aws.amazon.com/eks/pricing`]] \ #text(size: 9pt)[#link("https://cloud.google.com/kubernetes-engine/pricing")[`cloud.google.com/kubernetes-engine/pricing`]] \ #text(size: 9pt)[#link("https://azure.microsoft.com/pricing/details/kubernetes-service/")[`azure.microsoft.com/…/kubernetes-service`]]], [_Managed_], [_Cloud provider_. Region Jakarta (AWS, Google Cloud) dan Indonesia Central (Azure)], [Bayar sesuai pemakaian], [_Control plane_ ± US\$0,10 per jam per _cluster_ (± US\$73 per bulan), ditambah _node_. AKS _tier_ Free tanpa biaya _control plane_. EKS pada versi Kubernetes _extended support_ US\$0,60 per jam],
+      [ROSA (OpenShift di AWS) \ #text(size: 9pt)[#link("https://aws.amazon.com/rosa/pricing/")[`aws.amazon.com/rosa/pricing`]]], [_Managed_], [Red Hat dan AWS. Tersedia di region Jakarta], [Langganan melalui AWS], [US\$0,25 per jam per _cluster_, ditambah US\$0,171 per 4 vCPU _node_ per jam, ditambah EC2],
+    )
+  }
+  #v(4pt)
+  #text(size: 10.5pt, fill: slate)[Harga _managed_ per Oktober 2026 dari situs resmi masing-masing, belum termasuk _node_, _storage_, dan jaringan. Pada _self-managed_, biaya terbesar umumnya adalah tim platform yang melakukan _upgrade_, _patching_, dan pemulihan _cluster_, bukan lisensi. VMware Tanzu tidak dicantumkan karena Broadcom sedang menggabungkannya ke VMware Cloud Foundation dan tidak lagi menawarkannya sebagai produk terpisah.]
+]
 
 #slide(kicker: "Lab 9", title: [Arsitektur _deployment_ di laptop])[
   #diagram(height: 330pt,
