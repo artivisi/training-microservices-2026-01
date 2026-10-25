@@ -280,7 +280,7 @@ if errors.Is(err, context.DeadlineExceeded) {
   #table(
     columns: (1.3fr, 1fr, auto),
     [Kondisi yang Diterima Transfer], [Apakah Debit Sudah Diterapkan?], [Apakah Transfer Melakukan _Retry_? (Lab 3)],
-    [Koneksi ditolak saat _dial_], [Belum, _request_ tidak pernah terkirim], [Ya],
+    [Gagal membuka koneksi ke account (_dial error_: _connection refused_, _host_ tidak dikenal)], [Belum, _request_ tidak pernah terkirim], [Ya],
     [HTTP 503 dari account], [Belum, account menolak sebelum memproses], [Ya],
     [_Timeout_ setelah _request_ terkirim], [Tidak diketahui, bisa saja sudah], [*Tidak*],
     [HTTP 500 atau jawaban lain yang tidak dikenal], [Tidak diketahui], [*Tidak*],
