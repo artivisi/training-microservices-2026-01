@@ -102,7 +102,128 @@
   #text(size: 11pt, fill: slate)[H1–H4 = Hari 1–4. Setiap hari dibuka dengan peta ini: baris yang disorot adalah _concern_ yang dibahas hari itu.]
 ]
 
-#slide(kicker: "Peta training", title: [_Concern_ yang ditangani tim, ekosistem, atau platform])[
+#let owner-points(..items) = grid(columns: (1fr,) * items.pos().len(), column-gutter: 18pt,
+  ..items.pos().map(i => block(stroke: (left: 2pt + gold), inset: (left: 8pt, y: 2pt),
+    text(size: 12.5pt, i))))
+
+#slide(kicker: "Penyedia concern", title: [Tanpa platform: service _standalone_ di VM])[
+  #grid(columns: (1fr, 1fr), column-gutter: 24pt,
+    owner-host("VM 1", sub: "service Laravel", size: 13pt,
+      ([Nginx: _load balancing_], "tim"),
+      ("Kode bisnis (PHP)", "kode"),
+      ([Ganesha: _circuit breaker_], "ekosistem"),
+      ([`.env`: konfigurasi dan alamat service lain], "tim"),
+      ([supervisor: _restart_], "tim")),
+    owner-host("VM 2", sub: "service Express.js", size: 13pt,
+      ([Nginx: _load balancing_], "tim"),
+      ("Kode bisnis (Node.js)", "kode"),
+      ([opossum: _circuit breaker_], "ekosistem"),
+      ([`.env`: konfigurasi dan alamat service lain], "tim"),
+      ([PM2: _restart_], "tim")),
+  )
+  #owner-band([Skrip _deploy_ dan prosedur operasional untuk setiap server], "tim", size: 13pt)
+  #v(10pt)
+  #owner-points(
+    [Setiap _concern_ di luar kode bisnis disusun sendiri oleh tim, untuk setiap server],
+    [Alamat service lain ditulis tetap di `.env`. Menambah atau memindahkan server berarti mengubah konfigurasi di banyak tempat],
+    [Cara _restart_ dan _rollout_ berbeda per bahasa: PM2 untuk Node.js, supervisor untuk PHP],
+  )
+  #v(8pt)
+  #owner-legend("tim", "ekosistem", "kode")
+]
+
+#slide(kicker: "Penyedia concern", title: [Dukungan ekosistem: platform Spring Cloud])[
+  #grid(columns: (1fr, 1fr, 1fr), column-gutter: 18pt,
+    owner-host("Service A", sub: "Java", size: 13pt,
+      ("Kode bisnis", "kode"),
+      ([Eureka _client_: _discovery_], "ekosistem"),
+      ([Spring Cloud LoadBalancer], "ekosistem"),
+      ([Config _client_], "ekosistem"),
+      ([Resilience4j: _circuit breaker_], "ekosistem")),
+    owner-host("Service B", sub: "Java", size: 13pt,
+      ("Kode bisnis", "kode"),
+      ([Eureka _client_: _discovery_], "ekosistem"),
+      ([Spring Cloud LoadBalancer], "ekosistem"),
+      ([Config _client_], "ekosistem"),
+      ([Resilience4j: _circuit breaker_], "ekosistem")),
+    owner-host("Server pendukung", sub: "Spring Cloud", size: 13pt,
+      ([Eureka Server: _registry_ alamat service], "ekosistem"),
+      ([Config Server: konfigurasi terpusat], "ekosistem")),
+  )
+  #owner-band([VM: _restart_ dan _rollout_ tetap lewat skrip dan prosedur operasional], "tim", size: 13pt)
+  #v(10pt)
+  #owner-points(
+    [Spring Cloud menyediakan _discovery_, _load balancing_, konfigurasi, dan _circuit breaker_ sebagai _library_ beserta server pendukungnya],
+    [Dukungan ini hanya bisa digunakan oleh service JVM. Service dalam bahasa lain harus menulis sendiri _client_ untuk Eureka dan Config Server],
+    [_Restart_ dan _rollout_ tidak termasuk, sehingga tetap menjadi pekerjaan tim],
+  )
+  #v(8pt)
+  #owner-legend("tim", "ekosistem", "kode")
+]
+
+#slide(kicker: "Penyedia concern", title: [Dukungan platform: Kubernetes])[
+  #grid(columns: (1fr, 1fr, 1fr), column-gutter: 18pt,
+    owner-host("transfer", sub: "Go", size: 13pt,
+      ("Kode bisnis", "kode"),
+      ([failsafe-go, OTel SDK, JWT], "ekosistem")),
+    owner-host("account", sub: "Go", size: 13pt,
+      ("Kode bisnis", "kode"),
+      ([OTel SDK, JWT], "ekosistem")),
+    owner-host("Service lain", sub: "Java, Node.js, PHP", size: 13pt,
+      ("Kode bisnis", "kode"),
+      ([_Library_ bahasa masing-masing], "ekosistem")),
+  )
+  #owner-band("Kubernetes", "platform", size: 13pt,
+    [DNS: _discovery_],
+    [Service: _load balancing_],
+    [ConfigMap dan Secret],
+    [_Probe_ dan _restart_],
+    [_Rolling update_])
+  #v(10pt)
+  #owner-points(
+    [Platform menyediakan _discovery_, _load balancing_, konfigurasi, _restart_, dan _rollout_ untuk service dalam bahasa apa pun],
+    [Kode service hanya memuat kebijakan yang memerlukan pengetahuan bisnis: _resiliency_ per panggilan, konsistensi data, pemeriksaan _token_, dan instrumentasi],
+    [Studi kasus menggunakan model ini. Lab 9 dan Lab 10 menjalankannya di k3d dan di server pelatihan],
+  )
+  #v(8pt)
+  #owner-legend("platform", "ekosistem", "kode")
+]
+
+#slide(kicker: "Penyedia concern", title: [Service makin tipis ketika platform menangani lebih banyak _concern_])[
+  #let col(head, svc, outside) = stack(spacing: 6pt,
+    align(center, text(size: 13pt, weight: "bold", fill: navy, head)),
+    svc,
+    ..outside)
+  #grid(columns: (1fr, 1fr, 1fr), column-gutter: 20pt,
+    col([_Standalone_ di VM],
+      owner-host("Satu service", size: 11pt,
+        ("Kode bisnis", "kode"),
+        ([_Library_ _circuit breaker_], "ekosistem")),
+      (owner-band([Disusun tim untuk setiap server], "tim", size: 11pt, cols: 2,
+        [Nginx], [`.env`], [PM2 atau supervisor], [Skrip _deploy_]),)),
+    col([Platform Spring Cloud],
+      owner-host("Satu service", size: 11pt,
+        ("Kode bisnis", "kode"),
+        ([Eureka _client_], "ekosistem"),
+        ([LoadBalancer], "ekosistem"),
+        ([Config _client_], "ekosistem"),
+        ([Resilience4j], "ekosistem")),
+      (owner-band([Server ekosistem], "ekosistem", size: 11pt, cols: 2, [Eureka Server], [Config Server]),
+       owner-band([Disusun tim], "tim", size: 11pt, [_Restart_ dan _rollout_]))),
+    col([Platform Kubernetes],
+      owner-host("Satu service", size: 11pt,
+        ("Kode bisnis", "kode"),
+        ([_Resiliency_, _token_, instrumentasi], "ekosistem")),
+      (owner-band("Disediakan platform", "platform", size: 11pt, cols: 2,
+        [_Discovery_], [_Load balancing_], [Konfigurasi], [_Restart_], [_Rollout_]),)),
+  )
+  #v(6pt)
+  #text(size: 12.5pt)[Pada platform Kubernetes, _concern_ yang sama untuk semua service ditangani platform. Kode service hanya memuat hal yang memerlukan pengetahuan bisnis, termasuk _resiliency_ per panggilan.]
+  #v(2pt)
+  #owner-legend("tim", "ekosistem", "platform", "kode")
+]
+
+#slide(kicker: "Penyedia concern", title: [Ringkasan _concern_ yang ditangani tim, ekosistem, atau platform])[
   #{
     show table.cell: set text(size: 11pt)
     table(

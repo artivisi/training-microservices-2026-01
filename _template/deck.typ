@@ -379,3 +379,61 @@
     card([Konsekuensi dan _trade-off_], accent: amber, consequence),
   )
 ]
+
+// ── Penyedia concern ───────────────────────────────────────────────────────
+// Stack diagrams that show who provides each concern. owner is one of
+// "tim" (written and operated by the team), "ekosistem" (library or server
+// of a tech stack ecosystem), "platform" (Kubernetes), "kode" (the service's
+// own business code).
+#let owner-style(owner) = {
+  if owner == "tim" { (fill: amber.lighten(86%), stroke: 1pt + amber, text: amber.darken(30%)) }
+  else if owner == "ekosistem" { (fill: navy.lighten(86%), stroke: 1pt + navy, text: navy-dk) }
+  else if owner == "platform" { (fill: gold.lighten(80%), stroke: 1pt + gold.darken(20%), text: gold.darken(50%)) }
+  else if owner == "kode" { (fill: white, stroke: 1pt + slate, text: ink) }
+  else { panic("owner-style: unknown owner " + repr(owner)) }
+}
+
+#let owner-chip(label, owner, size: 10pt) = {
+  let s = owner-style(owner)
+  block(width: 100%, fill: s.fill, stroke: s.stroke, radius: 3pt, inset: (x: 5pt, y: size * 0.45),
+    above: size * 0.45, below: 0pt, align(center, text(size: size, fill: s.text, label)))
+}
+
+// One host or service: a title, an optional subtitle, then (label, owner) rows.
+//   #owner-host("VM 1", sub: "Laravel", ("Nginx", "tim"), ("Kode bisnis", "kode"))
+#let owner-host(title, sub: none, width: 100%, size: 10pt, ..rows) = box(width: width,
+  stroke: 1.3pt + slate, radius: 5pt, inset: 6pt, fill: cream)[
+  #align(center, text(size: size * 1.15, weight: "bold", fill: ink, title))
+  #if sub != none { v(-6pt); align(center, text(size: size * 0.95, fill: slate, sub)) }
+  #for r in rows.pos() { owner-chip(r.at(0), r.at(1), size: size) }
+]
+
+// A full-width band under the hosts, with chips side by side.
+#let owner-band(title, owner, size: 10pt, cols: none, ..items) = {
+  let s = owner-style(owner)
+  block(width: 100%, fill: s.fill, stroke: 1.3pt + s.stroke.paint, radius: 5pt, inset: 6pt, above: 8pt)[
+    #align(center, text(size: size * 1.1, weight: "bold", fill: s.text, title))
+    #if items.pos().len() > 0 {
+      v(-4pt)
+      grid(columns: (1fr,) * (if cols == none { items.pos().len() } else { cols }), column-gutter: 5pt,
+        ..items.pos().map(i => owner-chip(i, owner, size: size)))
+    }
+  ]
+}
+
+#let owner-legend(..owners) = {
+  let names = (
+    tim: "Ditulis dan dioperasikan tim",
+    ekosistem: [_Library_ atau server ekosistem _tech stack_],
+    platform: "Disediakan platform",
+    kode: "Kode service",
+  )
+  set text(size: 10pt, fill: slate)
+  for o in owners.pos() {
+    let s = owner-style(o)
+    box(width: 10pt, height: 10pt, fill: s.fill, stroke: s.stroke, radius: 2pt, baseline: 1pt)
+    h(4pt)
+    names.at(o)
+    h(14pt)
+  }
+}
