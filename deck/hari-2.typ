@@ -244,8 +244,8 @@ req, _ := http.NewRequestWithContext(
     ctx, http.MethodPost, url, body)
 resp, err := client.Do(req)
 if errors.Is(err, context.DeadlineExceeded) {
-    // jawaban tidak datang tepat waktu;
-    // status di account TIDAK diketahui
+    // account belum menjawab setelah 2 detik.
+    // Debit mungkin sudah dijalankan, mungkin belum.
 }
 ```
 #source(ilustrasi: true)
