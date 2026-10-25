@@ -165,7 +165,7 @@
     columns: (auto, 1.3fr, 1fr),
     [Pola], [Fungsi], [Pertanyaan yang Dijawab],
     [_Timeout_], [Memberi batas waktu tunggu eksplisit pada setiap panggilan keluar], [Berapa lama pemanggil bersedia menunggu?],
-    [_Retry_ + _backoff_], [Mengulang panggilan yang gagal karena gangguan sesaat, dengan jeda yang makin panjang dan jumlah percobaan terbatas], [Kapan mengulang aman, dan berapa kali?],
+    [_Retry_ + _backoff_], [Mengulang panggilan yang gagal karena gangguan sesaat, dengan jeda yang makin panjang dan jumlah percobaan terbatas], [Panggilan mana yang aman untuk diulang, dan berapa kali?],
     [_Circuit breaker_], [Menghentikan sementara panggilan ke service yang terbukti gagal, lalu mencoba kembali secara bertahap], [Kapan berhenti mencoba agar service tujuan sempat kembali aktif?],
   )
   #v(10pt)
