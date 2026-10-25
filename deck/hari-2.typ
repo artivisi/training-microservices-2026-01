@@ -648,7 +648,13 @@ func countsAsFailure(resp *http.Response, err error) bool {
     ],
   )
   #v(10pt)
-  #note[gRPC mendukung empat jenis panggilan: _unary_, _server streaming_, _client streaming_, dan _bidirectional streaming_. Studi kasus hanya menggunakan _unary_ (satu _request_, satu _response_), jenis yang paling sering digunakan antarservice.]
+  #note[
+    gRPC mendukung empat jenis panggilan. Studi kasus hanya menggunakan _unary_ (satu _request_, satu _response_), jenis yang paling sering digunakan antarservice.
+    - *_Server streaming_*: satu _request_, server mengirim banyak _response_ bertahap. Contoh: riwayat mutasi yang panjang.
+    - *_Client streaming_*: client mengirim banyak _request_, server menjawab sekali di akhir. Contoh: unggah transfer massal baris per baris.
+    - *_Bidirectional streaming_*: kedua sisi mengirim kapan saja. Contoh: _chat_ layanan nasabah.
+    Satu panggilan _streaming_ dapat berlangsung lama, sehingga _timeout_, _retry_, dan _load balancing_ perlu dirancang berbeda dari _unary_.
+  ]
 ]
 
 #code-slide(kicker: "Kontrak", title: [Cuplikan `account/v1/account.proto`],
