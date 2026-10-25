@@ -871,6 +871,8 @@ HTTP 400
     [XI], [_Logs_], [_Log_ ditulis ke `stdout` sebagai aliran _event_; format JSON sejak Lab 8], [Lab 1, 8],
     [XII], [_Admin processes_], [Skema database diterapkan saat _startup_ service, tanpa proses admin terpisah; tidak dibahas khusus], [—],
   )
+  #v(4pt)
+  #text(size: 10pt, fill: slate)[Referensi: Adam Wiggins, _The Twelve-Factor App_, Heroku, #link("https://12factor.net")[`12factor.net`] (sumbernya terbuka di #link("https://github.com/twelve-factor/twelve-factor")[`github.com/twelve-factor/twelve-factor`]). Kevin Hoffman, _Beyond the Twelve-Factor App_, O'Reilly, 2016, menambah tiga faktor: _API first_, _telemetry_, serta _authentication_ dan _authorization_.]
 ]
 
 #code-slide(kicker: "Anatomi service", title: [Konfigurasi dari _environment variable_],
