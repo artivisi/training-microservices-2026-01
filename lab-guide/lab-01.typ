@@ -190,9 +190,10 @@ test:
 
 #note[Baris perintah di dalam _target_ `Makefile` wajib diawali karakter _tab_, tidak boleh spasi. Bila `make` menampilkan `missing separator`, ganti spasi di awal baris tersebut dengan _tab_.]
 
-Opsi `--wait` membuat `docker compose up` menunggu hingga `healthcheck` berhasil sebelum perintah selesai. Jalankan infrastruktur lab:
+Opsi `--wait` membuat `docker compose up` menunggu hingga `healthcheck` berhasil sebelum perintah selesai. `make infra-down` menghentikan _container_ tetapi menyimpan _volume_ database, sehingga data dari percobaan sebelumnya, misalnya rekening yang sudah dibuat, tetap ada. Lab 1 dimulai dari database kosong: `make infra-reset` menghapus _volume_ tersebut, lalu `make infra-up` menjalankan infrastruktur lab dari awal.
 
 #perintah[```bash
+make infra-reset
 make infra-up
 docker compose ps
 ```]
