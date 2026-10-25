@@ -221,9 +221,11 @@
 )[
 ```go
 r := kafka.NewReader(kafka.ReaderConfig{
-    Brokers: cfg.KafkaBrokers,
-    Topic:   cfg.KafkaTopic,
-    GroupID: "notification",
+    Brokers:        brokers,
+    Topic:          topic,
+    GroupID:        groupID, // KAFKA_GROUP_ID
+    StartOffset:    kafka.FirstOffset,
+    CommitInterval: 0, // commit saat CommitMessages
 })
 
 for {
@@ -998,11 +1000,11 @@ grpc.WithChainUnaryInterceptor(
   ],
 )[
 ```go
-type ctxHandler struct{ slog.Handler }
+type contextHandler struct{ slog.Handler }
 
-func (h ctxHandler) Handle(ctx context.Context,
+func (h contextHandler) Handle(ctx context.Context,
     r slog.Record) error {
-    if id, ok := correlation.FromContext(ctx); ok {
+    if id := CorrelationID(ctx); id != "" {
         r.AddAttrs(slog.String("correlation_id", id))
     }
     sc := trace.SpanContextFromContext(ctx)
@@ -1014,12 +1016,12 @@ func (h ctxHandler) Handle(ctx context.Context,
     return h.Handler.Handle(ctx, r)
 }
 
-func (h ctxHandler) WithAttrs(a []slog.Attr) slog.Handler {
-    return ctxHandler{h.Handler.WithAttrs(a)}
+func (h contextHandler) WithAttrs(a []slog.Attr) slog.Handler {
+    return contextHandler{h.Handler.WithAttrs(a)}
 }
 
-func (h ctxHandler) WithGroup(n string) slog.Handler {
-    return ctxHandler{h.Handler.WithGroup(n)}
+func (h contextHandler) WithGroup(n string) slog.Handler {
+    return contextHandler{h.Handler.WithGroup(n)}
 }
 ```
 #source(("studi-kasus/transfer/internal/telemetry/log.go", "lab-08"))

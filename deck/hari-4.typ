@@ -561,15 +561,19 @@ containers:
   ],
 )[
 ```yaml
-securityContext:
-  runAsNonRoot: true
-  allowPrivilegeEscalation: false
-  readOnlyRootFilesystem: true
-  capabilities:
-    drop: ["ALL"]
-  seccompProfile:
-    type: RuntimeDefault
-# runAsUser sengaja tidak diisi
+spec:
+  securityContext:          # level pod
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+    # runAsUser sengaja tidak diisi
+  containers:
+  - name: transfer
+    securityContext:        # level container
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      capabilities:
+        drop: ["ALL"]
 ```
 #source(("studi-kasus/k8s/base/transfer/deployment.yaml", "lab-09"))
 ]
@@ -961,6 +965,7 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata: { name: transfer }
 spec:
+  ingressClassName: traefik
   rules:
   - http:
       paths:
@@ -969,7 +974,7 @@ spec:
         backend:
           service:
             name: transfer
-            port: { number: 8082 }
+            port: { name: http }
 ```
 #source(("studi-kasus/k8s/base/transfer/ingress.yaml", "lab-09"))
     ],
@@ -985,7 +990,7 @@ spec:
     kind: Service
     name: transfer
   port:
-    targetPort: 8082
+    targetPort: http
   tls:
     termination: edge
 ```

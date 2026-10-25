@@ -420,25 +420,28 @@ if errors.Is(err, context.DeadlineExceeded) {
   ],
 )[
 ```go
+// s = ProductionSettings: 5 dari 10, 10 s, 3 sukses,
+// 3 retry, backoff 100 ms..1 s, timeout 2 s
 breaker := circuitbreaker.NewBuilder[*http.Response]().
     HandleIf(countsAsFailure).
-    WithFailureThresholdRatio(5, 10).
-    WithDelay(10 * time.Second).
-    WithSuccessThreshold(3).
-    OnStateChanged(logStateChange).
+    WithFailureThresholdRatio(s.BreakerFailures, s.BreakerWindow).
+    WithDelay(s.BreakerDelay).
+    WithSuccessThreshold(s.BreakerSuccesses).
+    OnStateChanged(/* log perubahan state */).
     Build()
 
 retry := retrypolicy.NewBuilder[*http.Response]().
     HandleIf(notProcessed).
     AbortOnErrors(circuitbreaker.ErrOpen).
-    WithMaxRetries(3).
-    WithBackoff(100*time.Millisecond, time.Second).
+    WithMaxRetries(s.MaxRetries).
+    WithBackoff(s.BackoffMin, s.BackoffMax).
     WithJitterFactor(0.25).
+    ReturnLastFailure().
+    OnRetry(/* log, tutup body respons */).
     Build()
 
-rt := failsafehttp.NewRoundTripper(nil,
-    retry, breaker, timeout.New[*http.Response](2*time.Second))
-client := &http.Client{Transport: rt}
+rt := failsafehttp.NewRoundTripper(nil, retry, breaker,
+    timeout.New[*http.Response](s.AttemptTimeout))
 ```
 #source(("studi-kasus/transfer/internal/accountclient/client.go", "lab-03"))
 ]

@@ -1214,9 +1214,15 @@ func (s *Service) Execute(ctx context.Context,
     }
     if err := s.accounts.Credit(ctx, t.ToAccount,
         t.Amount, t.ID); err != nil {
+        s.log.Error("credit failed after debit, " +
+            "source account needs manual reversal", ...)
         return s.fail(ctx, t, "credit failed after debit", err)
     }
-    return s.store.Finish(ctx, t.ID, Completed, "")
+    done, err := s.store.Finish(ctx, t.ID, Completed, "")
+    if err != nil {
+        return t, fmt.Errorf("mark transfer completed: %w", err)
+    }
+    return done, nil
 }
 ```
 #source(("studi-kasus/transfer/internal/transfer/service.go", "lab-02"))
