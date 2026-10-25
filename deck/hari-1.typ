@@ -794,7 +794,7 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
   #grid(columns: (1fr, 1fr, 1fr), column-gutter: 12pt,
     card([Pindah antar-_router_], text(size: 11pt)[_Handler_ `ServeMux` dan chi sama-sama `http.Handler`, sehingga pindah ke chi tidak mengubah _handler_. Pindah ke gin, echo, atau Fiber berarti menulis ulang setiap _handler_.]),
     card([Catatan Fiber], accent: amber, text(size: 11pt)[Nilai dari `fiber.Ctx` digunakan ulang setelah _handler_ selesai, sehingga tidak boleh disimpan. README fasthttp sendiri menyarankan `net/http` untuk sebagian besar kasus.]),
-    card([Gunakan _framework_ bila], accent: gold.darken(15%), text(size: 11pt)[API dengan banyak grup _route_ dan _middleware_ per grup, _binding_ dan validasi deklaratif, atau tim yang sudah terbiasa dengan _framework_ tersebut.]),
+    card([Gunakan _framework_ bila], accent: gold.darken(15%), text(size: 11pt)[API memiliki banyak grup _route_ dengan _middleware_ berbeda per grup, membutuhkan _binding_ dan validasi deklaratif, atau tim sudah terbiasa dengan _framework_ tersebut.]),
   )
 ]
 
