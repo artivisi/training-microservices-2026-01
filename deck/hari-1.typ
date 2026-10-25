@@ -691,6 +691,7 @@ if err := h.store.Ping(ctx); err != nil {
     - Setiap tipe yang memiliki _method_ `ServeHTTP` dapat menangani _request_.
     - `http.HandlerFunc` mengubah fungsi biasa menjadi _handler_.
     - _Middleware_ berupa fungsi yang menerima _handler_ dan mengembalikan _handler_ baru. Pola ini digunakan kembali untuk _fault injection_ (Hari 2), JWT (Hari 3), dan metrik (Lab 8).
+    - Padanan di Spring adalah Servlet `Filter`, yang membungkus seluruh _request_. `HandlerInterceptor` Spring berbeda, karena baru berjalan setelah _controller_ dipilih. Padanan _middleware_ untuk gRPC disebut _interceptor_ (Hari 2).
   ],
 )[
 ```go
