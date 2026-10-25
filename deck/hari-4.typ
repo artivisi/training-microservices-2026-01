@@ -888,6 +888,7 @@ pipeline {
     - Syarat: `resources.requests` terisi dan _metrics-server_ berjalan (k3s menyediakannya)
     - Service harus _stateless_ agar _replica_ bisa ditambah kapan saja
     - _Scaling_ transfer tidak menolong bila yang lambat adalah database account
+    - Dicoba mandiri: `make hpa-apply`, `make hpa-watch`, `make hpa-load DURATION=180 CONCURRENCY=10` (panduan Lab 9)
   ],
 )[
 ```yaml
@@ -900,8 +901,8 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: transfer
-  minReplicas: 2
-  maxReplicas: 6
+  minReplicas: 1
+  maxReplicas: 4
   metrics:
   - type: Resource
     resource:
@@ -909,8 +910,11 @@ spec:
       target:
         type: Utilization
         averageUtilization: 70
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 60
 ```
-#source(ilustrasi: true)
+#source(("studi-kasus/k8s/hpa/transfer.yaml", "lab-09"))
 ]
 
 #slide(kicker: "Observability", title: [Penempatan _observability stack_])[

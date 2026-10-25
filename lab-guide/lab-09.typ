@@ -922,6 +922,68 @@ kubectl -n bank get deployment transfer -o jsonpath='{.spec.template.spec.contai
 
 _Image_ kembali ke `studi-kasus/transfer:1.0.0`, dengan pola penggantian _pod_ yang sama seperti _rolling update_. `rollout undo` dapat menampilkan peringatan tentang anotasi `last-applied-configuration`. Peringatan tersebut tidak berpengaruh pada _rollback_ dan dapat diabaikan.
 
+=== _Horizontal Pod Autoscaler_ (Opsional)
+
+Bagian ini tidak dikerjakan di kelas karena keterbatasan waktu, tetapi semua bahannya tersedia di repositori. _Horizontal Pod Autoscaler_ (HPA) menambah _replica_ ketika beban naik dan menguranginya ketika beban turun. _Manifest_-nya ada di `k8s/hpa/transfer.yaml`, terpisah dari _overlay_ k3d, sehingga Lab 9 dan Lab 10 tetap berjalan tanpa HPA.
+
+#perintah[```yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: transfer
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: transfer
+  minReplicas: 1
+  maxReplicas: 4
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 60
+```]
+
+HPA membandingkan pemakaian CPU setiap _pod_ dengan `resources.requests.cpu` di Deployment `transfer`, yaitu 50m. Target 70% berarti rata-rata 35m per _pod_. Bila rata-rata melewati angka tersebut, HPA menambah _pod_ hingga paling banyak 4. Data pemakaian CPU berasal dari _metrics-server_, yang sudah berjalan di k3s. Pada _cluster_ lain, _metrics-server_ perlu dipasang terlebih dahulu. `stabilizationWindowSeconds: 60` membuat HPA menunggu 60 detik dengan beban rendah sebelum mengurangi _pod_. Nilai bawaannya 300 detik, terlalu lama untuk diamati dalam latihan.
+
+Pasang HPA, lalu pastikan _metrics-server_ sudah memberikan data:
+
+#perintah[```bash
+make hpa-apply
+```]
+
+Di terminal kedua, pantau HPA:
+
+#perintah[```bash
+make hpa-watch
+```]
+
+Kolom `TARGETS` menampilkan `<unknown>/70%` sampai _metrics-server_ memiliki sampel pertama, sekitar satu menit. Di terminal ketiga, kirim transfer melalui Ingress dari 10 _loop_ paralel selama 180 detik:
+
+#perintah[```bash
+make hpa-load DURATION=180 CONCURRENCY=10
+```]
+
+Target `hpa-load` membuat dua rekening baru melalui `port-forward` ke `account`, mengambil _token_ dari Hydra, lalu mengirim transfer berulang kali. Di akhir, target tersebut menampilkan jumlah jawaban per kode HTTP. Selama beban berjalan, nilai di kolom `TARGETS` naik melewati 70% dan `REPLICAS` bertambah. Sekitar 60 detik setelah beban berhenti, `REPLICAS` kembali ke 1. Lihat alasan setiap perubahan dengan:
+
+#perintah[```bash
+kubectl -n bank describe hpa transfer
+```]
+
+Hapus HPA setelah selesai. Target ini juga mengembalikan `transfer` ke 1 _replica_:
+
+#perintah[```bash
+make hpa-delete
+```]
+
+Selama HPA terpasang, _field_ `replicas` di Deployment dikelola oleh HPA. `make k8s-apply` berikutnya mengisi kembali `replicas: 1` dari `base`, lalu HPA menaikkannya lagi pada pemeriksaan berikutnya. Karena itu, di _production_ _field_ `replicas` dihapus dari Deployment yang dikelola HPA.
+
 === Menghapus _Cluster_
 
 Setelah selesai, _cluster_ dapat dihapus. Infrastruktur di Docker Compose dan isi database tidak terpengaruh:
