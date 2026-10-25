@@ -385,6 +385,33 @@ if errors.Is(err, context.DeadlineExceeded) {
   #text(size: 12pt)[_Bulkhead_ diperiksa sekali per panggilan. _Retry_ kembali ke pemeriksaan _circuit breaker_, sehingga setiap percobaan mendapat _timeout_ sendiri dan hasilnya dicatat _circuit breaker_. Kondisi yang boleh di-_retry_ ada di tabel _Retry_ hanya aman bila operasinya _idempotent_.]
 ]
 
+#slide(kicker: "Pemulihan", title: [Dari OPEN kembali normal])[
+  #flow(
+    node("account mati", sub: "panggilan gagal", kind: "ext", width: 150pt, height: 56pt),
+    arr(label: "5 dari 10 gagal", length: 90pt),
+    node("OPEN", sub: "transfer menjawab 503 seketika", kind: "infra", width: 160pt, height: 56pt),
+    arr(label: "10 detik", length: 70pt),
+    node("HALF-OPEN", sub: "percobaan terbatas", kind: "infra", width: 150pt, height: 56pt),
+    arr(label: "3 sukses", length: 70pt),
+    node("CLOSED", sub: "panggilan normal", kind: "svc", width: 150pt, height: 56pt),
+  )
+  #text(size: 11.5pt, fill: slate)[Percobaan di HALF-OPEN baru berhasil bila account sudah kembali, misalnya setelah di-_restart_ atau _readiness probe_ kembali lolos. Bila belum, satu percobaan gagal mengembalikan _circuit breaker_ ke OPEN selama 10 detik berikutnya.]
+  #v(6pt)
+  #two-col(
+    card("Pulih otomatis", accent: gold.darken(15%))[
+      - _Circuit breaker_ kembali CLOSED setelah percobaan di HALF-OPEN berhasil
+      - Slot _bulkhead_ kosong kembali begitu panggilan selesai
+      - Event di Kafka tetap tersimpan selama service mati, lalu diproses _consumer_ setelah service kembali (Hari 3)
+    ],
+    card("Tidak pulih otomatis", accent: red)[
+      - _Request_ yang sudah dijawab 503 tidak dikirim ulang oleh transfer. Client mengirim ulang dengan _Idempotency-Key_ (Lab 6)
+      - Transfer yang berhenti setelah debit dan sebelum credit membutuhkan _compensation_ dalam saga (Lab 5)
+    ],
+  )
+  #v(6pt)
+  #note(kind: "warn")[_Circuit breaker_ di semua pemanggil dapat berpindah ke HALF-OPEN hampir bersamaan, sehingga service yang baru kembali langsung menerima lonjakan panggilan. Jumlah percobaan yang dibatasi di HALF-OPEN dan _jitter_ pada _backoff_ meredam lonjakan tersebut.]
+]
+
 #code-slide(kicker: "failsafe-go", title: [_Round tripper_ dengan tiga _policy_],
   side: [
     - `failsafehttp` membungkus `http.RoundTripper`, sehingga kode pemanggil tetap menggunakan `http.Client` biasa
