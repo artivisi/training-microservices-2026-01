@@ -43,7 +43,7 @@
 #slide(kicker: "Peta concern microservices", title: [_Concern_ yang dibahas di Hari 2])[
   #concern-map(highlight: (2, 3, 4))
   #v(6pt)
-  #note[Baris yang disorot menjadi fokus hari ini: gRPC untuk komunikasi internal, _resiliency_ di sisi kode, dan desain saga untuk konsistensi data. Setiap _concern_ ditangani di kode (library di dalam setiap service) atau oleh platform (Kubernetes dan infrastruktur). Semua yang dibangun di Hari 2 berada di kode.]
+  #note[Baris yang disorot menjadi fokus hari ini: gRPC untuk komunikasi internal, _resiliency_ di sisi kode, dan desain saga untuk konsistensi data. Semua yang dibangun di Hari 2 berada di kode.]
 ]
 
 #slide(kicker: "Titik awal", title: "Kondisi studi kasus di akhir Lab 2")[

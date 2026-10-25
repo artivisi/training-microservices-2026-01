@@ -44,7 +44,7 @@
 #slide(kicker: "Peta concern microservices", title: [_Concern_ yang dibahas di Hari 4])[
   #concern-map(highlight: (6, 7, 8, 9, 10))
   #v(8pt)
-  #note[Setiap _concern_ ditangani di kode, sebagai _library_ di dalam setiap service, atau oleh platform. Hari 1–3 banyak membahas sisi kode. Hari 4 membahas _concern_ yang sebagian besar ditangani platform: Kubernetes dan _pipeline_. _Observability_ hanya muncul di Lab 8, yang mempraktikkan konsep dan kode dari akhir Hari 3.]
+  #note[Hari 1–3 banyak membahas sisi kode. Hari 4 membahas _concern_ yang sebagian besar ditangani platform: Kubernetes dan _pipeline_. _Observability_ hanya muncul di Lab 8, yang mempraktikkan konsep dan kode dari akhir Hari 3.]
 ]
 
 #slide(kicker: "Studi kasus", title: "Posisi sistem di awal Hari 4")[
