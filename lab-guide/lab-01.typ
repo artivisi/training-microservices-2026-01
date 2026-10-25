@@ -941,7 +941,7 @@ curl -i -X POST http://localhost:28081/accounts \
   -H 'Content-Type: application/json' \
   -d '{"number":"1234567890","owner_name":"Budi Santoso","initial_balance":"500000"}'
 
-curl -s -X POST http://localhost:28081/accounts \
+curl -sS -X POST http://localhost:28081/accounts \
   -H 'Content-Type: application/json' \
   -d '{"number":"9876543210","owner_name":"Siti Aminah","initial_balance":"250000.50"}'
 ```]
@@ -957,8 +957,8 @@ Saldo `500000` disimpan di database sebagai `500000.00`. Angka nol di belakang k
 *3. Membaca rekening.*
 
 #perintah[```bash
-curl -s http://localhost:28081/accounts/1234567890
-curl -s http://localhost:28081/accounts
+curl -sS http://localhost:28081/accounts/1234567890
+curl -sS http://localhost:28081/accounts
 ```]
 
 Perintah pertama mengembalikan satu objek rekening. Perintah kedua mengembalikan _array_ berisi kedua rekening, diurutkan menurut nomor rekening. Sebelum ada rekening sama sekali, `GET /accounts` mengembalikan `[]`.
@@ -967,25 +967,25 @@ Perintah pertama mengembalikan satu objek rekening. Perintah kedua mengembalikan
 
 #perintah[```bash
 # nomor rekening yang sama: 409
-curl -s -w ' %{http_code}\n' -X POST http://localhost:28081/accounts \
+curl -sS -w ' %{http_code}\n' -X POST http://localhost:28081/accounts \
   -H 'Content-Type: application/json' \
   -d '{"number":"1234567890","owner_name":"Budi","initial_balance":"0"}'
 
 # validasi gagal: 400
-curl -s -w ' %{http_code}\n' -X POST http://localhost:28081/accounts \
+curl -sS -w ' %{http_code}\n' -X POST http://localhost:28081/accounts \
   -H 'Content-Type: application/json' \
   -d '{"number":"12","owner_name":" ","initial_balance":"-1"}'
 
 # field tidak dikenal: 400
-curl -s -w ' %{http_code}\n' -X POST http://localhost:28081/accounts \
+curl -sS -w ' %{http_code}\n' -X POST http://localhost:28081/accounts \
   -H 'Content-Type: application/json' \
   -d '{"nomor":"1234567890"}'
 
 # rekening tidak ada: 404
-curl -s -w ' %{http_code}\n' http://localhost:28081/accounts/0000000000
+curl -sS -w ' %{http_code}\n' http://localhost:28081/accounts/0000000000
 
 # method tidak terdaftar: 405
-curl -s -o /dev/null -w '%{http_code}\n' -X DELETE http://localhost:28081/accounts/1234567890
+curl -sS -o /dev/null -w '%{http_code}\n' -X DELETE http://localhost:28081/accounts/1234567890
 ```]
 
 _Output_ yang diharapkan, berurutan:
@@ -1008,8 +1008,8 @@ Kode status tampil di baris berikutnya karena `json.Encoder` menambahkan karakte
 
 #perintah[```bash
 docker compose stop db-account
-curl -s -w ' %{http_code}\n' http://localhost:28081/readyz
-curl -s -w ' %{http_code}\n' http://localhost:28081/healthz
+curl -sS -w ' %{http_code}\n' http://localhost:28081/readyz
+curl -sS -w ' %{http_code}\n' http://localhost:28081/healthz
 docker compose start db-account
 ```]
 

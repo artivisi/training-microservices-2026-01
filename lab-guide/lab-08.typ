@@ -1263,7 +1263,7 @@ Kirim satu transfer dengan _correlation ID_ buatan sendiri:
 
 #perintah[```bash
 TOKEN=$(make -s token)
-curl -s -i -X POST localhost:28082/transfers \
+curl -sS -i -X POST localhost:28082/transfers \
   -H "Authorization: Bearer $TOKEN" -H "X-Correlation-ID: lab8-1" \
   -d '{"from_account":"1111111111","to_account":"2222222222","amount":"1000"}'
 ```]
@@ -1327,7 +1327,7 @@ Di terminal keempat, jalankan beban transfer terus-menerus:
 #perintah[```bash
 TOKEN=$(make -s token)
 while true; do
-  curl -s -o /dev/null -w "%{http_code}\n" -X POST localhost:28082/transfers \
+  curl -sS -o /dev/null -w "%{http_code}\n" -X POST localhost:28082/transfers \
     -H "Authorization: Bearer $TOKEN" \
     -d '{"from_account":"1111111111","to_account":"2222222222","amount":"1000"}'
   sleep 0.5

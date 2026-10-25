@@ -954,7 +954,7 @@ Pengulangan juga mempertahankan kode HTTP untuk transfer yang gagal. Kirim trans
 
 #perintah[```bash
 for i in 1 2; do
-  curl -s -o /dev/null -w '%{http_code}\n' -X POST localhost:28082/transfers \
+  curl -sS -o /dev/null -w '%{http_code}\n' -X POST localhost:28082/transfers \
     -H 'Idempotency-Key: gagal-001' \
     -d '{"from_account":"1111111111","to_account":"9999999999","amount":"100000"}'
 done
@@ -970,7 +970,7 @@ Pengujian terakhir mensimulasikan aplikasi yang mengirim ulang _request_ berkali
 curl localhost:28081/accounts/1111111111
 KEY=$(uuidgen)
 for i in 1 2 3 4 5 6; do
-  curl -s -o /dev/null -w '%{http_code}\n' -X POST localhost:28082/transfers \
+  curl -sS -o /dev/null -w '%{http_code}\n' -X POST localhost:28082/transfers \
     -H "Idempotency-Key: $KEY" \
     -d '{"from_account":"1111111111","to_account":"2222222222","amount":"100000"}' &
 done; wait

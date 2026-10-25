@@ -845,12 +845,12 @@ Siapkan dua rekening. Bila rekening tersebut sudah dibuat di Lab 2, `account` me
 
 #perintah[
 ```bash
-curl -s -X POST localhost:28081/accounts -H 'Content-Type: application/json' \
+curl -sS -X POST localhost:28081/accounts -H 'Content-Type: application/json' \
   -d '{"number":"1111111111","owner_name":"Nasabah Satu","initial_balance":"1000000"}'
-curl -s -X POST localhost:28081/accounts -H 'Content-Type: application/json' \
+curl -sS -X POST localhost:28081/accounts -H 'Content-Type: application/json' \
   -d '{"number":"2222222222","owner_name":"Nasabah Dua","initial_balance":"0"}'
 
-curl -s -w '\nHTTP %{http_code}\n' -X POST localhost:28082/transfers \
+curl -sS -w '\nHTTP %{http_code}\n' -X POST localhost:28082/transfers \
   -H 'Content-Type: application/json' \
   -d '{"from_account":"1111111111","to_account":"2222222222","amount":"10000"}'
 make breaker
@@ -870,10 +870,10 @@ Aktifkan jeda 3 detik, lebih lama dari _timeout_ 2 detik. Catat saldo rekening s
 #perintah[
 ```bash
 make fault-slow
-curl -s localhost:28081/accounts/1111111111
+curl -sS localhost:28081/accounts/1111111111
 
 for i in 1 2 3 4 5 6; do
-  curl -s -o /dev/null -w '%{http_code} %{time_total}s\n' -X POST localhost:28082/transfers \
+  curl -sS -o /dev/null -w '%{http_code} %{time_total}s\n' -X POST localhost:28082/transfers \
     -H 'Content-Type: application/json' \
     -d '{"from_account":"1111111111","to_account":"2222222222","amount":"10000"}'
 done
@@ -907,7 +907,7 @@ level=WARN msg="circuit breaker state changed" target=account from=closed to=ope
 level=WARN msg="transfer failed" transfer_id=... reason="debit failed: debit 1111111111: account service unavailable"
 ```
 
-Periksa lagi saldo rekening sumber dengan `curl -s localhost:28081/accounts/1111111111`. Saldo tidak berubah dibandingkan sebelum `make fault-slow`. Ingat penjelasan di Langkah 6: saldo tetap utuh hanya karena _fault injector_ berhenti saat `transfer` membatalkan _request_. Database yang lambat di sistem sungguhan dapat saja sudah melakukan _commit_ atas _debit_ tersebut, dan itulah alasan _timeout_ tidak di-_retry_.
+Periksa lagi saldo rekening sumber dengan `curl -sS localhost:28081/accounts/1111111111`. Saldo tidak berubah dibandingkan sebelum `make fault-slow`. Ingat penjelasan di Langkah 6: saldo tetap utuh hanya karena _fault injector_ berhenti saat `transfer` membatalkan _request_. Database yang lambat di sistem sungguhan dapat saja sudah melakukan _commit_ atas _debit_ tersebut, dan itulah alasan _timeout_ tidak di-_retry_.
 
 === Perpindahan _Half-Open_ ke _Closed_
 
@@ -927,12 +927,12 @@ Kirim dua transfer dan periksa status setelah masing-masing transfer.
 
 #perintah[
 ```bash
-curl -s -o /dev/null -w '%{http_code}\n' -X POST localhost:28082/transfers \
+curl -sS -o /dev/null -w '%{http_code}\n' -X POST localhost:28082/transfers \
   -H 'Content-Type: application/json' \
   -d '{"from_account":"1111111111","to_account":"2222222222","amount":"10000"}'
 make breaker
 
-curl -s -o /dev/null -w '%{http_code}\n' -X POST localhost:28082/transfers \
+curl -sS -o /dev/null -w '%{http_code}\n' -X POST localhost:28082/transfers \
   -H 'Content-Type: application/json' \
   -d '{"from_account":"1111111111","to_account":"2222222222","amount":"10000"}'
 make breaker
@@ -963,7 +963,7 @@ Aktifkan jawaban 503 untuk 20% _request_, lalu kirim sepuluh transfer.
 ```bash
 make fault-error RATE=0.2
 for i in $(seq 1 10); do
-  curl -s -o /dev/null -w '%{http_code}\n' -X POST localhost:28082/transfers \
+  curl -sS -o /dev/null -w '%{http_code}\n' -X POST localhost:28082/transfers \
     -H 'Content-Type: application/json' \
     -d '{"from_account":"1111111111","to_account":"2222222222","amount":"10000"}'
 done
@@ -990,11 +990,11 @@ Pastikan _fault_ sudah dimatikan (`make fault-clear`) dan sudah lewat lebih dari
 
 #perintah[
 ```bash
-curl -s localhost:28081/accounts/1111111111
-curl -s -w '\nHTTP %{http_code}\n' -X POST localhost:28082/transfers \
+curl -sS localhost:28081/accounts/1111111111
+curl -sS -w '\nHTTP %{http_code}\n' -X POST localhost:28082/transfers \
   -H 'Content-Type: application/json' \
   -d '{"from_account":"1111111111","to_account":"9999999999","amount":"10000"}'
-curl -s localhost:28081/accounts/1111111111
+curl -sS localhost:28081/accounts/1111111111
 ```
 ]
 

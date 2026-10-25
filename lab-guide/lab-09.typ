@@ -804,7 +804,7 @@ kubectl -n bank port-forward svc/account 28081:8081
 Rekening dari lab sebelumnya tetap ada, karena `account` di k3d menggunakan database `db-account` yang sama. Periksa saldonya, lalu kirim transfer melalui Ingress di port 28080:
 
 #perintah[```bash
-curl -s localhost:28081/accounts/1111111111
+curl -sS localhost:28081/accounts/1111111111
 TOKEN=$(make -s token)
 curl -i -X POST localhost:28080/transfers -H "Authorization: Bearer $TOKEN" \
   -d '{"from_account":"1111111111","to_account":"2222222222","amount":"100000"}'
@@ -1018,7 +1018,7 @@ Jalankan pemeriksaan berikut dari direktori `studi-kasus/` dengan _cluster_ `ban
 + Transfer melalui Ingress menghasilkan `201 Created` dan `"status":"COMPLETED"`, sedangkan _request_ tanpa _header_ `Authorization` mendapat respons `401 Unauthorized`:
   #perintah[```bash
   TOKEN=$(make -s token)
-  curl -s -X POST localhost:28080/transfers -H "Authorization: Bearer $TOKEN" \
+  curl -sS -X POST localhost:28080/transfers -H "Authorization: Bearer $TOKEN" \
     -d '{"from_account":"1111111111","to_account":"2222222222","amount":"1000"}'
   curl -i -X POST localhost:28080/transfers \
     -d '{"from_account":"1111111111","to_account":"2222222222","amount":"1000"}'
@@ -1026,7 +1026,7 @@ Jalankan pemeriksaan berikut dari direktori `studi-kasus/` dengan _cluster_ `ban
 + Notifikasi tercatat untuk transfer tersebut. Teruskan port `notification` di terminal lain, lalu ganti `<id>` dengan nilai `id` dari respons transfer:
   #perintah[```bash
   kubectl -n bank port-forward svc/notification 28083:8083
-  curl -s 'localhost:28083/notifications?transfer_id=<id>'
+  curl -sS 'localhost:28083/notifications?transfer_id=<id>'
   ```]
   Hasilnya _array_ JSON berisi satu notifikasi dengan `"event_type":"TransferCompleted"`.
 + _Trace_ transfer dari _pod_ tetap masuk ke Grafana (`http://localhost:13000`, Tempo), dengan _span_ dari `transfer`, `account`, dan `notification` dalam satu _trace_.

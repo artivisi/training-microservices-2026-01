@@ -1245,16 +1245,16 @@ make -C transfer run
 Terminal 2 menampilkan baris `msg="transfer service listening" addr=:28082 account_service=http://localhost:28081`. Buka terminal ketiga untuk perintah-perintah berikutnya, lalu buat dua rekening uji. Jika nomor rekening ini sudah dibuat pada Lab 1, account service menjawab `409` dan rekening yang lama dapat langsung digunakan. Dalam kasus tersebut, sesuaikan angka saldo pada langkah berikutnya.
 
 #perintah[```bash
-curl -s -X POST localhost:28081/accounts -H 'Content-Type: application/json' \
+curl -sS -X POST localhost:28081/accounts -H 'Content-Type: application/json' \
   -d '{"number":"1111111111","owner_name":"Budi","initial_balance":"500000"}'
-curl -s -X POST localhost:28081/accounts -H 'Content-Type: application/json' \
+curl -sS -X POST localhost:28081/accounts -H 'Content-Type: application/json' \
   -d '{"number":"2222222222","owner_name":"Sari","initial_balance":"100000"}'
 ```]
 
 === Transfer berhasil
 
 #perintah[```bash
-curl -s -i -X POST localhost:28082/transfers -H 'Content-Type: application/json' \
+curl -sS -i -X POST localhost:28082/transfers -H 'Content-Type: application/json' \
   -d '{"from_account":"1111111111","to_account":"2222222222","amount":"100000"}'
 ```]
 
@@ -1267,8 +1267,8 @@ Respons berstatus `201 Created` dengan _header_ `Location: /transfers/<id>` dan 
 Terminal account service menampilkan dua baris `msg="account mutated"`, satu dengan `type=DEBIT` untuk `1111111111` dan satu dengan `type=CREDIT` untuk `2222222222`. Keduanya membawa `reference` yang sama dengan `id` transfer. Periksa saldo kedua rekening:
 
 #perintah[```bash
-curl -s localhost:28081/accounts/1111111111
-curl -s localhost:28081/accounts/2222222222
+curl -sS localhost:28081/accounts/1111111111
+curl -sS localhost:28081/accounts/2222222222
 ```]
 
 Saldo `1111111111` menjadi `"400000"` dan saldo `2222222222` menjadi `"200000"`. Catatan mutasi dapat dilihat langsung di database account:
@@ -1281,7 +1281,7 @@ docker compose exec db-account psql -U account -d account \
 === Saldo tidak mencukupi
 
 #perintah[```bash
-curl -s -i -X POST localhost:28082/transfers -H 'Content-Type: application/json' \
+curl -sS -i -X POST localhost:28082/transfers -H 'Content-Type: application/json' \
   -d '{"from_account":"2222222222","to_account":"1111111111","amount":"999999"}'
 ```]
 
@@ -1290,9 +1290,9 @@ Respons berstatus `422 Unprocessable Entity`, dengan `"status":"FAILED"` dan `"f
 === Validasi dan transfer yang tidak ada
 
 #perintah[```bash
-curl -s -X POST localhost:28082/transfers -H 'Content-Type: application/json' \
+curl -sS -X POST localhost:28082/transfers -H 'Content-Type: application/json' \
   -d '{"from_account":"1111111111","to_account":"1111111111","amount":"0"}'
-curl -s -i localhost:28082/transfers/bukan-uuid
+curl -sS -i localhost:28082/transfers/bukan-uuid
 ```]
 
 Perintah pertama menghasilkan `400` dengan `"fields":{"amount":"must be greater than zero","to_account":"must differ from from_account"}`. Perintah kedua menghasilkan `404` dengan `{"error":"transfer not found"}`.
@@ -1302,9 +1302,9 @@ Perintah pertama menghasilkan `400` dengan `"fields":{"amount":"must be greater 
 Skenario ini memperlihatkan _known gap_ secara langsung. Rekening tujuan `9999999999` tidak ada, sehingga debit berhasil tetapi kredit ditolak.
 
 #perintah[```bash
-curl -s -i -X POST localhost:28082/transfers -H 'Content-Type: application/json' \
+curl -sS -i -X POST localhost:28082/transfers -H 'Content-Type: application/json' \
   -d '{"from_account":"1111111111","to_account":"9999999999","amount":"50000"}'
-curl -s localhost:28081/accounts/1111111111
+curl -sS localhost:28081/accounts/1111111111
 ```]
 
 Respons transfer berstatus `422` dengan `"status":"FAILED"` dan `"failure_reason":"credit failed after debit: credit 9999999999: account not found"`. Terminal transfer service menampilkan _log_ `level=ERROR msg="credit failed after debit, source account needs manual reversal"`. Namun saldo `1111111111` turun dari `"400000"` menjadi `"350000"`: uang Rp50.000 sudah keluar dan tidak masuk ke mana pun. Tabel `mutation` mencatat satu `DEBIT` dengan `reference` transfer tersebut, tanpa pasangan `CREDIT`.
@@ -1318,9 +1318,9 @@ Respons transfer berstatus `422` dengan `"status":"FAILED"` dan `"failure_reason
 Hentikan account service di terminal 1 dengan `Ctrl+C`, lalu kirim transfer:
 
 #perintah[```bash
-curl -s -i -X POST localhost:28082/transfers -H 'Content-Type: application/json' \
+curl -sS -i -X POST localhost:28082/transfers -H 'Content-Type: application/json' \
   -d '{"from_account":"1111111111","to_account":"2222222222","amount":"10000"}'
-curl -s localhost:28082/readyz
+curl -sS localhost:28082/readyz
 ```]
 
 Transfer menghasilkan `502 Bad Gateway` dengan `"status":"FAILED"` dan `failure_reason` yang berisi `debit failed: debit 1111111111: Post "http://localhost:28081/accounts/1111111111/debit": dial tcp ...: connect: connection refused`. Sementara itu `readyz` tetap menjawab `{"database":"UP","status":"UP"}`, karena _readiness_ transfer service hanya bergantung pada database miliknya sendiri. Jalankan kembali account service sebelum lanjut ke lab berikutnya.
