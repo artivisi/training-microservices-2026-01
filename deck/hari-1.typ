@@ -780,7 +780,7 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
       columns: (1fr, 0.95fr, 0.85fr, 1fr, 1.05fr, 1fr),
       inset: (x: 5pt, y: 4pt),
       [Aspek], [`http.ServeMux`], [chi], [gin], [echo], [Fiber],
-      [Mesin HTTP], [`net/http`], [`net/http`], [`net/http`], [`net/http`], [fasthttp],
+      [_HTTP engine_], [`net/http`], [`net/http`], [`net/http`], [`net/http`], [fasthttp],
       [Bentuk _handler_], [`http.Handler`], [`http.Handler`], [`func(*gin.Context)`], [`func(*echo.Context) error`], [`func(fiber.Ctx) error`],
       [_Middleware_ `net/http`], [Langsung digunakan], [Langsung digunakan], [Lewat pembungkus], [Lewat pembungkus], [Lewat _adaptor_, dengan _overhead_],
       [Grup _route_ dengan _middleware_ per grup], [Tidak ada, dirangkai sendiri], [Ada], [Ada], [Ada], [Ada],
