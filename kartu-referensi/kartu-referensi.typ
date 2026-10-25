@@ -45,7 +45,7 @@ Setiap sistem microservices harus menjawab sepuluh _concern_ berikut. Setiap _co
     inset: 4pt,
     table.header([], [_Concern_], [Pertanyaan yang Dijawab], [Pola dan Teknik di Studi Kasus], [Di Kode (_Library_)], [Di Platform atau Infrastruktur], [Lab]),
     [1], [_Decomposition_ dan kepemilikan data], [_Service boundary_ dan pemilik data], [Service per domain bisnis, _database per service_, data milik service lain diambil melalui API atau _event_], [—], [_Database per service_], [1, 2],
-    [2], [Komunikasi sinkron dan asinkron], [REST, gRPC, _messaging_], [REST untuk _channel_, gRPC untuk panggilan internal, Kafka untuk _event_], [`net/http`, grpc-go, kafka-go], [Kafka], [2, 4, 5],
+    [2], [Komunikasi _synchronous_ dan _asynchronous_], [REST, gRPC, _messaging_], [REST untuk _channel_, gRPC untuk panggilan internal, Kafka untuk _event_], [`net/http`, grpc-go, kafka-go], [Kafka], [2, 4, 5],
     [3], [_Resiliency_], [Tetap berfungsi saat dependensi lambat atau mati], [_Timeout_, _retry_ dengan _backoff_, _circuit breaker_], [failsafe-go], [_Probe_, _restart_, _rolling update_], [3, 4, 9],
     [4], [Konsistensi data], [Perubahan data lintas database], [_Saga_ dengan kompensasi, _transactional outbox_, _idempotency key_, _idempotent consumer_], [Kode service (pgx, kafka-go)], [—], [5, 6],
     [5], [_Security_], [Identitas pengguna (SSO) dan service, serta hak akses], [OAuth2 _client credentials_, validasi JWT], [JWT _middleware_ (REST) dan _interceptor_ (gRPC)], [_Authorization server_ atau IdP (Hydra di lab, Keycloak), API _gateway_], [7],
@@ -73,7 +73,7 @@ Setiap pola menambah komponen yang harus dioperasikan. Pola yang tidak menjawab 
   [_Join_ lintas _database_ tidak tersedia, sehingga data diambil melalui API atau _event_. Data antarservice hanya mencapai _eventual consistency_. Jumlah _deployment_ dan _database_ yang dioperasikan bertambah],
   [1, 2],
 
-  [*REST sinkron*],
+  [*REST _synchronous_*],
   [Pemanggil membutuhkan jawaban saat itu juga, misalnya data rekening sebelum transfer diproses],
   [API untuk kanal (_mobile_, web, mitra). Klien beragam dan interoperabilitas lebih penting dibandingkan efisiensi],
   [Panggilan internal yang sering dengan kontrak ketat (gunakan gRPC). Pemanggil tidak menunggu hasil (gunakan _messaging_)],
@@ -87,7 +87,7 @@ Setiap pola menambah komponen yang harus dioperasikan. Pola yang tidak menjawab 
   [Kode hasil _generate_ harus dikelola. Perubahan kontrak wajib _backward compatible_, nomor _field_ tidak boleh digunakan ulang. _Debugging_ dengan grpcurl membutuhkan file `.proto` atau _reflection_ yang aktif di server. HTTP/2 menggunakan _persistent connection_, sehingga _Service_ Kubernetes (L4) mengarahkan semua panggilan ke satu _pod_. Penyebaran panggilan ke semua _pod_ membutuhkan _load balancing_ di sisi klien atau _proxy_ L7],
   [4],
 
-  [*_Messaging_ asinkron* (Kafka)],
+  [*_Asynchronous messaging_* (Kafka)],
   [Pengirim bergantung pada ketersediaan semua penerima. Satu _event_ bisnis perlu diproses beberapa service],
   [Penerima tidak perlu menjawab saat itu juga (notifikasi, audit, analitik). Beberapa _consumer_ memproses _event_ yang sama. Lonjakan beban perlu diredam],
   [Pemanggil membutuhkan hasil untuk melanjutkan proses. Volume rendah dengan satu penerima saja],
@@ -114,7 +114,7 @@ Setiap pola menambah komponen yang harus dioperasikan. Pola yang tidak menjawab 
 
   [*Circuit breaker*],
   [Pemanggil terus mengirim _request_ ke service yang sedang gagal. _Request_ yang tertahan menumpuk dan kegagalan merambat ke pemanggil],
-  [Ketergantungan sinkron ke service lain yang dapat gagal dalam waktu lama. _Fail fast_ dengan status jelas lebih baik dibandingkan menunggu. HTTP 503 hanya digunakan bila belum ada perubahan yang diterapkan, sehingga pemanggil aman mengulang],
+  [Ketergantungan _synchronous_ ke service lain yang dapat gagal dalam waktu lama. _Fail fast_ dengan status jelas lebih baik dibandingkan menunggu. HTTP 503 hanya digunakan bila belum ada perubahan yang diterapkan, sehingga pemanggil aman mengulang],
   [_Database_ milik service sendiri (timeout dan _connection pool_ sudah cukup). Volume panggilan terlalu rendah sehingga ambang kegagalan tidak bermakna. Langkah kompensasi saga, karena _breaker_ yang baru berpindah ke _open_ justru menolak _reversal_. Untuk _reversal_, gunakan retry berbatas waktu tanpa _breaker_ (Lab 5)],
   [Ambang dan _delay_ perlu disetel berdasarkan data. Setiap _pod_ memiliki _breaker_ sendiri dengan state berbeda. Perubahan state wajib tercatat di log dan metrik],
   [3, 4, 8],
@@ -267,10 +267,10 @@ Sistem yang sudah dipecah menjadi beberapa service tetapi masih harus diubah, di
     [#cek], [Fitur baru hampir selalu mengubah beberapa service sekaligus], [_Service boundary_ mengikuti _layer_ teknis (API, logika, data) dan tidak mengikuti domain bisnis], [Tetapkan ulang _service boundary_ menurut domain. Gabungkan service yang selalu berubah bersamaan],
     [#cek], [Service harus dirilis bersamaan dengan urutan tertentu], [Kontrak API berubah tanpa _backward compatibility_], [Perubahan kontrak bersifat aditif. Versi kontrak lama tetap dilayani selama masa transisi],
     [#cek], [Beberapa service membaca atau menulis tabel yang sama], [_Database_ bersama dipertahankan setelah pemecahan service], [_Database per service_. Data milik service lain diambil melalui API atau _event_],
-    [#cek], [Satu service mati menghentikan hampir semua alur], [Rantai panggilan sinkron panjang tanpa timeout dan _circuit breaker_], [Timeout dan _breaker_ di setiap panggilan. Langkah yang tidak perlu ditunggu dipindahkan ke _messaging_],
+    [#cek], [Satu service mati menghentikan hampir semua alur], [Rantai panggilan _synchronous_ panjang tanpa timeout dan _circuit breaker_], [Timeout dan _breaker_ di setiap panggilan. Langkah yang tidak perlu ditunggu dipindahkan ke _messaging_],
     [#cek], [Satu _request_ dari kanal memicu panggilan bolak-balik antarservice (A → B → A)], [Data dan logika yang saling membutuhkan ditempatkan di service berbeda], [Gabungkan logika tersebut ke satu service, atau salin data yang dibutuhkan melalui _event_],
     [#cek], [_Library_ bersama memuat model domain dan logika bisnis], [Kode bersama digunakan untuk menghindari duplikasi lintas service], [_Library_ bersama hanya berisi kode teknis (log, _tracing_, kontrak protobuf). Logika bisnis tetap di service pemiliknya],
-    [#cek], [Satu service tidak dapat diuji tanpa menjalankan semua service lain], [Ketergantungan sinkron yang tidak diisolasi di kode], [Klien service lain dibungkus _interface_ agar dapat diganti saat pengujian dengan `httptest` atau `bufconn`],
+    [#cek], [Satu service tidak dapat diuji tanpa menjalankan semua service lain], [Ketergantungan _synchronous_ yang tidak diisolasi di kode], [Klien service lain dibungkus _interface_ agar dapat diganti saat pengujian dengan `httptest` atau `bufconn`],
     [#cek], [Seluruh service berbagi satu _pipeline_ dan satu nomor versi], [Repositori dan proses rilis tetap dikelola sebagai satu aplikasi], [_Pipeline_ per service dengan filter _path_. _Tag image_ per service],
   )
 }

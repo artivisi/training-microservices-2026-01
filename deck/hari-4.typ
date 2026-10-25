@@ -1040,7 +1040,7 @@ spec:
       [H2], [_Resiliency_], [failsafe-go], [Dependensi tambahan dengan API _generic_. _Policy_ ada di kode setiap service, perubahan parameter butuh _build_ dan rilis ulang],
       [H2], [Panggilan internal], [gRPC + protobuf], [Tidak bisa dicoba langsung dengan curl, _load balancing_ per koneksi, kontrak harus kompatibel],
       [H2], [API _channel_], [REST], [Dua gaya API dipelihara berdampingan],
-      [H3], [Notifikasi], [_Messaging_ asinkron], [_Eventual consistency_, duplikat dan urutan harus ditangani],
+      [H3], [Notifikasi], [_Asynchronous messaging_], [_Eventual consistency_, duplikat dan urutan harus ditangani],
       [H3], [_Broker_], [Kafka], [Jumlah _consumer_ aktif per _group_ dibatasi jumlah _partition_, _routing_ lebih terbatas dibanding RabbitMQ],
       [H3], [Otorisasi antar-service], [OAuth2 _client credentials_, Hydra], [Token bergantung pada Hydra. Ganti IdP: ubah `OAUTH_*` URL dan sesuaikan _claim_ _scope_],
       [H3], [_Observability_ lab], [`otel-lgtm`], [Tidak untuk _production_. Komponen dipisah saat naik ke _production_],

@@ -17,7 +17,7 @@
     columns: (auto, 1fr, auto),
     [Waktu], [Topik], [Format],
     [08:00 – 08:15], [Rekap Hari 2 dan penyamaan posisi dari _checkpoint_ `lab-04` bagi peserta yang tertinggal], [Diskusi],
-    [08:15 – 09:15], [Peta _concern_ Hari 3, komunikasi asinkron dengan Kafka, _at-least-once delivery_, _transactional outbox_], [Presentasi + demo],
+    [08:15 – 09:15], [Peta _concern_ Hari 3, komunikasi _asynchronous_ dengan Kafka, _at-least-once delivery_, _transactional outbox_], [Presentasi + demo],
     [09:15 – 11:15], [*Lab 5*: transfer sebagai saga, event ke Kafka melalui outbox, notification sebagai _consumer_], [_Hands-on_],
     [11:30 – 12:00], [_Idempotency_: _idempotent consumer_ dan _Idempotency-Key_], [Presentasi],
     [12:00 – 13:00], [Istirahat makan siang], [—],
@@ -66,17 +66,17 @@
 
 // ── 01 Kafka ───────────────────────────────────────────────────────────────
 
-#section-slide(number: "01", title: "Komunikasi asinkron dengan Kafka", subtitle: [_Topic_, _partition_, _consumer group_, dan jaminan pengiriman])
+#section-slide(number: "01", title: [Komunikasi _asynchronous_ dengan Kafka], subtitle: [_Topic_, _partition_, _consumer group_, dan jaminan pengiriman])
 
-#slide(kicker: "Konsep", title: "Panggilan sinkron dan asinkron")[
+#slide(kicker: "Konsep", title: [Panggilan _synchronous_ dan _asynchronous_])[
   #two-col(
-    card("Sinkron (REST, gRPC)")[
+    card([_Synchronous_ (REST, gRPC)])[
       - Pemanggil menunggu jawaban
       - Penerima harus aktif saat dipanggil
       - Cocok untuk langkah yang hasilnya langsung dibutuhkan, misalnya debit
       - Kegagalan langsung terlihat oleh pemanggil
     ],
-    card([Asinkron (event melalui _broker_)], accent: amber)[
+    card([_Asynchronous_ (event melalui _broker_)], accent: amber)[
       - Pengirim menulis event lalu melanjutkan proses
       - Penerima boleh mati sementara, event tetap tersimpan di _broker_
       - Cocok untuk reaksi atas fakta yang sudah terjadi, misalnya notifikasi
@@ -84,7 +84,7 @@
     ],
   )
   #v(10pt)
-  #note[Debit dan credit tetap sinkron karena hasilnya menentukan status transfer. Alasan notifikasi dikirim secara asinkron ada di _slide_ berikutnya.]
+  #note[Debit dan credit tetap _synchronous_ karena hasilnya menentukan status transfer. Alasan notifikasi dikirim secara _asynchronous_ ada di _slide_ berikutnya.]
 ]
 
 #decision(title: [_Messaging_ untuk notifikasi transfer],
@@ -94,7 +94,7 @@
     - Service lain, misalnya pencatatan audit, dapat ikut bereaksi atas transfer tanpa mengubah transfer
   ],
   [
-    - Transfer memanggil notification secara sinkron (REST atau gRPC) setelah saga selesai
+    - Transfer memanggil notification secara _synchronous_ (REST atau gRPC) setelah saga selesai
     - Transfer menulis event ke _message broker_, lalu notification membacanya sebagai _consumer_
   ],
   [

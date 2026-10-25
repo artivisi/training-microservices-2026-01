@@ -27,7 +27,7 @@
     columns: (auto, 1fr, auto),
     [Waktu], [Sesi], [Format],
     [08:00 – 08:30], [Rekap Hari 1 dan penyamaan posisi dari _checkpoint_ `lab-02` bagi peserta yang tertinggal], [Diskusi],
-    [08:30 – 09:45], [Peta _concern_ Hari 2. Kegagalan komunikasi sinkron: _timeout_, _retry_ dengan _backoff_, _circuit breaker_, _bulkhead_, dan alasan memilih failsafe-go], [Presentasi],
+    [08:30 – 09:45], [Peta _concern_ Hari 2. Kegagalan komunikasi _synchronous_: _timeout_, _retry_ dengan _backoff_, _circuit breaker_, _bulkhead_, dan alasan memilih failsafe-go], [Presentasi],
     [09:45 – 10:45], [*Lab 3*: failsafe-go pada panggilan transfer ke account, simulasi service lambat dan mati], [_Hands-on_],
     [11:00 – 12:00], [gRPC untuk komunikasi internal (1): perbandingan REST dan gRPC, kontrak protobuf, _code generation_], [Presentasi + demo],
     [12:00 – 13:00], [Istirahat makan siang], [—],
@@ -76,7 +76,7 @@
 ]
 
 // ════════════════════════════════════════════════════════════════════════════
-#section-slide(number: "01", title: "Kegagalan Komunikasi Sinkron",
+#section-slide(number: "01", title: [Kegagalan Komunikasi _Synchronous_],
   subtitle: [_Timeout_, _retry_ dengan _backoff_, dan _circuit breaker_])
 
 #slide(kicker: "Konsep", title: "Panggilan antarservice bisa gagal kapan saja")[
@@ -160,7 +160,7 @@
   )
 ]
 
-#slide(kicker: "Konsep", title: "Empat pola proteksi panggilan sinkron")[
+#slide(kicker: "Konsep", title: [Empat pola proteksi panggilan _synchronous_])[
   #table(
     columns: (auto, 1.3fr, 1fr),
     [Pola], [Fungsi], [Pertanyaan yang Dijawab],
@@ -1182,7 +1182,7 @@ reversalRetry := retrypolicy.NewBuilder[any]().
     [Pola], [Masalah yang Diatasi], [Layak Digunakan Ketika],
     [_Timeout_], [Pemanggil menunggu tanpa batas], [Selalu, pada setiap panggilan jaringan],
     [_Retry_ + _backoff_], [Gangguan sesaat menggagalkan _request_], [Operasinya _idempotent_ atau terbukti belum diproses],
-    [_Circuit breaker_], [Service yang mati terus dibebani dan pemanggil ikut lambat], [Panggilan sinkron ke service yang dapat gagal],
+    [_Circuit breaker_], [Service yang mati terus dibebani dan pemanggil ikut lambat], [Panggilan _synchronous_ ke service yang dapat gagal],
     [gRPC], [Kontrak internal hanya diperiksa saat program berjalan], [Panggilan internal bervolume tinggi antartim yang sama-sama mengendalikan kontrak],
     [Saga (_orchestration_)], [Transaksi lintas database tanpa 2PC], [Satu proses bisnis mengubah data di lebih dari satu service dan butuh status yang jelas],
     [Kompensasi], [Langkah yang sudah di-_commit_ harus dibatalkan], [Ada langkah saga yang bisa gagal setelah langkah lain berhasil],
@@ -1194,7 +1194,7 @@ reversalRetry := retrypolicy.NewBuilder[any]().
   #table(
     columns: (1fr, 1.4fr, 1.4fr),
     [_Concern_], [Yang Dibangun di Hari 2 (di Kode)], [Dilanjutkan di],
-    [Komunikasi sinkron dan asinkron], [REST untuk channel, gRPC untuk transfer ke account (Lab 4)], [_Messaging_ Kafka untuk notification (Hari 3), Service DNS di Kubernetes (Hari 4)],
+    [Komunikasi _synchronous_ dan _asynchronous_], [REST untuk channel, gRPC untuk transfer ke account (Lab 4)], [_Messaging_ Kafka untuk notification (Hari 3), Service DNS di Kubernetes (Hari 4)],
     [_Resiliency_], [_Timeout_, _retry_, dan _circuit breaker_ dengan failsafe-go (Lab 3–4)], [Metrik _circuit breaker_ di Grafana (Lab 8). _Probe_, _restart_, dan _rolling update_ di Kubernetes (Lab 9)],
     [Konsistensi data], [Desain saga transfer: status, kompensasi, kode HTTP, mutasi _idempotent_, _idempotency key_], [Implementasi saga, _transactional outbox_, dan _idempotent consumer_ (Lab 5–6)],
     [_Security_ dan _observability_], [_Interceptor_ gRPC sebagai tempat pemeriksaan bersama untuk semua method], [Validasi JWT (Lab 7), _span_ untuk setiap percobaan panggilan (Lab 8)],

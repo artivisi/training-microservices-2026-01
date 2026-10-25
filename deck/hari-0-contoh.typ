@@ -113,7 +113,7 @@ func main() {
   #table(
     columns: (auto, 1fr, 1fr),
     [Pola], [Masalah], [Layak dipakai ketika],
-    [_Circuit breaker_], [Service lambat menahan _thread_], [Panggilan sinkron ke service yang bisa gagal],
+    [_Circuit breaker_], [Service lambat menahan _thread_], [Panggilan _synchronous_ ke service yang bisa gagal],
     [Saga], [Transaksi lintas database], [Satu proses bisnis menyentuh lebih dari satu service],
     [_Transactional outbox_], [Tulis DB dan kirim event tidak atomik], [Event harus terkirim jika dan hanya jika data tersimpan],
   )

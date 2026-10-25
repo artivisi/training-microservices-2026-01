@@ -60,7 +60,7 @@ Mengapa tidak langsung menulis ke Kafka setelah transaksi database selesai? Data
   columns: (1fr, 3.6fr),
   table.header([Pertimbangan], [Keterangan]),
   [Kebutuhan], [Hasil transfer perlu diketahui _service_ lain: `notification` di lab ini, dan nantinya bisa juga audit atau analitik. Gangguan di `notification` tidak boleh menggagalkan transfer],
-  [Opsi yang dipertimbangkan], [`transfer` memanggil `notification` secara sinkron (REST atau gRPC). `transfer` mengirim _event_ ke _message broker_, yaitu Kafka atau RabbitMQ],
+  [Opsi yang dipertimbangkan], [`transfer` memanggil `notification` secara _synchronous_ (REST atau gRPC). `transfer` mengirim _event_ ke _message broker_, yaitu Kafka atau RabbitMQ],
   [Pilihan di studi kasus], [_Messaging_ dengan Kafka. `transfer` mengirim _event_ melalui _outbox_, dan `notification` membacanya sebagai anggota _consumer group_],
   [Yang diperoleh], [_Temporal decoupling_: `notification` boleh mati sementara, dan _event_ menunggu di Kafka hingga dibaca. _Load leveling_: lonjakan transfer tidak langsung membebani _consumer_, karena _consumer_ membaca sesuai kapasitasnya. _Fan-out_: _consumer_ baru cukup membaca _topic_ yang sama dengan _consumer group_ sendiri, tanpa perubahan di `transfer`],
   [Yang dikorbankan], [_Eventual consistency_: notifikasi tercatat beberapa saat setelah transfer selesai. Pengiriman _at-least-once_ menghasilkan duplikat, sehingga _consumer_ harus _idempotent_ (Lab 6), dan urutan hanya terjamin di dalam satu _partition_. Kafka menjadi infrastruktur tambahan yang harus dioperasikan dan dipantau],
@@ -851,7 +851,7 @@ Tiga keputusan desain di _relay_ perlu dipahami sebelum menulis kodenya:
 
 - *Penguncian baris.* Query `for update skip locked` mengunci baris yang sedang dikirim. Bila beberapa _instance_ `transfer` berjalan, setiap _relay_ melewati baris yang sudah dikunci _relay_ lain, sehingga satu baris tidak dikirim dua kali oleh dua _relay_ dan _relay_ tidak saling menunggu.
 - *Urutan kirim lalu tandai.* Kafka mengonfirmasi penerimaan terlebih dahulu, baru kemudian `published_at` diisi dan transaksi di-_commit_. Bila proses berhenti di antara kedua langkah tersebut, baris tetap berstatus belum terkirim dan dikirim lagi pada siklus berikutnya. Cara ini menghasilkan jaminan _at-least-once_: _event_ tidak pernah hilang, tetapi sesekali terkirim dua kali. Urutan sebaliknya (tandai dulu, kirim kemudian) justru dapat menghilangkan _event_.
-- *Konfigurasi _producer_.* _Key_ Kafka berisi ID transfer dan `kafka.Hash` memilih _partition_ berdasarkan _key_ tersebut, sehingga semua _event_ satu transfer tetap berurutan. `RequireAll` menunggu konfirmasi dari semua replika yang sinkron. Pembuatan _topic_ otomatis dimatikan juga di sisi _client_.
+- *Konfigurasi _producer_.* _Key_ Kafka berisi ID transfer dan `kafka.Hash` memilih _partition_ berdasarkan _key_ tersebut, sehingga semua _event_ satu transfer tetap berurutan. `RequireAll` menunggu konfirmasi dari semua replika _in-sync_. Pembuatan _topic_ otomatis dimatikan juga di sisi _client_.
 
 Tambahkan _dependency_ Kafka dan UUID ke modul `transfer`:
 
