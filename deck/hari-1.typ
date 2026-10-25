@@ -748,6 +748,8 @@ studi-kasus/
     - Sejak Go 1.22, pola _route_ memuat _method_ dan _path_ sekaligus.
     - `{number}` dibaca dengan `r.PathValue("number")`.
     - _Request_ dengan _method_ yang tidak terdaftar otomatis mendapat _response_ `405 Method Not Allowed`.
+    - Sejak Go 1.23, `r.Pattern` berisi pola yang cocok, misalnya `GET /accounts/{number}`. Lab 8 menggunakannya sebagai label metrik, sehingga nomor rekening tidak masuk ke label.
+    - Sejak Go 1.26, _redirect_ untuk garis miring di akhir _path_ menggunakan `307`, sehingga _method_ `POST` tetap `POST`.
     - Kebutuhan _routing_ di lab terpenuhi tanpa _router_ pihak ketiga.
   ],
 )[
