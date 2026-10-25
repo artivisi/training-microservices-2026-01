@@ -990,10 +990,12 @@ case <-ctx.Done():
     [Nomor rekening sudah terdaftar], [`ErrAlreadyExists`], [`409`],
     [Rekening tidak ditemukan], [`ErrNotFound`], [`404`],
     [Saldo tidak mencukupi untuk debit], [`ErrInsufficientFunds`], [`422`],
-    [_Error_ lain, misalnya database terputus], [_Error_ apa pun], [`500`],
+    [_Method_ tidak terdaftar untuk _path_ tersebut], [Ditangani `ServeMux`], [`405`],
+    [_Error_ lain saat melayani _request_ API, misalnya database terputus], [_Error_ apa pun], [`500`],
+    [`GET /readyz` saat _ping_ ke database gagal], [_Ping_ gagal], [`503`],
   )
   #v(10pt)
-  #note[Untuk status `500`, klien hanya menerima `"internal error"`. Detail _error_ seperti alamat database atau isi _query_ hanya ditulis ke _log_.]
+  #note[`500` berarti satu _request_ gagal karena _error_ yang tidak terduga. Klien hanya menerima `"internal error"`, sedangkan detailnya, seperti alamat database atau isi _query_, hanya ditulis ke _log_. `503` dari `/readyz` berarti _instance_ ini belum siap menerima _traffic_, sehingga Kubernetes mengeluarkan _pod_ tersebut dari Service.]
 ]
 
 // ── 06 Lab 1 ───────────────────────────────────────────────────────────────
