@@ -226,13 +226,8 @@
       #place(top + left, dy: e / 2, box(width: width, height: height - e / 2, node-label(label, sub, s.text)))
     ]
   } else if kind == "broker" {
-    // log segments hint at a partitioned topic
-    box(width: width, height: height, fill: s.fill, stroke: s.stroke, radius: 4pt, clip: true)[
-      #for i in range(1, 6) {
-        place(top + left, dx: width * i / 6, line(angle: 90deg, length: 6pt, stroke: 0.8pt + s.text.lighten(40%)))
-      }
-      #node-label(label, sub, s.text)
-    ]
+    box(width: width, height: height, fill: s.fill, stroke: s.stroke, radius: 4pt,
+      node-label(label, sub, s.text))
   } else {
     box(width: width, height: height, fill: s.fill, stroke: s.stroke, radius: 6pt,
       node-label(label, sub, s.text))
