@@ -1010,7 +1010,7 @@ spec:
     )),
   ))
   #v(6pt)
-  #text(size: 11pt, fill: slate)[Generasi Spring Cloud dengan komponen Netflix menaruh _discovery_ (Eureka), _load balancing_ (Ribbon), dan _circuit breaker_ (Hystrix) di _library_, ditambah konfigurasi dari Spring Cloud Config. Generasi Kubernetes memindahkan _discovery_, _load balancing_, konfigurasi, _restart_, dan _rollout_ ke platform. Kebijakan _resiliency_, konsistensi data, pemeriksaan _security_, dan instrumentasi tetap di kode.]
+  #text(size: 11pt, fill: slate)[Platform Spring Cloud menyediakan _discovery_ (Eureka), _load balancing_, _circuit breaker_, dan konfigurasi (Spring Cloud Config) sebagai _library_ ekosistem Java. Platform Kubernetes menyediakan _discovery_, _load balancing_, konfigurasi, _restart_, dan _rollout_ untuk service dalam bahasa apa pun. Service _standalone_ di VM tidak memiliki keduanya, sehingga tim menyediakan sendiri setiap _concern_ tersebut. Kebijakan _resiliency_, konsistensi data, pemeriksaan _security_, dan instrumentasi tetap di kode.]
 ]
 
 #slide(kicker: "Keputusan desain", title: "Ringkasan keputusan desain empat hari")[

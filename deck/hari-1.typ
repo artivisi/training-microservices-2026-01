@@ -102,20 +102,24 @@
   #text(size: 11pt, fill: slate)[H1–H4 = Hari 1–4. Setiap hari dibuka dengan peta ini: baris yang disorot adalah _concern_ yang dibahas hari itu.]
 ]
 
-#slide(kicker: "Peta training", title: [_Concern_ ditangani di kode atau di platform])[
-  #set table(inset: 5pt)
-  #table(
-    columns: (auto, 1fr, 1fr),
-    [_Concern_], [Generasi Spring Cloud Netflix: _library_ di setiap service], [Generasi Kubernetes: platform],
-    [_Service discovery_], [Eureka: _registry server_ dan _client_ di setiap service], [Kubernetes Service dan DNS],
-    [_Load balancing_], [Ribbon di sisi pemanggil], [Kubernetes Service (kube-proxy)],
-    [_Configuration_], [Spring Cloud Config Server dan _client_-nya], [ConfigMap dan Secret],
-    [_Restart_ dan _rollout_], [Di luar _framework_: skrip dan prosedur operasional], [Deployment: _probe_, _restart_ otomatis, _rolling update_],
-    [_Circuit breaker_], [Hystrix], [Tetap di kode: failsafe-go (Go), Resilience4j (Java)],
-    [Konsistensi, pemeriksaan token, instrumentasi], [_Library_ di setiap service], [Tetap di kode],
-  )
-  #v(8pt)
-  #note[Studi kasus mengikuti generasi Kubernetes. Alamat service, konfigurasi, _restart_, dan _rollout_ diserahkan ke platform. Kode Go hanya memuat kebijakan _resiliency_, konsistensi data, pemeriksaan token, dan instrumentasi, sehingga service tidak bergantung pada _framework_ tertentu. Sejak Desember 2018, Spring Cloud menetapkan modul Hystrix dan Ribbon sebagai _maintenance mode_, dengan pengganti Resilience4j dan Spring Cloud LoadBalancer.]
+#slide(kicker: "Peta training", title: [_Concern_ yang ditangani tim, ekosistem, atau platform])[
+  #{
+    show table.cell: set text(size: 11pt)
+    table(
+      columns: (auto, 1fr, 1fr, 1fr),
+      inset: (x: 5pt, y: 4pt),
+      [_Concern_], [_Standalone_ di VM (misalnya beberapa service Laravel atau Express.js)], [Platform Spring Cloud], [Platform Kubernetes],
+      [_Service discovery_], [Alamat tetap di `.env` atau DNS internal], [Eureka: _registry server_ dan _client_ di setiap service], [Kubernetes Service dan DNS],
+      [_Load balancing_], [Nginx atau HAProxy di depan setiap service], [Spring Cloud LoadBalancer (dulu Ribbon) di sisi pemanggil], [Kubernetes Service (kube-proxy)],
+      [_Configuration_], [`.env` per server, disalin oleh skrip _deploy_], [Spring Cloud Config Server dan _client_-nya], [ConfigMap dan Secret],
+      [_Restart_ dan _rollout_], [PM2 atau supervisor, skrip _deploy_ per server], [Di luar _framework_: skrip dan prosedur operasional], [Deployment: _probe_, _restart_ otomatis, _rolling update_],
+      [_Circuit breaker_], [_Library_ per bahasa: opossum (Node.js), Ganesha (PHP)], [Resilience4j (dulu Hystrix)], [Tetap di kode: failsafe-go (Go), Resilience4j (Java)],
+      [Konsistensi, pemeriksaan token, instrumentasi], [_Library_ di setiap service], [_Library_ di setiap service], [Tetap di kode],
+      [*Disediakan oleh*], [Tim sendiri, untuk setiap service], [Ekosistem Java, hanya untuk service JVM], [Platform, untuk service dalam bahasa apa pun],
+    )
+  }
+  #v(6pt)
+  #note[Platform Spring Cloud adalah dukungan ekosistem satu _tech stack_. Platform Kubernetes adalah dukungan platform yang berlaku untuk semua bahasa. Studi kasus menggunakan platform Kubernetes, sehingga kode Go hanya memuat kebijakan _resiliency_, konsistensi data, pemeriksaan token, dan instrumentasi. Sejak Desember 2018, Spring Cloud menetapkan Hystrix dan Ribbon sebagai _maintenance mode_.]
 ]
 
 #slide(kicker: "Peta concern microservices", title: [_Concern_ yang dibahas di Hari 1])[

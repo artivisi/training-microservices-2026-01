@@ -153,7 +153,7 @@
     ],
   )
   #v(10pt)
-  #note[Keduanya saling melengkapi. Selama account di-_restart_ oleh Kubernetes, transfer tetap membutuhkan _timeout_ dan _circuit breaker_ agar tidak ikut lambat. Pada generasi Spring Cloud Netflix, _circuit breaker_ dipasang sebagai library (Hystrix). Pada generasi Kubernetes, _restart_ dan _rollout_ berpindah ke platform, sedangkan _policy_ per panggilan tetap ditulis di kode karena hanya kode yang tahu panggilan mana yang aman diulang.]
+  #note[Keduanya saling melengkapi. Selama account di-_restart_ oleh Kubernetes, transfer tetap membutuhkan _timeout_ dan _circuit breaker_ agar tidak ikut lambat. Pada platform Spring Cloud, _circuit breaker_ dipasang sebagai _library_ (Resilience4j, dulu Hystrix). Pada platform Kubernetes, _restart_ dan _rollout_ ditangani platform, sedangkan _policy_ per panggilan tetap ditulis di kode karena hanya kode yang tahu panggilan mana yang aman diulang.]
 ]
 
 #decision(title: [failsafe-go untuk _timeout_, _retry_, dan _circuit breaker_],
