@@ -1366,6 +1366,40 @@ grpc.WithChainUnaryInterceptor(
   #note[Aturannya: bila protokol memiliki _metadata_, ID dan _trace context_ ditaruh di _metadata_ tersebut, tidak di _payload_ bisnis.]
 ]
 
+#slide(kicker: "Propagasi", title: [Meneruskan _trace context_ lewat Kafka])[
+  #two-col(ratio: (1.15fr, 1fr),
+    [
+```go
+// telemetry.Setup: hanya W3C Trace Context
+otel.SetTextMapPropagator(propagation.TraceContext{})
+
+// transfer, outbox.Insert: dalam transaksi DB yang
+// sama dengan perubahan status transfer
+carrier := propagation.MapCarrier{}
+otel.GetTextMapPropagator().Inject(ctx, carrier)
+// carrier masuk kolom trace_context,
+// relay menyalinnya ke header Kafka
+
+// notification: saat membaca message
+headers := m.Headers
+ctx = otel.GetTextMapPropagator().Extract(ctx,
+    telemetry.KafkaHeaders{Headers: &headers})
+ctx, span := c.tracer.Start(ctx, "process "+m.Topic,
+    trace.WithSpanKind(trace.SpanKindConsumer))
+defer span.End()
+```
+#source(("studi-kasus/transfer/internal/telemetry/telemetry.go", "lab-08"), ("studi-kasus/transfer/internal/outbox/outbox.go", "lab-08"), ("studi-kasus/notification/internal/notification/consumer.go", "lab-08"))
+    ],
+    [
+      #set text(size: 12.5pt)
+      - HTTP dan gRPC: `otelhttp` dan _stats handler_ `otelgrpc` meneruskan _header_ `traceparent` secara otomatis
+      - Kafka: _relay_ berjalan di _goroutine_ terpisah tanpa _context_ dari _request_ asal, dan baru mengirim _event_ hingga ±500 ms kemudian. Karena itu _trace context_ disimpan ke baris _outbox_ saat baris tersebut ditulis
+      - Hanya `traceparent` yang diteruskan. _Baggage_ tidak digunakan karena REST API diakses langsung oleh aplikasi _channel_, dan _baggage_ dari pemanggil luar itu akan ikut terkirim ke semua service yang dipanggil sesudahnya
+      - Hasilnya, satu transfer tampil sebagai satu _trace_ yang mencakup tiga service
+    ],
+  )
+]
+
 #slide(kicker: "Propagasi", title: [Propagasi melalui protokol _legacy_: ISO 8583])[
   #flow(
     node("transfer", width: 110pt),
@@ -1583,36 +1617,47 @@ s.log.ErrorContext(ctx,
   #note(kind: "warn")[Label `route` diisi pola ServeMux (`GET /transfers/{id}`). Bila diisi _path_ asli yang mengandung ID, jumlah _time series_ akan terus bertambah.]
 ]
 
-#slide(kicker: "Tracing", title: [Meneruskan _trace context_ lewat Kafka])[
-  #two-col(ratio: (1.15fr, 1fr),
-    [
-```go
-// telemetry.Setup: hanya W3C Trace Context
-otel.SetTextMapPropagator(propagation.TraceContext{})
+#slide(kicker: "Metrik", title: [Metrik _runtime_ Go dibandingkan dengan JVM])[
+  #{
+    show table.cell: set text(size: 10.5pt)
+    table(
+      columns: (auto, 1.2fr, 1.35fr, 1.35fr),
+      inset: (x: 5pt, y: 3.5pt),
+      [Kebutuhan], [Spring Boot (Micrometer)], [Go (`client_golang`, _registry_ bawaan)], [Catatan],
+      [_Heap_ terpakai], [`jvm_memory_used_bytes{area="heap"}`], [`go_memstats_heap_inuse_bytes`, `go_memstats_heap_alloc_bytes`], [—],
+      [Batas memori], [`jvm_memory_max_bytes` (`-Xmx`)], [`go_gc_gomemlimit_bytes` (`GOMEMLIMIT`)], [Go tidak memiliki _hard limit_ untuk _heap_ seperti `-Xmx`. `GOMEMLIMIT` adalah _soft limit_: GC bekerja lebih sering saat memori mendekati batas tersebut],
+      [Jeda GC], [`jvm_gc_pause_seconds`], [`go_gc_duration_seconds`], [Lama _stop-the-world_ per siklus GC],
+      [Laju alokasi], [`jvm_gc_memory_allocated_bytes_total`], [`go_memstats_alloc_bytes_total`], [Dibaca dengan `rate()`],
+      [_Thread_], [`jvm_threads_live_threads`], [`go_goroutines`, `go_threads`], [_Goroutine_ yang terus naik menandakan kebocoran],
+      [Jumlah CPU], [`system_cpu_count`], [`go_sched_gomaxprocs_threads`], [Sejak Go 1.25, `GOMAXPROCS` mengikuti CPU _limit_ _container_],
+      [CPU dan RSS proses], [`process_cpu_usage`], [`process_cpu_seconds_total`, `process_resident_memory_bytes`], [RSS dibandingkan dengan _memory limit_ _container_],
+      [_File descriptor_], [`process_files_open_files`], [`process_open_fds`, `process_max_fds`], [Koneksi atau _file_ yang bocor],
+      [_Class loading_], [`jvm_classes_loaded_classes`], [—], [Tidak relevan: _binary_ statis],
+      [_Connection pool_ DB], [`hikaricp_connections_active` dan lainnya, otomatis], [Tidak diekspor otomatis], [`pgxpool.Pool.Stat()` perlu _collector_ sendiri],
+      [Klien Kafka], [Metrik Spring Kafka, otomatis], [Tidak diekspor otomatis], [`Reader.Stats()` dan `Writer.Stats()` di kafka-go],
+    )
+  }
+  #v(4pt)
+  #note[Metrik Go di atas sudah tersedia di `/metrics` ketiga service tanpa kode tambahan, karena `promhttp.Handler()` menggunakan _registry_ bawaan. Detail tambahan dari `runtime/metrics` (138 metrik, misalnya `go_gc_heap_live_bytes` dan CPU yang terpakai untuk GC) diaktifkan dengan `collectors.WithGoCollectorRuntimeMetrics(collectors.MetricsAll)`.]
+]
 
-// transfer, outbox.Insert: dalam transaksi DB yang
-// sama dengan perubahan status transfer
-carrier := propagation.MapCarrier{}
-otel.GetTextMapPropagator().Inject(ctx, carrier)
-// carrier masuk kolom trace_context,
-// relay menyalinnya ke header Kafka
-
-// notification: saat membaca message
-headers := m.Headers
-ctx = otel.GetTextMapPropagator().Extract(ctx,
-    telemetry.KafkaHeaders{Headers: &headers})
-ctx, span := c.tracer.Start(ctx, "process "+m.Topic,
-    trace.WithSpanKind(trace.SpanKindConsumer))
-defer span.End()
-```
-#source(("studi-kasus/transfer/internal/telemetry/telemetry.go", "lab-08"), ("studi-kasus/transfer/internal/outbox/outbox.go", "lab-08"), ("studi-kasus/notification/internal/notification/consumer.go", "lab-08"))
+#slide(kicker: "Metrik", title: [Metrik sumber daya dari platform])[
+  #table(
+    columns: (auto, 1.4fr, 1.2fr),
+    [Sumber], [Contoh Metrik], [Pertanyaan yang Dijawab],
+    [cAdvisor (bagian dari kubelet)], [`container_cpu_usage_seconds_total`, `container_memory_working_set_bytes`, `container_cpu_cfs_throttled_periods_total`], [Apakah memori _container_ mendekati _limit_ (risiko OOMKilled), dan apakah CPU-nya dibatasi (_throttled_)?],
+    [kube-state-metrics], [`kube_pod_container_status_restarts_total`, `kube_pod_container_status_last_terminated_reason`], [_Pod_ mana yang sering _restart_, dan apa penyebabnya?],
+    [node_exporter], [`node_cpu_seconds_total`, `node_memory_MemAvailable_bytes`, `node_filesystem_avail_bytes`], [Berapa sisa kapasitas _node_?],
+    [metrics-server], [API `metrics.k8s.io`, tidak disimpan di Prometheus], [Hanya untuk HPA dan `kubectl top` (Hari 4)],
+  )
+  #v(10pt)
+  #two-col(
+    card([Pengaturan Go di _container_])[
+      - `GOMEMLIMIT` sekitar 90% dari _memory limit_, misalnya `230MiB` untuk _limit_ `256Mi`. Tanpa nilai ini, GC tidak mengetahui batas _container_. _Manifest_ studi kasus belum mengaturnya
+      - `GOMAXPROCS` tidak perlu diatur sejak Go 1.25
     ],
-    [
-      #set text(size: 12.5pt)
-      - HTTP dan gRPC: `otelhttp` dan _stats handler_ `otelgrpc` meneruskan _header_ `traceparent` secara otomatis
-      - Kafka: _relay_ berjalan di _goroutine_ terpisah tanpa _context_ dari _request_ asal, dan baru mengirim _event_ hingga ±500 ms kemudian. Karena itu _trace context_ disimpan ke baris _outbox_ saat baris tersebut ditulis
-      - Hanya `traceparent` yang diteruskan. _Baggage_ tidak digunakan karena REST API diakses langsung oleh aplikasi _channel_, dan _baggage_ dari pemanggil luar itu akan ikut terkirim ke semua service yang dipanggil sesudahnya
-      - Hasilnya, satu transfer tampil sebagai satu _trace_ yang mencakup tiga service
+    card("Di lab", accent: gold.darken(15%))[
+      Prometheus di `otel-lgtm` hanya mengambil `/metrics` ketiga service, sehingga metrik _runtime_ Go tersedia. Metrik platform di atas membutuhkan _cluster_ dengan Prometheus yang mengambil data dari kubelet, kube-state-metrics, dan node_exporter.
     ],
   )
 ]
