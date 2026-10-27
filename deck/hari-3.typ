@@ -22,7 +22,7 @@
     [11:30 – 12:00], [_Idempotency_: _idempotent consumer_ dan _Idempotency-Key_], [Presentasi],
     [12:00 – 13:00], [Istirahat makan siang], [—],
     [13:00 – 13:45], [*Lab 6*: _idempotent consumer_ dan _Idempotency-Key_ pada API transfer], [_Hands-on_],
-    [13:45 – 14:45], [OAuth2 _client credentials_, SSO dan _authorization server_ (_embedded_ atau _standalone_), validasi JWT, posisi API _gateway_], [Presentasi + demo],
+    [13:45 – 14:45], [OAuth2 _client credentials_, SSO dan _authorization server_ (_embedded_ atau _standalone_), validasi JWT, posisi API _gateway_, _grant_ OAuth2 dan OIDC untuk aplikasi dengan pengguna], [Presentasi + demo],
     [15:00 – 16:00], [*Lab 7*: _middleware_ JWT pada REST dan _interceptor_ JWT pada gRPC], [_Hands-on_],
     [16:00 – 17:00], [_Observability_ lintas service dan persiapan Lab 8. Ringkasan hari ini pada peta _concern_], [Presentasi + demo],
   )
@@ -552,7 +552,7 @@ func (s *PostgresStore) Insert(ctx context.Context,
 
 // ── 05 Security ────────────────────────────────────────────────────────────
 
-#section-slide(number: "04", title: "Security antar service", subtitle: [OAuth2 _client credentials_, JWT, _middleware_ REST, dan _interceptor_ gRPC])
+#section-slide(number: "04", title: "Security antar service", subtitle: [OAuth2 _client credentials_, JWT, _middleware_ REST, _interceptor_ gRPC, serta _grant_ OAuth2 dan OIDC untuk aplikasi dengan pengguna])
 
 #slide(kicker: "Masalah", title: "Jaringan internal tidak otomatis aman")[
   #two-col(
@@ -705,6 +705,26 @@ func (v *Verifier) Verify(token string) (Claims, error) {
 }
 ```
 #source(("studi-kasus/transfer/internal/auth/verifier.go", "lab-07"))
+]
+
+#slide(kicker: "Lab 7", title: [Bagian yang dikerjakan _library_ dan yang ditulis sendiri])[
+  #{
+    show table.cell: set text(size: 10.5pt)
+    table(
+      columns: (1.1fr, 1.6fr, 1.6fr),
+      inset: (x: 6pt, y: 4pt),
+      [Bagian], [Dikerjakan _Library_], [Ditulis di Studi Kasus],
+      [_Authorization server_], [Ory Hydra dari `compose.yaml`], [Pendaftaran dua klien di `hydra-init`],
+      [Meminta token ke `/token`], [`golang.org/x/oauth2/clientcredentials`: _request_ token, autentikasi klien, membaca _response_ dan waktu kedaluwarsa], [Isi `clientcredentials.Config` di `main.go` transfer],
+      [Memasang token di panggilan gRPC], [grpc-go: antarmuka `credentials.PerRPCCredentials` dan `grpc.WithPerRPCCredentials`], [`tokenCredentials`: _cache_ token, _metadata_ `authorization`, `tokenFetchError`],
+      [Mengganti token yang ditolak], [—], [_Interceptor_ `refreshOnUnauthenticated`],
+      [Mengambil _public key_ (JWKS)], [`MicahParks/keyfunc/v3`: unduh saat _startup_, perbarui setiap jam, unduh ulang untuk `kid` baru], [Batas unduh ulang 5 detik dan _timeout_ di `NewVerifier`],
+      [Memeriksa JWT], [`golang-jwt/jwt/v5`: _signature_, `alg`, `iss`, `exp`, toleransi jam], [Opsi _parser_ dan _struct_ `Claims` (`scp`, `client_id`)],
+      [Membaca _bearer token_ dan memeriksa _scope_], [—], [_Middleware_ REST `Require`, _interceptor_ gRPC, `HasScope`, kode `401`/`403` dan `Unauthenticated`/`PermissionDenied`],
+    )
+  }
+  #v(6pt)
+  #note[grpc-go sudah menyediakan `credentials/oauth.TokenSource`, tetapi _adapter_ tersebut menolak mengirim token tanpa TLS, sedangkan lab berjalan tanpa TLS. _Cache_ `oauth2.ReuseTokenSource` juga tidak dapat dikosongkan saat account menolak token. Dengan TLS dan tanpa penggantian token, `tokenCredentials` cukup diganti dengan `grpc.WithPerRPCCredentials(oauth.TokenSource{TokenSource: tokenCfg.TokenSource(ctx)})`.]
 ]
 
 #code-slide(kicker: "Lab 7", title: [_Middleware_ JWT di REST transfer],
@@ -906,6 +926,158 @@ grpc.WithChainUnaryInterceptor(
   )
   #v(10pt)
   #note(kind: "tip")[Klien cukup tahu kategori kegagalan. Penyebabnya ditelusuri dari log, dan sesi _observability_ di akhir hari ini menambahkan _correlation ID_ serta _trace_ untuk mempercepat penelusuran tersebut.]
+]
+
+#slide(kicker: "OAuth2 dan OIDC", title: [_Grant_ OAuth2 dan penggunaannya])[
+  #{
+    show table.cell: set text(size: 10.5pt)
+    table(
+      columns: (1.15fr, 0.85fr, 2fr, 1.5fr),
+      inset: (x: 6pt, y: 4pt),
+      [_Grant_], [Token Atas Nama], [Digunakan Untuk], [Status Saat Ini],
+      [_Authorization code_ + PKCE (RFC 6749, RFC 7636)], [Pengguna], [Login pengguna di aplikasi web, SPA, dan _mobile_. Pengguna login di halaman _authorization server_], [Satu-satunya _grant_ untuk aplikasi dengan pengguna. PKCE wajib untuk semua klien],
+      [_Client credentials_], [Service], [Service ke service, _batch job_. Tidak ada interaksi pengguna], [Digunakan di Lab 7],
+      [_Refresh token_], [Sama dengan token awal], [Memperbarui _access token_ tanpa login ulang], [Untuk _public client_: rotasi setiap kali digunakan atau _sender-constrained_],
+      [_Device authorization_ (RFC 8628)], [Pengguna], [Perangkat tanpa _browser_ atau _keyboard_: TV, CLI, kios. Pengguna login di perangkat lain, misalnya HP], [Standar],
+      [CIBA (OpenID Foundation)], [Pengguna], [Transaksi yang dimulai pihak lain, misalnya _call center_, lalu disetujui nasabah di aplikasi _mobile_ miliknya], [Standar, bagian dari profil FAPI],
+      [_Token exchange_ (RFC 8693)], [Pengguna, diteruskan service], [Service meneruskan identitas pengguna ke service lain dengan token baru yang _scope_-nya lebih sempit, tanpa interaksi pengguna], [Standar, opsional],
+      [_Implicit_], [Pengguna], [Dulu untuk SPA: token dikirim langsung di URL], [Tidak direkomendasikan (RFC 9700), dihapus di _draft_ OAuth 2.1],
+      [_Resource owner password credentials_], [Pengguna], [Aplikasi menerima _password_ pengguna lalu menukarnya dengan token], [Dilarang (RFC 9700), dihapus di _draft_ OAuth 2.1],
+    )
+  }
+  #v(6pt)
+  #note[RFC 9700 (_OAuth 2.0 Security Best Current Practice_, Januari 2025) memuat rekomendasi keamanan terbaru. _Draft_ OAuth 2.1 menggabungkan RFC 6749, PKCE, dan rekomendasi tersebut menjadi satu dokumen.]
+]
+
+#slide(kicker: "OAuth2 dan OIDC", title: [OAuth2 untuk otorisasi, OIDC untuk login pengguna])[
+  #two-col(
+    card([OAuth2: _access token_])[
+      - Menjawab pertanyaan: boleh melakukan apa?
+      - Ditujukan ke API (_resource server_). Klaim `aud` berisi API tujuan
+      - Isi token tidak wajib dibaca oleh aplikasi klien
+      - Lab 7 hanya membutuhkan bagian ini, karena tidak ada login pengguna
+    ],
+    card([OIDC: _ID token_], accent: gold.darken(15%))[
+      - Standar identitas yang dibangun di atas OAuth2, diaktifkan dengan _scope_ `openid`
+      - Menjawab pertanyaan: siapa pengguna yang baru login, kapan, dan dengan metode apa?
+      - Ditujukan ke aplikasi klien. Klaim `aud` berisi `client_id` aplikasi
+      - Menambahkan _endpoint_ UserInfo dan _discovery_ `/.well-known/openid-configuration`
+    ],
+  )
+  #v(10pt)
+  #note(kind: "warn")[_ID token_ tidak boleh dikirim ke API sebagai pengganti _access token_. API hanya menerima _access token_ yang `aud`-nya sesuai, dan aplikasi klien hanya membaca _ID token_ yang `aud`-nya sama dengan `client_id` miliknya.]
+]
+
+#slide(kicker: "OAuth2 dan OIDC", title: [Alur _authorization code_ dengan PKCE])[
+  #two-col(ratio: (1.3fr, 1fr),
+    [
+      #set text(size: 12.5pt)
+      #enum(
+        [Aplikasi membuat `code_verifier` acak, lalu mengarahkan _browser_ ke `/authorize` dengan `code_challenge` = BASE64URL(SHA-256(`code_verifier`)), `state`, `nonce`, dan `redirect_uri`],
+        [Pengguna login dan memberi persetujuan di halaman _authorization server_. _Password_ tidak pernah diterima aplikasi],
+        [_Authorization server_ mengarahkan _browser_ kembali ke `redirect_uri` dengan `code` yang berlaku sekali dan berumur pendek],
+        [Aplikasi menukar `code` dan `code_verifier` di `/token` melalui koneksi langsung ke _authorization server_],
+        [_Authorization server_ menghitung ulang _hash_ `code_verifier` dan mencocokkannya dengan `code_challenge`, lalu mengeluarkan _access token_, _refresh token_, dan _ID token_],
+      )
+    ],
+    [
+      #card([Alasan _implicit_ ditinggalkan], accent: red)[
+        - Token dikirim di URL, sehingga dapat tercatat di _history browser_, _header_ `Referer`, dan log _proxy_
+        - Tidak ada cara mengikat token ke aplikasi yang meminta
+      ]
+      #v(6pt)
+      #card("Fungsi PKCE", accent: gold.darken(15%))[
+        - `code` yang tercuri tidak dapat ditukar tanpa `code_verifier`
+        - Karena itu SPA dan aplikasi _mobile_ (_public client_ tanpa _secret_) dapat menggunakan alur _authorization code_
+      ]
+    ],
+  )
+]
+
+#slide(kicker: "OAuth2 dan OIDC", title: [Login dari perangkat lain: _device flow_ dan CIBA])[
+  #two-col(
+    card([_Device authorization grant_ (RFC 8628)])[
+      + Perangkat meminta `device_code` dan `user_code` ke _authorization server_
+      + Perangkat menampilkan alamat verifikasi dan `user_code`, atau QR _code_
+      + Pengguna membuka alamat tersebut di HP, login, lalu memasukkan `user_code`
+      + Perangkat memeriksa _endpoint_ `/token` secara berkala sampai mendapat token
+      #v(4pt)
+      Contoh: CLI internal, TV, kios. Risiko: penyerang mengirim `user_code` miliknya ke korban, sehingga halaman persetujuan harus menampilkan perangkat yang meminta akses.
+    ],
+    card([CIBA (_Client-Initiated Backchannel Authentication_)], accent: gold.darken(15%))[
+      + Aplikasi pihak lain, misalnya sistem _call center_, mengirim identitas nasabah ke _authorization server_
+      + _Authorization server_ mengirim permintaan persetujuan ke aplikasi _mobile_ nasabah
+      + Nasabah menyetujui di HP miliknya
+      + Aplikasi pemohon menerima token melalui _polling_, _ping_, atau _push_
+      #v(4pt)
+      Nasabah tidak perlu membuka _browser_ di perangkat pemohon. CIBA termasuk dalam profil FAPI untuk sektor keuangan.
+    ],
+  )
+]
+
+#slide(kicker: "OAuth2 dan OIDC", title: "Penyimpanan token di sisi klien")[
+  #{
+    show table.cell: set text(size: 11.5pt)
+    table(
+      columns: (auto, 1.5fr, 1.3fr),
+      inset: (x: 6pt, y: 5pt),
+      [Jenis Klien], [Tempat Token], [Yang Dihindari],
+      [Aplikasi web _server-side_], [_Session_ di server. _Browser_ hanya menyimpan _cookie_ `HttpOnly`, `Secure`, `SameSite`], [Token dikirim ke halaman HTML],
+      [SPA dengan BFF], [Di BFF. _Browser_ hanya menyimpan _cookie_ _session_], [—],
+      [SPA tanpa _backend_], [Memori JavaScript, dengan _refresh token_ yang dirotasi], [`localStorage` dan `sessionStorage`: dapat dibaca oleh skrip XSS],
+      [Aplikasi _mobile_], [iOS Keychain, Android Keystore. Login melalui _browser_ sistem (ASWebAuthenticationSession, Custom Tabs) dengan _redirect_ HTTPS milik aplikasi], [WebView di dalam aplikasi (RFC 8252), _custom URL scheme_ yang dapat diklaim aplikasi lain, penyimpanan tanpa enkripsi],
+      [Service _backend_], [Memori proses. `client_secret` di Kubernetes Secret atau _vault_], [_Secret_ di _image_, repositori, atau log],
+      [CLI], [_Credential store_ sistem operasi], [_File_ teks biasa di _home directory_],
+    )
+  }
+  #v(6pt)
+  #note[Prinsipnya sama untuk semua jenis klien: token disimpan sejauh mungkin dari kode yang dapat disusupi, dan umurnya dibuat pendek agar token yang bocor cepat tidak berlaku.]
+]
+
+#slide(kicker: "OAuth2 dan OIDC", title: [Pola _Backend for Frontend_ (BFF)])[
+  #flow(
+    node("browser", sub: "SPA", kind: "ext", width: 110pt),
+    arr(label: "cookie HttpOnly", length: 120pt),
+    node("BFF", sub: "confidential client", kind: "infra", width: 140pt),
+    arr(label: "Bearer access token", length: 140pt),
+    node("API gateway / API", width: 150pt),
+  )
+  #v(4pt)
+  #align(center, text(size: 11pt, fill: slate)[BFF menjalankan alur _authorization code_ + PKCE ke _authorization server_ dan menyimpan _access token_ serta _refresh token_])
+  #v(10pt)
+  #two-col(
+    card("Yang diperoleh")[
+      - Token tidak pernah sampai ke JavaScript, sehingga skrip XSS tidak dapat mengambil dan membawa token keluar
+      - BFF adalah _confidential client_ yang dapat menyimpan _secret_ atau _private key_
+      - _Draft_ IETF _OAuth 2.0 for Browser-Based Applications_ menempatkan BFF sebagai pilihan paling aman untuk SPA
+    ],
+    card("Yang tetap harus dijaga", accent: amber)[
+      - Selama halaman terbuka, skrip XSS masih dapat mengirim _request_ melalui BFF. XSS tetap harus dicegah
+      - _Cookie_ memerlukan perlindungan CSRF: `SameSite` dan _header_ khusus yang diperiksa BFF
+      - BFF menjadi satu komponen tambahan yang harus dioperasikan dan di-_scale_
+    ],
+  )
+]
+
+#slide(kicker: "OAuth2 dan OIDC", title: "Rekomendasi keamanan terkini")[
+  #two-col(
+    card([Klien dan _authorization server_])[
+      - _Authorization code_ + PKCE (`S256`) untuk semua klien, termasuk _confidential client_
+      - `redirect_uri` dicocokkan persis, tanpa _wildcard_
+      - Token tidak dikirim di _query string_ URL
+      - Parameter `/authorize` dikirim melalui PAR (RFC 9126), sehingga tidak dapat diubah di _browser_
+      - Autentikasi klien dengan `private_key_jwt` (RFC 7523) atau mTLS (RFC 8705), lebih kuat dari `client_secret`
+    ],
+    card([_Token_ dan _resource server_], accent: gold.darken(15%))[
+      - _Access token_ berumur pendek, dalam hitungan menit
+      - `aud` diperiksa di setiap API, agar token untuk satu API tidak diterima API lain (Lab 7 belum memeriksanya)
+      - _Scope_ sesempit yang dibutuhkan
+      - _Sender-constrained token_ dengan DPoP (RFC 9449) atau mTLS: token yang tercuri tidak dapat digunakan tanpa _private key_ pemiliknya
+      - _Refresh token_ dirotasi, dan penggunaan ulang _refresh token_ lama mencabut seluruh rangkaian token tersebut
+    ],
+  )
+  #v(10pt)
+  #note[Untuk sektor keuangan, profil FAPI 2.0 dari OpenID Foundation menjadikan sebagian besar rekomendasi ini wajib: PAR, PKCE, _sender-constrained token_, serta autentikasi klien dengan `private_key_jwt` atau mTLS.]
 ]
 
 #slide(kicker: "Lab 7", title: "Transfer dan account diamankan dengan JWT")[
