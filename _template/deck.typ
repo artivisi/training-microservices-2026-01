@@ -350,6 +350,66 @@
   )
 }
 
+// Sequence diagram. actors: ((label, kind), ...) or ((label, kind, sub), ...)
+// with the node kinds above; sub is a small second line, e.g. the OAuth2 role.
+// steps: ((from: i, to: j, label: [...]), ...), numbered in order. reply: true
+// draws a dashed arrow; from == to draws an action box beside the lifeline (to
+// the left for the last actor), free to run past the next lifeline. A label sits above its arrow and may take two
+// lines when row is tall enough (about 26pt at the default label size).
+//   #sequence(width: 864pt, row: 22pt,
+//     actors: (("Aplikasi", "svc"), ("Hydra", "infra")),
+//     steps: ((from: 0, to: 1, label: [`POST /token`]),
+//             (from: 1, to: 0, label: [_access token_], reply: true)))
+#let sequence(width: none, row: none, actors: (), steps: (), label-size: 9pt) = {
+  assert(width != none and row != none, message: "sequence: width and row are required")
+  assert(actors.len() >= 2, message: "sequence: at least two actors")
+  let n = actors.len()
+  let gap = width / n
+  let xs = range(n).map(i => gap * i + gap / 2)
+  let head = if actors.any(a => a.len() == 3) { 42pt } else { 34pt }
+  let height = head + row * (steps.len() + 0.4)
+  block(width: width, height: height, above: 6pt, below: 10pt, {
+    for (i, a) in actors.enumerate() {
+      assert(a.len() in (2, 3), message: "sequence: actor is (label, kind) or (label, kind, sub)")
+      let (label, kind) = (a.at(0), a.at(1))
+      let s = node-style(kind)
+      let w = gap - 14pt
+      place(top + left, dx: xs.at(i), dy: head - 4pt, line(length: height - head + 4pt, angle: 90deg,
+        stroke: (paint: faint, thickness: 0.8pt, dash: "dashed")))
+      place(top + left, dx: xs.at(i) - w / 2, box(width: w, height: head - 4pt, fill: s.fill, stroke: s.stroke,
+        radius: 5pt, align(center + horizon, {
+          text(size: 10.5pt, weight: "bold", fill: s.text, label)
+          if a.len() == 3 { linebreak(); text(size: 8.5pt, fill: slate, a.at(2)) }
+        })))
+    }
+    for (k, st) in steps.enumerate() {
+      assert(st.from < n and st.to < n, message: "sequence: step " + str(k + 1) + " refers to an unknown actor")
+      let y = head + row * (k + 1)
+      let num = text(weight: "bold", fill: navy, str(k + 1) + ". ")
+      let body = text(size: label-size, fill: ink, [#num#st.label])
+      if st.from == st.to {
+        let x = xs.at(st.from)
+        let w = gap * 1.6 - 18pt
+        let dx = if st.from == n - 1 { x - 8pt - w } else { x + 8pt }
+        place(top + left, dx: x - 3pt, dy: y - row + 5pt, rect(width: 6pt, height: row - 5pt, fill: navy.lighten(70%), stroke: none))
+        place(top + left, dx: dx, dy: y - row + 4pt, box(width: w, height: row - 4pt,
+          align((if st.from == n - 1 { right } else { left }) + horizon,
+            box(fill: panel, radius: 2pt, inset: (x: 4pt, y: 2pt), body))))
+      } else {
+        let (x1, x2) = (xs.at(st.from), xs.at(st.to))
+        let sign = if x2 > x1 { 1 } else { -1 }
+        let dash = if st.at("reply", default: false) { "dashed" } else { none }
+        place(top + left, line(start: (x1, y), end: (x2, y), stroke: (paint: slate, thickness: 1.2pt, dash: dash)))
+        place(top + left, polygon(fill: slate,
+          (x2, y), (x2 - sign * 8pt, y - 4pt), (x2 - sign * 8pt, y + 4pt)))
+        let (xl, w) = (calc.min(x1, x2) + 6pt, calc.abs(x2 - x1) - 12pt)
+        place(top + left, dx: xl, dy: y - row + 3pt, box(width: w, height: row - 5pt,
+          align(center + bottom, box(fill: white, inset: (x: 2pt, y: 0pt), body))))
+      }
+    }
+  })
+}
+
 // ── Peta concern microservices ─────────────────────────────────────────────
 // The ten concerns, same order and wording in every deck.
 #let concern-rows = (

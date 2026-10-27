@@ -939,7 +939,7 @@ grpc.WithChainUnaryInterceptor(
       [_Client credentials_], [Service], [Service ke service, _batch job_. Tidak ada interaksi pengguna], [Digunakan di Lab 7],
       [_Refresh token_], [Sama dengan token awal], [Memperbarui _access token_ tanpa login ulang], [Untuk _public client_: rotasi setiap kali digunakan atau _sender-constrained_],
       [_Device authorization_ (RFC 8628)], [Pengguna], [Perangkat tanpa _browser_ atau _keyboard_: TV, CLI, kios. Pengguna login di perangkat lain, misalnya HP], [Standar],
-      [CIBA (OpenID Foundation)], [Pengguna], [Transaksi yang dimulai pihak lain, misalnya _call center_, lalu disetujui nasabah di aplikasi _mobile_ miliknya], [Standar, bagian dari profil FAPI],
+      [CIBA (OpenID Foundation)], [Pengguna], [Tindakan yang dimulai pihak bank lalu disetujui nasabah di aplikasi _mobile_ miliknya, misalnya _call center_ membuka blokir kartu debit atau tim _fraud_ meminta konfirmasi transaksi mencurigakan], [Standar, bagian dari profil FAPI],
       [_Token exchange_ (RFC 8693)], [Pengguna, diteruskan service], [Service meneruskan identitas pengguna ke service lain dengan token baru yang _scope_-nya lebih sempit, tanpa interaksi pengguna], [Standar, opsional],
       [_Implicit_], [Pengguna], [Dulu untuk SPA: token dikirim langsung di URL], [Tidak direkomendasikan (RFC 9700), dihapus di _draft_ OAuth 2.1],
       [_Resource owner password credentials_], [Pengguna], [Aplikasi menerima _password_ pengguna lalu menukarnya dengan token], [Dilarang (RFC 9700), dihapus di _draft_ OAuth 2.1],
@@ -947,6 +947,57 @@ grpc.WithChainUnaryInterceptor(
   }
   #v(6pt)
   #note[RFC 9700 (_OAuth 2.0 Security Best Current Practice_, Januari 2025) memuat rekomendasi keamanan terbaru. _Draft_ OAuth 2.1 menggabungkan RFC 6749, PKCE, dan rekomendasi tersebut menjadi satu dokumen.]
+]
+
+#slide(kicker: "OAuth2 dan OIDC", title: "Empat peran dalam OAuth2")[
+  #diagram(height: 208pt,
+    at(0pt, 0pt, node("Resource owner", sub: "pengguna, nasabah", kind: "ext", width: 180pt)),
+    at(684pt, 0pt, node("Authorization server", sub: "Hydra, Keycloak, IdP bank", kind: "infra", width: 180pt)),
+    at(0pt, 150pt, node("Client", sub: "aplikasi mobile, web, service", width: 180pt)),
+    at(684pt, 150pt, node("Resource server", sub: "API: account, transfer", width: 180pt)),
+    edge((180pt, 28pt), (684pt, 28pt), label: "login dan persetujuan"),
+    edge((90pt, 56pt), (90pt, 150pt), label: "menggunakan aplikasi", label-dx: 72pt, label-dy: -6pt),
+    edge((180pt, 160pt), (684pt, 46pt), label: [1. minta token (_grant_)], label-dx: -70pt, label-dy: -22pt),
+    edge((684pt, 60pt), (180pt, 174pt), label: [2. _access token_], dash: "dashed", label-dx: 70pt, label-dy: 12pt),
+    edge((180pt, 192pt), (684pt, 192pt), label: [3. _request_ + _access token_]),
+    edge((774pt, 150pt), (774pt, 56pt), label: [JWKS atau _introspection_], dash: "dashed", label-dx: -80pt, label-dy: -6pt),
+  )
+  #v(6pt)
+  #{
+    show table.cell: set text(size: 11pt)
+    table(
+      columns: (auto, 1fr),
+      inset: (x: 6pt, y: 4pt),
+      [Peran], [Tugas],
+      [_Resource owner_], [Pemilik data atau rekening yang memberi izin. Tidak ada pada _client credentials_],
+      [_Client_], [Aplikasi yang meminta token lalu memanggil API. _Public client_ tidak dapat menyimpan _secret_ (SPA, _mobile_), _confidential client_ dapat (_backend_, BFF)],
+      [_Authorization server_], [Mengautentikasi pengguna dan _client_, lalu mengeluarkan token],
+      [_Resource server_], [Memeriksa token dan _scope_ sebelum melayani _request_],
+      [_Browser_ atau HP pengguna], [Bukan peran tersendiri, melainkan _user agent_ milik _resource owner_. Pada _device flow_, perangkat yang meminta token (TV, CLI) adalah _client_. Pada CIBA, HP nasabah disebut _authentication device_ dan tidak pernah menerima token],
+    )
+  }
+]
+
+#slide(kicker: "OAuth2 dan OIDC", title: "Peran OAuth2 pada beberapa skenario")[
+  #{
+    show table.cell: set text(size: 11pt)
+    table(
+      columns: (1.3fr, 0.9fr, 1.2fr, 0.9fr, 1fr, 1fr),
+      inset: (x: 6pt, y: 5pt),
+      [Skenario], [_Resource Owner_], [_Client_], [_Authorization Server_], [_Resource Server_], [_Grant_],
+      [Login _mobile banking_], [Nasabah], [Aplikasi _mobile_ (_public client_)], [IdP bank], [API di belakang _gateway_], [_Authorization code_ + PKCE],
+      [_Internet banking_ berbasis SPA], [Nasabah], [BFF (_confidential client_)], [IdP bank], [API di belakang _gateway_], [_Authorization code_ + PKCE],
+      [Login CLI internal (_device flow_)], [Pengguna], [CLI (_public client_)], [IdP bank], [API internal], [_Device authorization_],
+      [_Call center_ meminta persetujuan nasabah], [Nasabah], [Aplikasi _call center_], [IdP bank], [API transaksi], [CIBA],
+      [Lab 7: aplikasi kanal memanggil transfer], [Tidak ada], [`channel-app`], [Hydra], [Transfer (REST)], [_Client credentials_],
+      [Lab 7: transfer memanggil account], [Tidak ada], [`transfer-service`], [Hydra], [Account (gRPC)], [_Client credentials_],
+    )
+  }
+  #v(10pt)
+  #bullets(size: 13pt,
+    [Satu service dapat memegang dua peran. Di Lab 7, transfer menjadi _resource server_ bagi `channel-app` sekaligus _client_ bagi account.],
+    [Tanpa _resource owner_, token atas nama _client_ itu sendiri: `sub` berisi `client_id`. Untuk meneruskan identitas nasabah dari transfer ke account, transfer membutuhkan _token exchange_.],
+  )
 ]
 
 #slide(kicker: "OAuth2 dan OIDC", title: [OAuth2 untuk otorisasi, OIDC untuk login pengguna])[
@@ -969,48 +1020,69 @@ grpc.WithChainUnaryInterceptor(
 ]
 
 #slide(kicker: "OAuth2 dan OIDC", title: [Alur _authorization code_ dengan PKCE])[
-  #two-col(ratio: (1.3fr, 1fr),
-    [
-      #set text(size: 12.5pt)
-      #enum(
-        [Aplikasi membuat `code_verifier` acak, lalu mengarahkan _browser_ ke `/authorize` dengan `code_challenge` = BASE64URL(SHA-256(`code_verifier`)), `state`, `nonce`, dan `redirect_uri`],
-        [Pengguna login dan memberi persetujuan di halaman _authorization server_. _Password_ tidak pernah diterima aplikasi],
-        [_Authorization server_ mengarahkan _browser_ kembali ke `redirect_uri` dengan `code` yang berlaku sekali dan berumur pendek],
-        [Aplikasi menukar `code` dan `code_verifier` di `/token` melalui koneksi langsung ke _authorization server_],
-        [_Authorization server_ menghitung ulang _hash_ `code_verifier` dan mencocokkannya dengan `code_challenge`, lalu mengeluarkan _access token_, _refresh token_, dan _ID token_],
-      )
+  #sequence(width: 864pt, row: 20pt,
+    actors: (("Pengguna + browser", "ext", [_resource owner_]), ("Aplikasi", "svc", [_client_]), ("Authorization server", "infra"), ("API", "svc", [_resource server_])),
+    steps: (
+      (from: 1, to: 1, label: [Buat `code_verifier` acak dan `code_challenge` = SHA-256-nya]),
+      (from: 1, to: 0, label: [_Redirect_ ke `/authorize` + `code_challenge`], reply: true),
+      (from: 0, to: 2, label: [`GET /authorize` + `code_challenge`, `state`, `nonce`, `redirect_uri`]),
+      (from: 2, to: 0, label: [Halaman login dan persetujuan], reply: true),
+      (from: 0, to: 2, label: [_Password_, OTP, persetujuan. Aplikasi tidak pernah menerimanya]),
+      (from: 2, to: 0, label: [_Redirect_ ke `redirect_uri` + `code`, `state`], reply: true),
+      (from: 0, to: 1, label: [`code`, `state`. Aplikasi mencocokkan `state`]),
+      (from: 1, to: 2, label: [`POST /token`: `code` + `code_verifier`]),
+      (from: 2, to: 2, label: [Cek SHA-256(`code_verifier`) = `code_challenge`]),
+      (from: 2, to: 1, label: [_Access token_, _refresh token_, _ID token_], reply: true),
+      (from: 1, to: 3, label: [_Request_ + `Bearer` _access token_]),
+    ),
+  )
+  #two-col(
+    card([Alasan _implicit_ ditinggalkan], accent: red)[
+      Token dikirim di URL, sehingga tercatat di _history browser_, _header_ `Referer`, dan log _proxy_, tanpa cara mengikat token ke aplikasi yang meminta.
     ],
-    [
-      #card([Alasan _implicit_ ditinggalkan], accent: red)[
-        - Token dikirim di URL, sehingga dapat tercatat di _history browser_, _header_ `Referer`, dan log _proxy_
-        - Tidak ada cara mengikat token ke aplikasi yang meminta
-      ]
-      #v(6pt)
-      #card("Fungsi PKCE", accent: gold.darken(15%))[
-        - `code` yang tercuri tidak dapat ditukar tanpa `code_verifier`
-        - Karena itu SPA dan aplikasi _mobile_ (_public client_ tanpa _secret_) dapat menggunakan alur _authorization code_
-      ]
+    card("Fungsi PKCE", accent: gold.darken(15%))[
+      `code` yang tercuri di langkah 6 tidak dapat ditukar tanpa `code_verifier`. SPA dan aplikasi _mobile_ (_public client_ tanpa _secret_) dapat menggunakan alur ini.
     ],
   )
 ]
 
 #slide(kicker: "OAuth2 dan OIDC", title: [Login dari perangkat lain: _device flow_ dan CIBA])[
-  #two-col(
-    card([_Device authorization grant_ (RFC 8628)])[
-      + Perangkat meminta `device_code` dan `user_code` ke _authorization server_
-      + Perangkat menampilkan alamat verifikasi dan `user_code`, atau QR _code_
-      + Pengguna membuka alamat tersebut di HP, login, lalu memasukkan `user_code`
-      + Perangkat memeriksa _endpoint_ `/token` secara berkala sampai mendapat token
-      #v(4pt)
-      Contoh: CLI internal, TV, kios. Risiko: penyerang mengirim `user_code` miliknya ke korban, sehingga halaman persetujuan harus menampilkan perangkat yang meminta akses.
+  #grid(columns: (1fr, 1fr), column-gutter: 24pt,
+    [
+      #text(size: 13pt, weight: "bold", fill: navy)[_Device authorization grant_ (RFC 8628)]
+      #v(2pt)
+      #sequence(width: 420pt, row: 31pt,
+        actors: (("TV / CLI", "ext", [_client_]), ("Authorization server", "infra"), ("HP pengguna", "ext", [_resource owner_])),
+        steps: (
+          (from: 0, to: 1, label: [`POST /device_authorization`]),
+          (from: 1, to: 0, label: [`device_code`, `user_code`, alamat verifikasi], reply: true),
+          (from: 0, to: 0, label: [Tampilkan `user_code` atau QR _code_]),
+          (from: 2, to: 1, label: [Buka alamat verifikasi, login, masukkan `user_code`]),
+          (from: 0, to: 1, label: [`POST /token` + `device_code`, berkala]),
+          (from: 1, to: 0, label: [`authorization_pending` sampai pengguna setuju], reply: true),
+          (from: 1, to: 0, label: [_Access token_], reply: true),
+        ),
+      )
+      #set text(size: 11pt)
+      Risiko: penyerang mengirim `user_code` miliknya ke korban. Halaman persetujuan harus menampilkan perangkat yang meminta akses.
     ],
-    card([CIBA (_Client-Initiated Backchannel Authentication_)], accent: gold.darken(15%))[
-      + Aplikasi pihak lain, misalnya sistem _call center_, mengirim identitas nasabah ke _authorization server_
-      + _Authorization server_ mengirim permintaan persetujuan ke aplikasi _mobile_ nasabah
-      + Nasabah menyetujui di HP miliknya
-      + Aplikasi pemohon menerima token melalui _polling_, _ping_, atau _push_
-      #v(4pt)
-      Nasabah tidak perlu membuka _browser_ di perangkat pemohon. CIBA termasuk dalam profil FAPI untuk sektor keuangan.
+    [
+      #text(size: 13pt, weight: "bold", fill: navy)[CIBA (_Client-Initiated Backchannel Authentication_)]
+      #v(2pt)
+      #sequence(width: 420pt, row: 31pt,
+        actors: (("Aplikasi call center", "svc", [_client_]), ("Authorization server", "infra"), ("HP nasabah", "ext", [_resource owner_])),
+        steps: (
+          (from: 0, to: 1, label: [`POST /bc-authorize` + `login_hint`, `binding_message`]),
+          (from: 1, to: 0, label: [`auth_req_id`], reply: true),
+          (from: 1, to: 2, label: [Permintaan persetujuan (_push notification_)]),
+          (from: 2, to: 2, label: [Nasabah login, memeriksa `binding_message`]),
+          (from: 2, to: 1, label: [Persetujuan]),
+          (from: 0, to: 1, label: [`POST /token` + `auth_req_id`]),
+          (from: 1, to: 0, label: [_Access token_, _ID token_], reply: true),
+        ),
+      )
+      #set text(size: 11pt)
+      Contoh: _call center_ membuka blokir kartu debit, tim _fraud_ meminta konfirmasi transaksi mencurigakan. `binding_message` tampil di kedua sisi agar nasabah dapat memastikan permintaan yang disetujuinya. Token diterima dengan mode _poll_, _ping_, atau _push_. CIBA termasuk dalam profil FAPI.
     ],
   )
 ]
