@@ -1027,6 +1027,105 @@ func (h contextHandler) WithGroup(n string) slog.Handler {
 #source(("studi-kasus/transfer/internal/telemetry/log.go", "lab-08"))
 ]
 
+#slide(kicker: "Panduan logging", title: "Isi log untuk kebutuhan operasional")[
+  #two-col(
+    card("Dicatat")[
+      - Hasil akhir setiap transaksi bisnis, satu baris per transaksi: berhasil, ditolak, atau gagal
+      - Tindakan otomatis sistem: _retry_, perubahan status _circuit breaker_, kompensasi
+      - Kegagalan yang harus ditangani orang, lengkap dengan _error_ dan ID transaksi
+      - _Startup_ dan _shutdown_: versi, alamat _listen_, alamat dependensi, tanpa _secret_
+    ],
+    card("Tidak dicatat", accent: amber)[
+      - Setiap langkah di dalam satu transaksi. Urutan dan durasi langkah sudah terlihat di _trace_
+      - Jumlah dan laju kejadian. Angka tersebut diambil dari metrik
+      - _Body request_ dan _response_ secara utuh
+      - _Health check_ dan _scrape_ `/metrics` yang berhasil
+    ],
+  )
+  #v(10pt)
+  #bullets(size: 13pt,
+    [Transaksi yang berhasil tetap dicatat dengan satu baris INFO. Tanpa baris tersebut, tim operasional tidak dapat membedakan transfer yang berhasil dari transfer yang tidak pernah sampai ke service.],
+    [Log merupakan bahan penelusuran. Status resmi transaksi tetap tersimpan di database service, dan _audit trail_ yang diwajibkan regulasi disimpan terpisah dari log aplikasi.],
+  )
+  #note(kind: "tip")[Cara menguji kelengkapan log: nasabah menanyakan transfernya pukul 10.00. Tim operasional seharusnya dapat menemukan hasil transfer tersebut di Loki hanya dengan nomor referensi, tanpa membuka database.]
+]
+
+#code-slide(kicker: "Panduan logging", title: "Pesan log yang mudah dicari",
+  side: [
+    - Teks pesan sama untuk setiap jenis kejadian. Nilai yang berubah ditulis sebagai atribut
+    - Pencarian di Loki menjadi tepat: `msg="transfer completed"` lalu _filter_ berdasarkan `transfer_id` atau `amount`
+    - Nama atribut seragam di ketiga service: `transfer_id`, `correlation_id`, `error`
+    - Pesan ERROR menyebut tindakan yang diperlukan, misalnya `source account needs manual reversal`
+    - Satu _error_ dicatat satu kali, di fungsi yang menangani _error_ tersebut. Fungsi di bawahnya cukup membungkus _error_ dengan konteks (`%w`) lalu mengembalikannya
+  ],
+)[
+```go
+// Sulit dicari: data bercampur dengan teks pesan
+log.Printf("transfer %s dari %s sebesar %d gagal: %v",
+    id, from, amount, err)
+
+// Mudah dicari: pesan tetap, data sebagai atribut
+s.log.InfoContext(ctx, "transfer completed",
+    "transfer_id", t.ID, "amount", t.Amount)
+
+s.log.ErrorContext(ctx,
+    "compensation failed, source account needs manual reversal",
+    "transfer_id", t.ID, "from_account", t.FromAccount,
+    "amount", t.Amount, "error", err)
+```
+#source(("studi-kasus/transfer/internal/transfer/service.go", "lab-08"))
+]
+
+#slide(kicker: "Panduan logging", title: "Data transaksi di dalam log")[
+  #table(
+    columns: (auto, auto, 1fr),
+    [Data], [Dicatat di Log], [Keterangan],
+    [ID transfer, nomor referensi, `correlation_id`], [Selalu], [Kunci pencarian. Baris log tanpa ID tidak dapat dikaitkan dengan keluhan nasabah],
+    [Nomor rekening], [Ya, sesuai klasifikasi data bank], [Dibutuhkan untuk penelusuran. Bila kebijakan bank mewajibkan, nomor rekening dicatat dalam bentuk _masking_, misalnya `******7890`],
+    [Nominal], [Ya], [Menunjukkan dampak kegagalan, misalnya pada kompensasi yang gagal],
+    [Status dan alasan penolakan], [Ya], [Berupa kategori, misalnya `insufficient funds`],
+    [Nama, NIK, nomor HP, email nasabah], [Tidak], [Termasuk data pribadi (UU PDP). Data lengkap tersedia di database service pemiliknya],
+    [Nomor kartu (PAN), PIN, OTP, _password_], [Tidak pernah], [PCI DSS mewajibkan PAN di-_mask_. PIN dan OTP tidak boleh tersimpan dalam bentuk apa pun],
+    [Token JWT, _client secret_, _header_ `Authorization`], [Tidak pernah], [Token yang terbaca di log dapat digunakan ulang sampai kedaluwarsa. Cukup catat `client_id` (Lab 7)],
+    [_Body request_ utuh], [Tidak], [Mudah membawa data di atas tanpa disadari. _Field_ yang dicatat dipilih satu per satu],
+  )
+  #v(8pt)
+  #note(kind: "warn")[Log tersalin ke banyak tempat: stdout, _log collector_, Loki, dan layar _engineer_. Hak akses dan masa retensi log mengikuti data paling sensitif yang ada di dalamnya.]
+]
+
+#slide(kicker: "Panduan logging", title: "Level log dan tindak lanjutnya")[
+  #table(
+    columns: (auto, 1fr, 1.2fr, 1fr),
+    [Level], [Kapan Digunakan], [Contoh di Studi Kasus], [Tindak Lanjut],
+    [DEBUG], [Detail untuk _developer_ saat mencari _bug_, misalnya nilai antara atau isi _query_], [Tidak digunakan], [Tidak aktif di _production_. Diaktifkan sementara saat investigasi],
+    [INFO], [Kejadian normal dan hasil bisnis, termasuk transaksi yang ditolak aturan bisnis], [`transfer completed`, `notification sent`, `duplicate event skipped`], [Tidak ada. Menjadi bahan penelusuran],
+    [WARN], [Kondisi tidak normal yang sudah ditangani otomatis oleh sistem], [`retrying account call`, `circuit breaker state changed`, `credit failed after debit, reversing the debit`], [Dipantau. Bila terus berulang, metrik memicu _alert_],
+    [ERROR], [Sistem gagal menyelesaikan pekerjaannya sehingga perlu tindakan orang], [`compensation failed, source account needs manual reversal`, `skipping unreadable event`], [Memicu _alert_ dan harus ditindaklanjuti],
+  )
+  #v(10pt)
+  #note[Uji untuk level ERROR: bila baris ERROR muncul dan tidak ada orang yang perlu bertindak, levelnya salah. ERROR yang tidak perlu ditindaklanjuti membuat tim terbiasa mengabaikan _alert_ (_alert fatigue_), termasuk _alert_ yang penting.]
+]
+
+#slide(kicker: "Panduan logging", title: "Kegagalan bisnis dicatat di level INFO")[
+  #table(
+    columns: (1fr, auto, 1.4fr),
+    [Kejadian], [Level], [Alasan],
+    [Saldo tidak cukup], [INFO], [Aturan bisnis berjalan sesuai desain. Service menolak transaksi dengan benar],
+    [Rekening tujuan tidak ditemukan], [INFO], [Kesalahan ada di data dari klien, dan service tidak dapat memperbaikinya],
+    [Validasi _request_ gagal], [INFO], [Klien menerima daftar _field_ yang salah di _response_],
+    [Account lambat, _retry_ berjalan], [WARN], [Kondisi tidak normal yang sudah ditangani _retry_],
+    [_Circuit breaker_ terbuka, transfer ditolak], [WARN], [Ditangani otomatis. _Breaker_ yang tidak kembali _closed_ terdeteksi dari metrik],
+    [Token ditolak], [WARN], [Konfigurasi klien salah atau ada percobaan akses tanpa izin],
+    [Kompensasi gagal, saldo sumber sudah berkurang], [ERROR], [Harus di-_reverse_ manual],
+  )
+  #v(8pt)
+  #bullets(size: 13pt,
+    [Kegagalan bisnis yang dicatat sebagai WARN atau ERROR akan memicu _alert_ ratusan kali sehari dan menutupi masalah yang sebenarnya.],
+    [Lonjakan penolakan bisnis, misalnya transfer gagal karena saldo tidak cukup yang tiba-tiba naik sepuluh kali lipat, dideteksi dari metrik `transfers_total{status="FAILED"}`.],
+  )
+  #note(kind: "warn")[*Contoh yang perlu diperbaiki.* Fungsi `finish` di `transfer/internal/transfer/service.go` mencatat semua transfer yang tidak `COMPLETED` di level WARN, termasuk saldo tidak cukup dan rekening tidak ditemukan. _Interceptor_ gRPC account (Hari 2) sudah sesuai panduan: `NotFound` dan `FailedPrecondition` dicatat di level INFO. Latihan: periksa `cause` dengan `errors.Is` terhadap `ErrInsufficientFunds` dan `ErrAccountNotFound`, lalu catat kedua penolakan tersebut di level INFO.]
+]
+
 #slide(kicker: "Metrik", title: "Metrik yang dipasang di setiap service")[
   #table(
     columns: (auto, auto, 1fr),
