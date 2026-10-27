@@ -1237,6 +1237,55 @@ grpc.WithChainUnaryInterceptor(
   )
 ]
 
+#slide(kicker: "Stack", title: [_Observability stack_ lab dalam satu _container_ `otel-lgtm`])[
+  #diagram(height: 250pt,
+    at(0pt, 0pt, node("transfer")),
+    at(0pt, 90pt, node("account")),
+    at(0pt, 180pt, node("notification")),
+    at(250pt, 90pt, node("collector", sub: "OTLP :14317", kind: "infra", width: 130pt)),
+    at(480pt, 30pt, node("Tempo", sub: "trace", kind: "infra")),
+    at(480pt, 110pt, node("Loki", sub: "log", kind: "infra")),
+    at(480pt, 190pt, node("Prometheus", sub: "metrik", kind: "infra")),
+    at(720pt, 110pt, node("Grafana", sub: ":13000", kind: "infra")),
+    edge((120pt, 28pt), (250pt, 108pt)),
+    edge((120pt, 118pt), (250pt, 118pt), label: "OTLP"),
+    edge((120pt, 208pt), (250pt, 128pt)),
+    edge((380pt, 110pt), (480pt, 58pt)),
+    edge((380pt, 126pt), (480pt, 138pt)),
+    edge((480pt, 226pt), (120pt, 226pt), label: "scrape /metrics", dash: "dashed", label-dy: 8pt),
+    edge((600pt, 58pt), (720pt, 128pt)),
+    edge((600pt, 138pt), (720pt, 138pt)),
+    edge((600pt, 218pt), (720pt, 148pt)),
+  )
+  #v(6pt)
+  #bullets(size: 13pt,
+    [Satu _container_ `grafana/otel-lgtm` berisi _collector_, Tempo, Loki, Prometheus, dan Grafana dengan _dashboard_ bawaan.],
+    [_Trace_ dan _log_ dikirim (_push_) lewat OTLP, sedangkan metrik diambil (_pull_) oleh Prometheus dari `/metrics` di setiap service.],
+  )
+]
+
+#decision(title: [`otel-lgtm` untuk _observability_ di lab],
+  [
+    - Lab 8 membutuhkan _collector_, penyimpanan _trace_, _log_, metrik, dan Grafana di setiap laptop
+    - RAM laptop terbatas, dan waktu lab tidak cukup untuk mengonfigurasi lima komponen
+  ],
+  [
+    - Komponen terpisah (OTel Collector, Tempo, Loki, Prometheus, Grafana) di `compose.yaml`
+    - Jaeger, khusus untuk _trace_
+    - Platform _observability_ SaaS
+    - `grafana/otel-lgtm`: kelima komponen tersebut dalam satu _container_
+  ],
+  [
+    - `grafana/otel-lgtm:0.37.0` di `compose.yaml`, _port_ 13000 (Grafana) dan 14317/14318 (OTLP) di laptop
+    - Service hanya mengenal `OTEL_EXPORTER_OTLP_ENDPOINT`
+  ],
+  [
+    - Ditujukan untuk pengembangan, demo, dan _testing_. Tidak ada _high availability_ maupun kontrol akses per tim
+    - Di _production_, setiap komponen dijalankan dan diskalakan sendiri (Hari 4, bagian Operasional)
+    - Kode service tidak berubah saat pindah ke _stack_ terpisah, cukup alamat OTLP yang diganti
+  ],
+)
+
 #slide(kicker: "Peta concern microservices", title: [_Observability_ di kode dan di platform])[
   #two-col(
     card([Di kode setiap service (Lab 8)])[
@@ -1279,6 +1328,84 @@ grpc.WithChainUnaryInterceptor(
   )
 ]
 
+#slide(kicker: "Correlation ID", title: [_Correlation ID_, _trace ID_, dan _span ID_])[
+  #table(
+    columns: (auto, 1fr, 1fr, 1fr),
+    [Aspek], [_Correlation ID_], [_Trace ID_], [_Span ID_],
+    [Sumber], [Kode studi kasus: _header_ `X-Correlation-ID` dari klien, atau dibuat transfer bila kosong], [OpenTelemetry SDK], [OpenTelemetry SDK],
+    [Cakupan], [Satu _request_ bisnis. Dikembalikan ke klien di _response_], [Satu _trace_ utuh lintas service], [Satu langkah di dalam _trace_, misalnya satu panggilan gRPC],
+    [Kegunaan], [Dikutip nasabah atau tim _support_: "transfer dengan ID ini gagal"], [Membuka _waterfall_ di Tempo, menghubungkan log ke _trace_], [Menemukan log satu langkah, hubungan _parent_ dan _child_ di _waterfall_],
+    [Dibawa oleh], [_Header_ HTTP, _metadata_ gRPC, kolom _outbox_, _header_ Kafka], [`traceparent` (W3C Trace Context) di HTTP, gRPC, dan Kafka], [`traceparent`, sebagai _parent span_ bagi service berikutnya],
+    [Di log], [`correlation_id`], [`trace_id`], [`span_id`],
+  )
+  #v(10pt)
+  #bullets(size: 13pt,
+    [Ketiganya ditambahkan ke setiap baris log oleh _handler_ `slog` yang membaca `context`.],
+    [_Correlation ID_ tetap berguna saat _trace_ tidak tersimpan. Di _production_, hanya sebagian _trace_ yang disimpan (_sampling_), sedangkan log tetap ditulis untuk setiap _request_.],
+  )
+]
+
+#slide(kicker: "Propagasi", title: "Media propagasi per protokol")[
+  #{
+    show table.cell: set text(size: 11.5pt)
+    table(
+      columns: (auto, 1.3fr, 1.6fr),
+      inset: (x: 6pt, y: 5pt),
+      [Jalur], [Media], [Keterangan],
+      [REST (HTTP)], [_Header_ `traceparent` dan `X-Correlation-ID`], [Dikerjakan `otelhttp` dan _middleware_ _correlation ID_],
+      [gRPC], [_Metadata_ `traceparent` dan `x-correlation-id`], [Dikerjakan `otelgrpc` dan _interceptor_. Nama _metadata_ ditulis huruf kecil],
+      [Kafka], [_Header_ _message_], [Tidak dimasukkan ke _payload_, sehingga skema bisnis tetap bersih dan _consumer_ yang tidak membutuhkan dapat mengabaikannya],
+      [_Database_ sebagai perantara (_outbox_, tabel _job_)], [Kolom tersendiri], [_Relay_ menyalin nilainya ke _header_ Kafka (Lab 5 dan Lab 8)],
+      [IBM MQ, JMS (_Jakarta Messaging_)], [_Message property_, atau `CorrelId` di MQ], [Sama seperti _header_ Kafka],
+      [SOAP], [_SOAP header_, misalnya `wsa:MessageID` dan `wsa:RelatesTo`], [Sama seperti _header_ HTTP],
+      [_File batch_], [ID _batch_ dan kolom referensi di setiap baris], [Setiap baris membutuhkan referensinya sendiri],
+      [ISO 8583], [Tidak ada tempat untuk _header_ tambahan], [Dipetakan ke _field_ referensi bawaan (halaman berikut)],
+    )
+  }
+  #v(6pt)
+  #note[Aturannya: bila protokol memiliki _metadata_, ID dan _trace context_ ditaruh di _metadata_ tersebut, tidak di _payload_ bisnis.]
+]
+
+#slide(kicker: "Propagasi", title: [Propagasi melalui protokol _legacy_: ISO 8583])[
+  #flow(
+    node("transfer", width: 110pt),
+    arr(label: "traceparent, X-Correlation-ID", length: 190pt),
+    node("adapter ISO 8583", sub: "batas trace", kind: "infra", width: 150pt),
+    arr(label: "ISO 8583: RRN, STAN", length: 170pt),
+    node("switch", sub: "pihak lain", kind: "ext", width: 110pt),
+  )
+  #v(8pt)
+  #two-col(ratio: (1.25fr, 1fr),
+    [
+      #set text(size: 12.5pt)
+      + *Gunakan _field_ referensi bawaan.* RRN (_Retrieval Reference Number_, _field_ 37) dan STAN (_System Trace Audit Number_, _field_ 11), bersama waktu transmisi (_field_ 7) dan kode institusi _acquirer_ (_field_ 32). Kedua pihak sudah menggunakannya untuk mencocokkan _request_ dengan _response_ dan untuk rekonsiliasi
+      + *Petakan di satu titik.* Hanya adapter yang berbicara ISO 8583. Adapter mencatat `correlation_id` bersama RRN dan STAN di baris log yang sama, dan bila perlu di tabel pemetaan
+      + *_Trace_ berhenti di adapter.* RRN dan STAN dicatat sebagai atribut _span_ adapter. Pihak lain tidak dapat menyambung _trace_ karena tidak ada tempat untuk `traceparent`
+    ],
+    card([_Field_ _private_], accent: amber)[
+      _Field_ 48 (_additional data – private_), 60–63, atau 120–127 dapat membawa _correlation ID_ hanya bila spesifikasi pihak lain mengizinkannya. Pada _switch_ nasional, kondisi ini jarang terpenuhi.
+    ],
+  )
+  #v(8pt)
+  #note[Penelusuran keluhan: _correlation ID_ dari nasabah → log adapter → RRN → log di sisi _switch_.]
+]
+
+#slide(kicker: "Propagasi", title: "Panduan untuk protokol lain")[
+  #table(
+    columns: (1.2fr, 1.4fr, 1.4fr),
+    [Kondisi Protokol], [Cara Propagasi], [Contoh],
+    [Memiliki _metadata_ (_header_ atau _property_)], [`correlation_id` dan `traceparent` ditaruh di _metadata_], [AMQP (_Advanced Message Queuing Protocol_) _application properties_, MQTT 5 _user properties_, NATS _header_],
+    [Tidak memiliki _metadata_, tetapi memiliki _field_ referensi bawaan], [_Field_ referensi digunakan, lalu dipetakan ke `correlation_id` di adapter], [ISO 8583 RRN dan STAN, ISO 20022 `EndToEndId` dan UETR (_Unique End-to-end Transaction Reference_), SWIFT MT _field_ 20],
+    [Tidak memiliki keduanya], [Adapter membuat referensi sendiri dan menyimpan pemetaannya, atau menyepakati _field_ cadangan dengan pihak lain], [Pesan _fixed-length_ di atas TCP, _file host-to-host_],
+  )
+  #v(10pt)
+  #bullets(size: 13pt,
+    [Penerjemahan dilakukan di satu adapter per protokol, sehingga service lain tetap hanya mengenal `correlation_id` dan `traceparent`.],
+    [Adapter mencatat kedua ID di baris log yang sama dan sebagai atribut _span_. Tanpa catatan ini, penelusuran terputus di batas protokol.],
+    [Nilai yang diterima dari luar divalidasi panjang dan karakternya sebelum ditulis ke log, seperti `AcceptCorrelationID` di studi kasus.],
+  )
+]
+
 #code-slide(kicker: "Logging", title: [_Handler_ `slog` yang membaca `context`],
   side: [
     - Setiap baris _log_ otomatis membawa `correlation_id`, `trace_id`, `span_id`
@@ -1313,6 +1440,33 @@ func (h contextHandler) WithGroup(n string) slog.Handler {
 }
 ```
 #source(("studi-kasus/transfer/internal/telemetry/log.go", "lab-08"))
+]
+
+#slide(kicker: "Correlation ID", title: [Mencari semua log satu transaksi dengan _correlation ID_])[
+  #two-col(
+    card([Grafana + Loki (lab)])[
+      ```
+      {service_name=~"account|transfer|notification"}
+        | correlation_id="c7f3e1..."
+      ```
+      - _Explore_, pilih Loki, isi _query_ LogQL di atas
+      - Urutan tampilan diubah ke _Oldest first_
+      - `correlation_id` disimpan sebagai _structured metadata_, sehingga dapat difilter tanpa _parsing_ teks
+    ],
+    card([Kibana + Elasticsearch atau OpenSearch], accent: gold.darken(15%))[
+      ```
+      correlation_id : "c7f3e1..."
+      ```
+      - _Discover_, pilih _data view_ yang mencakup log ketiga service, isi _query_ KQL (_Kibana Query Language_) di atas
+      - Urutkan `@timestamp` dari yang terlama, tampilkan kolom service, level, dan pesan
+      - Nama _field_ bergantung pada _shipper_ dan _mapping_-nya, misalnya `correlation_id` atau `attributes.correlation_id`
+    ],
+  )
+  #v(8pt)
+  #bullets(size: 12.5pt,
+    [Hasilnya adalah log transfer, account, dan notification untuk satu transaksi, berurutan menurut waktu. Syaratnya, ketiga service menulis atribut dengan nama yang sama dan jam server disinkronkan dengan NTP (_Network Time Protocol_).],
+    [Log notification muncul paling akhir, karena _event_ sampai melalui Kafka setelah transfer selesai. Kode service sama untuk Loki dan Elasticsearch. Yang berbeda hanya _collector_ yang mengirim log.],
+  )
 ]
 
 #slide(kicker: "Panduan logging", title: "Isi log untuk kebutuhan operasional")[
@@ -1462,55 +1616,6 @@ defer span.End()
     ],
   )
 ]
-
-#slide(kicker: "Stack", title: [_Observability stack_ lab dalam satu _container_ `otel-lgtm`])[
-  #diagram(height: 250pt,
-    at(0pt, 0pt, node("transfer")),
-    at(0pt, 90pt, node("account")),
-    at(0pt, 180pt, node("notification")),
-    at(250pt, 90pt, node("collector", sub: "OTLP :14317", kind: "infra", width: 130pt)),
-    at(480pt, 30pt, node("Tempo", sub: "trace", kind: "infra")),
-    at(480pt, 110pt, node("Loki", sub: "log", kind: "infra")),
-    at(480pt, 190pt, node("Prometheus", sub: "metrik", kind: "infra")),
-    at(720pt, 110pt, node("Grafana", sub: ":13000", kind: "infra")),
-    edge((120pt, 28pt), (250pt, 108pt)),
-    edge((120pt, 118pt), (250pt, 118pt), label: "OTLP"),
-    edge((120pt, 208pt), (250pt, 128pt)),
-    edge((380pt, 110pt), (480pt, 58pt)),
-    edge((380pt, 126pt), (480pt, 138pt)),
-    edge((480pt, 226pt), (120pt, 226pt), label: "scrape /metrics", dash: "dashed", label-dy: 8pt),
-    edge((600pt, 58pt), (720pt, 128pt)),
-    edge((600pt, 138pt), (720pt, 138pt)),
-    edge((600pt, 218pt), (720pt, 148pt)),
-  )
-  #v(6pt)
-  #bullets(size: 13pt,
-    [Satu _container_ `grafana/otel-lgtm` berisi _collector_, Tempo, Loki, Prometheus, dan Grafana dengan _dashboard_ bawaan.],
-    [_Trace_ dan _log_ dikirim (_push_) lewat OTLP, sedangkan metrik diambil (_pull_) oleh Prometheus dari `/metrics` di setiap service.],
-  )
-]
-
-#decision(title: [`otel-lgtm` untuk _observability_ di lab],
-  [
-    - Lab 8 membutuhkan _collector_, penyimpanan _trace_, _log_, metrik, dan Grafana di setiap laptop
-    - RAM laptop terbatas, dan waktu lab tidak cukup untuk mengonfigurasi lima komponen
-  ],
-  [
-    - Komponen terpisah (OTel Collector, Tempo, Loki, Prometheus, Grafana) di `compose.yaml`
-    - Jaeger, khusus untuk _trace_
-    - Platform _observability_ SaaS
-    - `grafana/otel-lgtm`: kelima komponen tersebut dalam satu _container_
-  ],
-  [
-    - `grafana/otel-lgtm:0.37.0` di `compose.yaml`, _port_ 13000 (Grafana) dan 14317/14318 (OTLP) di laptop
-    - Service hanya mengenal `OTEL_EXPORTER_OTLP_ENDPOINT`
-  ],
-  [
-    - Ditujukan untuk pengembangan, demo, dan _testing_. Tidak ada _high availability_ maupun kontrol akses per tim
-    - Di _production_, setiap komponen dijalankan dan diskalakan sendiri (Hari 4, bagian Operasional)
-    - Kode service tidak berubah saat pindah ke _stack_ terpisah, cukup alamat OTLP yang diganti
-  ],
-)
 
 #slide(kicker: "Demo Grafana", title: [Mencari service yang lambat dari _waterfall_])[
   #let bar(y, x, w, label, c: navy, depth: 0) = (
