@@ -554,6 +554,50 @@ func (s *PostgresStore) Insert(ctx context.Context,
 
 #section-slide(number: "04", title: "Security antar service", subtitle: [OAuth2 _client credentials_, JWT, _middleware_ REST, _interceptor_ gRPC, serta _grant_ OAuth2 dan OIDC untuk aplikasi dengan pengguna])
 
+#slide(kicker: "Glosarium", title: [Singkatan di sesi _security_])[
+  #let gloss(..rows) = {
+    show table.cell: set text(size: 10pt)
+    table(
+      columns: (auto, 1.1fr, 1.2fr),
+      inset: (x: 5pt, y: 3.5pt),
+      [Singkatan], [Kepanjangan], [Arti],
+      ..rows.pos().flatten(),
+    )
+  }
+  #grid(columns: (1fr, 1fr), column-gutter: 14pt,
+    gloss(
+      ([API], [_Application Programming Interface_], [Antarmuka yang dipanggil aplikasi lain]),
+      ([BFF], [_Backend for Frontend_], [_Backend_ khusus satu _frontend_, penyimpan token]),
+      ([CIBA], [_Client-Initiated Backchannel Authentication_], [Persetujuan nasabah di HP atas permintaan pihak lain]),
+      ([CLI], [_Command-Line Interface_], [Aplikasi yang dijalankan dari terminal]),
+      ([CSRF], [_Cross-Site Request Forgery_], [Situs lain memicu _request_ dengan _cookie_ pengguna]),
+      ([DPoP], [_Demonstrating Proof of Possession_], [Token terikat ke _private key_ klien (RFC 9449)]),
+      ([FAPI], [_Financial-grade API_], [Profil keamanan OAuth2 untuk sektor keuangan]),
+      ([IdP], [_Identity Provider_], [Sistem pengelola identitas dan login]),
+      ([IETF], [_Internet Engineering Task Force_], [Penyusun standar internet, termasuk OAuth2]),
+      ([JSON], [_JavaScript Object Notation_], [Format data teks]),
+      ([JWKS], [_JSON Web Key Set_], [Kumpulan _public key_ untuk memeriksa JWT]),
+      ([JWT], [_JSON Web Token_], [Token berisi _claim_ yang di-_sign_]),
+    ),
+    gloss(
+      ([mTLS], [_Mutual TLS_], [Kedua pihak koneksi saling menunjukkan sertifikat]),
+      ([OIDC], [_OpenID Connect_], [Standar login pengguna di atas OAuth2]),
+      ([OTP], [_One-Time Password_], [Kode sekali pakai]),
+      ([PAR], [_Pushed Authorization Request_], [Parameter `/authorize` dikirim langsung ke server (RFC 9126)]),
+      ([PKCE], [_Proof Key for Code Exchange_], [Mengikat `code` ke aplikasi yang memintanya (RFC 7636)]),
+      ([PKI], [_Public Key Infrastructure_], [Penerbitan dan pengelolaan sertifikat]),
+      ([RS256], [RSA _signature_ dengan SHA-256], [Algoritma _signature_ JWT. RSA: Rivest–Shamir–Adleman]),
+      ([RFC], [_Request for Comments_], [Nomor dokumen standar IETF]),
+      ([SHA-256], [_Secure Hash Algorithm_, 256 bit], [Fungsi _hash_. `S256` di PKCE berarti SHA-256]),
+      ([SPA], [_Single-Page Application_], [Aplikasi web berbasis JavaScript di _browser_]),
+      ([SSO], [_Single Sign-On_], [Satu kali login untuk banyak aplikasi]),
+      ([TLS], [_Transport Layer Security_], [Enkripsi koneksi jaringan]),
+      ([URL], [_Uniform Resource Locator_], [Alamat halaman atau _endpoint_]),
+      ([XSS], [_Cross-Site Scripting_], [Skrip penyerang berjalan di halaman aplikasi]),
+    ),
+  )
+]
+
 #slide(kicker: "Masalah", title: "Jaringan internal tidak otomatis aman")[
   #two-col(
     [
