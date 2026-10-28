@@ -22,7 +22,7 @@
     [11:30 – 12:00], [_Idempotency_: _idempotent consumer_ dan _Idempotency-Key_], [Presentasi],
     [12:00 – 13:00], [Istirahat makan siang], [—],
     [13:00 – 13:45], [*Lab 6*: _idempotent consumer_ dan _Idempotency-Key_ pada API transfer], [_Hands-on_],
-    [13:45 – 14:45], [OAuth2 _client credentials_, SSO dan _authorization server_ (_embedded_ atau _standalone_), validasi JWT, posisi API _gateway_, _grant_ OAuth2 dan OIDC untuk aplikasi dengan pengguna], [Presentasi + demo],
+    [13:45 – 14:45], [Peran dan _grant_ OAuth2, OIDC, _authorization server_ (_embedded_ atau _standalone_), alur untuk aplikasi dengan pengguna, posisi API _gateway_, _client credentials_ dan validasi JWT di studi kasus], [Presentasi + demo],
     [15:00 – 16:00], [*Lab 7*: _middleware_ JWT pada REST dan _interceptor_ JWT pada gRPC], [_Hands-on_],
     [16:00 – 17:00], [_Observability_ lintas service dan persiapan Lab 8. Ringkasan hari ini pada peta _concern_], [Presentasi + demo],
   )
@@ -552,7 +552,7 @@ func (s *PostgresStore) Insert(ctx context.Context,
 
 // ── 05 Security ────────────────────────────────────────────────────────────
 
-#section-slide(number: "04", title: "Security antar service", subtitle: [OAuth2 _client credentials_, JWT, _middleware_ REST, _interceptor_ gRPC, serta _grant_ OAuth2 dan OIDC untuk aplikasi dengan pengguna])
+#section-slide(number: "04", title: "Security antar service", subtitle: [Peran dan _grant_ OAuth2, OIDC, alur untuk aplikasi dengan pengguna, lalu _client credentials_ dan JWT antar service di studi kasus])
 
 #slide(kicker: "Glosarium", title: [Singkatan di sesi _security_])[
   #let gloss(..rows) = {
@@ -598,6 +598,281 @@ func (s *PostgresStore) Insert(ctx context.Context,
   )
 ]
 
+#slide(kicker: "OAuth2 dan OIDC", title: "Empat peran dalam OAuth2")[
+  #diagram(height: 208pt,
+    at(0pt, 0pt, node("Resource owner", sub: "pengguna, nasabah", kind: "ext", width: 180pt)),
+    at(684pt, 0pt, node("Authorization server", sub: "Hydra, Keycloak, IdP bank", kind: "infra", width: 180pt)),
+    at(0pt, 150pt, node("Client", sub: "aplikasi mobile, web, service", width: 180pt)),
+    at(684pt, 150pt, node("Resource server", sub: "API: account, transfer", width: 180pt)),
+    edge((180pt, 28pt), (684pt, 28pt), label: "login dan persetujuan"),
+    edge((90pt, 56pt), (90pt, 150pt), label: "menggunakan aplikasi", label-dx: 72pt, label-dy: -6pt),
+    edge((180pt, 160pt), (684pt, 46pt), label: [1. minta token (_grant_)], label-dx: -70pt, label-dy: -22pt),
+    edge((684pt, 60pt), (180pt, 174pt), label: [2. _access token_], dash: "dashed", label-dx: 70pt, label-dy: 12pt),
+    edge((180pt, 192pt), (684pt, 192pt), label: [3. _request_ + _access token_]),
+    edge((774pt, 150pt), (774pt, 56pt), label: [JWKS atau _introspection_], dash: "dashed", label-dx: -80pt, label-dy: -6pt),
+  )
+  #v(6pt)
+  #{
+    show table.cell: set text(size: 11pt)
+    table(
+      columns: (auto, 1fr),
+      inset: (x: 6pt, y: 4pt),
+      [Peran], [Tugas],
+      [_Resource owner_], [Pemilik data atau rekening yang memberi izin. Tidak ada pada _client credentials_],
+      [_Client_], [Aplikasi yang meminta token lalu memanggil API. _Public client_ tidak dapat menyimpan _secret_ (SPA, _mobile_), _confidential client_ dapat (_backend_, BFF)],
+      [_Authorization server_], [Mengautentikasi pengguna dan _client_, lalu mengeluarkan token],
+      [_Resource server_], [Memeriksa token dan _scope_ sebelum melayani _request_],
+      [_Browser_ atau HP pengguna], [Bukan peran tersendiri, melainkan _user agent_ milik _resource owner_. Pada _device flow_, perangkat yang meminta token (TV, CLI) adalah _client_. Pada CIBA, HP nasabah disebut _authentication device_ dan tidak pernah menerima token],
+    )
+  }
+]
+
+#slide(kicker: "OAuth2 dan OIDC", title: [_Grant_ OAuth2 dan penggunaannya])[
+  #{
+    show table.cell: set text(size: 10.5pt)
+    table(
+      columns: (1.15fr, 0.85fr, 2fr, 1.5fr),
+      inset: (x: 6pt, y: 4pt),
+      [_Grant_], [Token Atas Nama], [Digunakan Untuk], [Status Saat Ini],
+      [_Authorization code_ + PKCE (RFC 6749, RFC 7636)], [Pengguna], [Login pengguna di aplikasi web, SPA, dan _mobile_. Pengguna login di halaman _authorization server_], [Satu-satunya _grant_ untuk aplikasi dengan pengguna. PKCE wajib untuk semua klien],
+      [_Client credentials_], [Service], [Service ke service, _batch job_. Tidak ada interaksi pengguna], [Digunakan di Lab 7],
+      [_Refresh token_], [Sama dengan token awal], [Memperbarui _access token_ tanpa login ulang], [Untuk _public client_: rotasi setiap kali digunakan atau _sender-constrained_],
+      [_Device authorization_ (RFC 8628)], [Pengguna], [Perangkat tanpa _browser_ atau _keyboard_: TV, CLI, kios. Pengguna login di perangkat lain, misalnya HP], [Standar],
+      [CIBA (OpenID Foundation)], [Pengguna], [Tindakan yang dimulai pihak bank lalu disetujui nasabah di aplikasi _mobile_ miliknya, misalnya _call center_ membuka blokir kartu debit atau tim _fraud_ meminta konfirmasi transaksi mencurigakan], [Standar, bagian dari profil FAPI],
+      [_Token exchange_ (RFC 8693)], [Pengguna, diteruskan service], [Service meneruskan identitas pengguna ke service lain dengan token baru yang _scope_-nya lebih sempit, tanpa interaksi pengguna], [Standar, opsional],
+      [_Implicit_], [Pengguna], [Dulu untuk SPA: token dikirim langsung di URL], [Tidak direkomendasikan (RFC 9700), dihapus di _draft_ OAuth 2.1],
+      [_Resource owner password credentials_], [Pengguna], [Aplikasi menerima _password_ pengguna lalu menukarnya dengan token], [Dilarang (RFC 9700), dihapus di _draft_ OAuth 2.1],
+    )
+  }
+  #v(6pt)
+  #note[RFC 9700 (_OAuth 2.0 Security Best Current Practice_, Januari 2025) memuat rekomendasi keamanan terbaru. _Draft_ OAuth 2.1 menggabungkan RFC 6749, PKCE, dan rekomendasi tersebut menjadi satu dokumen.]
+]
+
+#slide(kicker: "OAuth2 dan OIDC", title: "Peran OAuth2 pada beberapa skenario")[
+  #{
+    show table.cell: set text(size: 11pt)
+    table(
+      columns: (1.3fr, 0.9fr, 1.2fr, 0.9fr, 1fr, 1fr),
+      inset: (x: 6pt, y: 5pt),
+      [Skenario], [_Resource Owner_], [_Client_], [_Authorization Server_], [_Resource Server_], [_Grant_],
+      [Login _mobile banking_], [Nasabah], [Aplikasi _mobile_ (_public client_)], [IdP bank], [API di belakang _gateway_], [_Authorization code_ + PKCE],
+      [_Internet banking_ berbasis SPA], [Nasabah], [BFF (_confidential client_)], [IdP bank], [API di belakang _gateway_], [_Authorization code_ + PKCE],
+      [Login CLI internal (_device flow_)], [Pengguna], [CLI (_public client_)], [IdP bank], [API internal], [_Device authorization_],
+      [_Call center_ meminta persetujuan nasabah], [Nasabah], [Aplikasi _call center_], [IdP bank], [API transaksi], [CIBA],
+      [Lab 7: aplikasi kanal memanggil transfer], [Tidak ada], [`channel-app`], [Hydra], [Transfer (REST)], [_Client credentials_],
+      [Lab 7: transfer memanggil account], [Tidak ada], [`transfer-service`], [Hydra], [Account (gRPC)], [_Client credentials_],
+    )
+  }
+  #v(10pt)
+  #bullets(size: 13pt,
+    [Satu service dapat memegang dua peran. Di Lab 7, transfer menjadi _resource server_ bagi `channel-app` sekaligus _client_ bagi account.],
+    [Tanpa _resource owner_, token atas nama _client_ itu sendiri: `sub` berisi `client_id`. Untuk meneruskan identitas nasabah dari transfer ke account, transfer membutuhkan _token exchange_.],
+  )
+]
+
+#slide(kicker: "OAuth2 dan OIDC", title: [OAuth2 untuk otorisasi, OIDC untuk login pengguna])[
+  #two-col(
+    card([OAuth2: _access token_])[
+      - Menjawab pertanyaan: boleh melakukan apa?
+      - Ditujukan ke API (_resource server_). Klaim `aud` berisi API tujuan
+      - Isi token tidak wajib dibaca oleh aplikasi klien
+      - Lab 7 hanya membutuhkan bagian ini, karena tidak ada login pengguna
+    ],
+    card([OIDC: _ID token_], accent: gold.darken(15%))[
+      - Standar identitas yang dibangun di atas OAuth2, diaktifkan dengan _scope_ `openid`
+      - Menjawab pertanyaan: siapa pengguna yang baru login, kapan, dan dengan metode apa?
+      - Ditujukan ke aplikasi klien. Klaim `aud` berisi `client_id` aplikasi
+      - Menambahkan _endpoint_ UserInfo dan _discovery_ `/.well-known/openid-configuration`
+    ],
+  )
+  #v(10pt)
+  #note(kind: "warn")[_ID token_ tidak boleh dikirim ke API sebagai pengganti _access token_. API hanya menerima _access token_ yang `aud`-nya sesuai, dan aplikasi klien hanya membaca _ID token_ yang `aud`-nya sama dengan `client_id` miliknya.]
+]
+
+#slide(kicker: "OAuth2 dan OIDC", title: [_Authorization server_: _embedded_ atau _standalone_])[
+  #{
+    show table.cell: set text(size: 11pt)
+    table(
+      columns: (1.25fr, auto, auto, auto, 1.5fr),
+      inset: (x: 6pt, y: 4.5pt),
+      [Produk], [Jenis], [Bahasa], [Lisensi], [Situs],
+      [Spring Security (_Authorization Server_)], [_Embedded_], [Java], [Apache-2.0], [#link("https://spring.io/projects/spring-security")[`spring.io/projects/spring-security`]],
+      [zitadel/oidc (_package_ `op`)], [_Embedded_], [Go], [Apache-2.0], [#link("https://github.com/zitadel/oidc")[`github.com/zitadel/oidc`]],
+      [node-oidc-provider], [_Embedded_], [Node.js], [MIT], [#link("https://github.com/panva/node-oidc-provider")[`github.com/panva/node-oidc-provider`]],
+      [Laravel Passport], [_Embedded_], [PHP], [MIT], [#link("https://laravel.com/docs/passport")[`laravel.com/docs/passport`]],
+      [Keycloak], [_Standalone_], [Semua], [Apache-2.0], [#link("https://www.keycloak.org")[`keycloak.org`]],
+      [Ory Hydra (digunakan di lab)], [_Standalone_], [Semua], [Apache-2.0], [#link("https://www.ory.sh/hydra")[`ory.sh/hydra`]],
+      [ZITADEL], [_Standalone_], [Semua], [AGPL-3.0], [#link("https://zitadel.com")[`zitadel.com`]],
+    )
+  }
+  #v(6pt)
+  #grid(columns: (1fr, 1fr), column-gutter: 14pt,
+    card([_Embedded_: _library_ di dalam aplikasi], text(size: 12pt)[Satu artefak untuk di-_deploy_, tetapi terikat pada satu _tech stack_, dan tim memelihara kode _security_ tersebut.]),
+    card([_Standalone_: produk terpisah], accent: gold.darken(15%), text(size: 12pt)[Dapat digunakan service dalam bahasa apa pun dan siap dijalankan, tetapi menambah satu server yang harus dioperasikan.]),
+  )
+  #v(4pt)
+  #text(size: 11pt, fill: slate)[SSO untuk pengguna (login aplikasi channel atau karyawan) dan _client credentials_ untuk service menggunakan _authorization server_ yang sama. Studi kasus hanya menggunakan _client credentials_ dengan Hydra, karena tidak ada login pengguna. Hydra tidak menyediakan halaman login dan manajemen pengguna, sehingga SSO dengan Hydra membutuhkan aplikasi login terpisah.]
+]
+
+#slide(kicker: "Aplikasi dengan pengguna", title: [Alur _authorization code_ dengan PKCE])[
+  #sequence(width: 864pt, row: 20pt,
+    actors: (("Pengguna + browser", "ext", [_resource owner_]), ("Aplikasi", "svc", [_client_]), ("Authorization server", "infra"), ("API", "svc", [_resource server_])),
+    steps: (
+      (from: 1, to: 1, label: [Buat `code_verifier` acak dan `code_challenge` = SHA-256-nya]),
+      (from: 1, to: 0, label: [_Redirect_ ke `/authorize` + `code_challenge`], reply: true),
+      (from: 0, to: 2, label: [`GET /authorize` + `code_challenge`, `state`, `nonce`, `redirect_uri`]),
+      (from: 2, to: 0, label: [Halaman login dan persetujuan], reply: true),
+      (from: 0, to: 2, label: [_Password_, OTP, persetujuan. Aplikasi tidak pernah menerimanya]),
+      (from: 2, to: 0, label: [_Redirect_ ke `redirect_uri` + `code`, `state`], reply: true),
+      (from: 0, to: 1, label: [`code`, `state`. Aplikasi mencocokkan `state`]),
+      (from: 1, to: 2, label: [`POST /token`: `code` + `code_verifier`]),
+      (from: 2, to: 2, label: [Cek SHA-256(`code_verifier`) = `code_challenge`]),
+      (from: 2, to: 1, label: [_Access token_, _refresh token_, _ID token_], reply: true),
+      (from: 1, to: 3, label: [_Request_ + `Bearer` _access token_]),
+    ),
+  )
+  #two-col(
+    card([Alasan _implicit_ ditinggalkan], accent: red)[
+      Token dikirim di URL, sehingga tercatat di _history browser_, _header_ `Referer`, dan log _proxy_, tanpa cara mengikat token ke aplikasi yang meminta.
+    ],
+    card("Fungsi PKCE", accent: gold.darken(15%))[
+      `code` yang tercuri di langkah 6 tidak dapat ditukar tanpa `code_verifier`. SPA dan aplikasi _mobile_ (_public client_ tanpa _secret_) dapat menggunakan alur ini.
+    ],
+  )
+]
+
+#slide(kicker: "Aplikasi dengan pengguna", title: [Login dari perangkat lain: _device flow_ dan CIBA])[
+  #grid(columns: (1fr, 1fr), column-gutter: 24pt,
+    [
+      #text(size: 13pt, weight: "bold", fill: navy)[_Device authorization grant_ (RFC 8628)]
+      #v(2pt)
+      #sequence(width: 420pt, row: 31pt,
+        actors: (("TV / CLI", "ext", [_client_]), ("Authorization server", "infra"), ("HP pengguna", "ext", [_resource owner_])),
+        steps: (
+          (from: 0, to: 1, label: [`POST /device_authorization`]),
+          (from: 1, to: 0, label: [`device_code`, `user_code`, alamat verifikasi], reply: true),
+          (from: 0, to: 0, label: [Tampilkan `user_code` atau QR _code_]),
+          (from: 2, to: 1, label: [Buka alamat verifikasi, login, masukkan `user_code`]),
+          (from: 0, to: 1, label: [`POST /token` + `device_code`, berkala]),
+          (from: 1, to: 0, label: [`authorization_pending` sampai pengguna setuju], reply: true),
+          (from: 1, to: 0, label: [_Access token_], reply: true),
+        ),
+      )
+      #set text(size: 11pt)
+      Risiko: penyerang mengirim `user_code` miliknya ke korban. Halaman persetujuan harus menampilkan perangkat yang meminta akses.
+    ],
+    [
+      #text(size: 13pt, weight: "bold", fill: navy)[CIBA (_Client-Initiated Backchannel Authentication_)]
+      #v(2pt)
+      #sequence(width: 420pt, row: 31pt,
+        actors: (("Aplikasi call center", "svc", [_client_]), ("Authorization server", "infra"), ("HP nasabah", "ext", [_resource owner_])),
+        steps: (
+          (from: 0, to: 1, label: [`POST /bc-authorize` + `login_hint`, `binding_message`]),
+          (from: 1, to: 0, label: [`auth_req_id`], reply: true),
+          (from: 1, to: 2, label: [Permintaan persetujuan (_push notification_)]),
+          (from: 2, to: 2, label: [Nasabah login, memeriksa `binding_message`]),
+          (from: 2, to: 1, label: [Persetujuan]),
+          (from: 0, to: 1, label: [`POST /token` + `auth_req_id`]),
+          (from: 1, to: 0, label: [_Access token_, _ID token_], reply: true),
+        ),
+      )
+      #set text(size: 11pt)
+      Contoh: _call center_ membuka blokir kartu debit, tim _fraud_ meminta konfirmasi transaksi mencurigakan. `binding_message` tampil di kedua sisi agar nasabah dapat memastikan permintaan yang disetujuinya. Token diterima dengan mode _poll_, _ping_, atau _push_. CIBA termasuk dalam profil FAPI.
+    ],
+  )
+]
+
+#slide(kicker: "Aplikasi dengan pengguna", title: "Penyimpanan token di sisi klien")[
+  #{
+    show table.cell: set text(size: 11.5pt)
+    table(
+      columns: (auto, 1.5fr, 1.3fr),
+      inset: (x: 6pt, y: 5pt),
+      [Jenis Klien], [Tempat Token], [Yang Dihindari],
+      [Aplikasi web _server-side_], [_Session_ di server. _Browser_ hanya menyimpan _cookie_ `HttpOnly`, `Secure`, `SameSite`], [Token dikirim ke halaman HTML],
+      [SPA dengan BFF], [Di BFF. _Browser_ hanya menyimpan _cookie_ _session_], [—],
+      [SPA tanpa _backend_], [Memori JavaScript, dengan _refresh token_ yang dirotasi], [`localStorage` dan `sessionStorage`: dapat dibaca oleh skrip XSS],
+      [Aplikasi _mobile_], [iOS Keychain, Android Keystore. Login melalui _browser_ sistem (ASWebAuthenticationSession, Custom Tabs) dengan _redirect_ HTTPS milik aplikasi], [WebView di dalam aplikasi (RFC 8252), _custom URL scheme_ yang dapat diklaim aplikasi lain, penyimpanan tanpa enkripsi],
+      [Service _backend_], [Memori proses. `client_secret` di Kubernetes Secret atau _vault_], [_Secret_ di _image_, repositori, atau log],
+      [CLI], [_Credential store_ sistem operasi], [_File_ teks biasa di _home directory_],
+    )
+  }
+  #v(6pt)
+  #note[Prinsipnya sama untuk semua jenis klien: token disimpan sejauh mungkin dari kode yang dapat disusupi, dan umurnya dibuat pendek agar token yang bocor cepat tidak berlaku.]
+]
+
+#slide(kicker: "Aplikasi dengan pengguna", title: [Pola _Backend for Frontend_ (BFF)])[
+  #flow(
+    node("browser", sub: "SPA", kind: "ext", width: 110pt),
+    arr(label: "cookie HttpOnly", length: 120pt),
+    node("BFF", sub: "confidential client", kind: "infra", width: 140pt),
+    arr(label: "Bearer access token", length: 140pt),
+    node("API gateway / API", width: 150pt),
+  )
+  #v(4pt)
+  #align(center, text(size: 11pt, fill: slate)[BFF menjalankan alur _authorization code_ + PKCE ke _authorization server_ dan menyimpan _access token_ serta _refresh token_])
+  #v(10pt)
+  #two-col(
+    card("Yang diperoleh")[
+      - Token tidak pernah sampai ke JavaScript, sehingga skrip XSS tidak dapat mengambil dan membawa token keluar
+      - BFF adalah _confidential client_ yang dapat menyimpan _secret_ atau _private key_
+      - _Draft_ IETF _OAuth 2.0 for Browser-Based Applications_ menempatkan BFF sebagai pilihan paling aman untuk SPA
+    ],
+    card("Yang tetap harus dijaga", accent: amber)[
+      - Selama halaman terbuka, skrip XSS masih dapat mengirim _request_ melalui BFF. XSS tetap harus dicegah
+      - _Cookie_ memerlukan perlindungan CSRF: `SameSite` dan _header_ khusus yang diperiksa BFF
+      - BFF menjadi satu komponen tambahan yang harus dioperasikan dan di-_scale_
+    ],
+  )
+]
+
+#slide(kicker: "OAuth2 dan OIDC", title: "Rekomendasi keamanan terkini")[
+  #two-col(
+    card([Klien dan _authorization server_])[
+      - _Authorization code_ + PKCE (`S256`) untuk semua klien, termasuk _confidential client_
+      - `redirect_uri` dicocokkan persis, tanpa _wildcard_
+      - Token tidak dikirim di _query string_ URL
+      - Parameter `/authorize` dikirim melalui PAR (RFC 9126), sehingga tidak dapat diubah di _browser_
+      - Autentikasi klien dengan `private_key_jwt` (RFC 7523) atau mTLS (RFC 8705), lebih kuat dari `client_secret`
+    ],
+    card([_Token_ dan _resource server_], accent: gold.darken(15%))[
+      - _Access token_ berumur pendek, dalam hitungan menit
+      - `aud` diperiksa di setiap API, agar token untuk satu API tidak diterima API lain (Lab 7 belum memeriksanya)
+      - _Scope_ sesempit yang dibutuhkan
+      - _Sender-constrained token_ dengan DPoP (RFC 9449) atau mTLS: token yang tercuri tidak dapat digunakan tanpa _private key_ pemiliknya
+      - _Refresh token_ dirotasi, dan penggunaan ulang _refresh token_ lama mencabut seluruh rangkaian token tersebut
+    ],
+  )
+  #v(10pt)
+  #note[Untuk sektor keuangan, profil FAPI 2.0 dari OpenID Foundation menjadikan sebagian besar rekomendasi ini wajib: PAR, PKCE, _sender-constrained token_, serta autentikasi klien dengan `private_key_jwt` atau mTLS.]
+]
+
+#slide(kicker: "Arsitektur", title: [Posisi API _gateway_])[
+  #flow(
+    node("aplikasi kanal", kind: "ext", width: 130pt),
+    arr(label: "token pengguna", length: 100pt),
+    node("API gateway", sub: "di tepi jaringan", kind: "infra", width: 130pt),
+    arr(label: "token", length: 70pt),
+    node("transfer", width: 110pt),
+    arr(label: "token service", length: 100pt),
+    node("account", width: 110pt),
+  )
+  #v(14pt)
+  #two-col(
+    card([Tugas _gateway_])[
+      - Satu pintu masuk dari luar
+      - Validasi awal token, _rate limiting_, TLS
+      - Menyembunyikan alamat service internal
+    ],
+    card("Tetap dikerjakan service", accent: gold.darken(15%))[
+      - Validasi JWT dan _scope_ di setiap service
+      - _Gateway_ tidak menggantikan pemeriksaan di service, karena panggilan antarservice tidak melewati _gateway_
+    ],
+  )
+  #v(8pt)
+  #note[Studi kasus tidak menjalankan _gateway_. Pembahasan ini menunjukkan letaknya pada arsitektur _production_.]
+]
+
 #slide(kicker: "Masalah", title: "Jaringan internal tidak otomatis aman")[
   #two-col(
     [
@@ -629,7 +904,7 @@ func (s *PostgresStore) Insert(ctx context.Context,
     - OAuth2 _client credentials_ + JWT dari Hydra, Keycloak, atau IdP lain
   ],
   [
-    OAuth2 _client credentials_ dengan Ory Hydra, dijalankan dari konfigurasi `compose.yaml` yang sudah disediakan. Hydra hanya berperan sebagai _authorization server_ OAuth2/OIDC, tanpa UI _login_ dan tanpa manajemen _user_. Untuk alur dengan _user_, _login_ dan _consent_ diserahkan ke aplikasi terpisah. _Client credentials_ tidak melibatkan _user_, sehingga cukup satu _container_
+    OAuth2 _client credentials_ dengan Ory Hydra, dijalankan dari konfigurasi `compose.yaml` yang sudah disediakan. _Client credentials_ tidak melibatkan pengguna, sehingga Hydra cukup dijalankan sebagai satu _container_ tanpa aplikasi login
   ],
   [
     - Pengambilan token bergantung pada Hydra. Bila Hydra mati saat token harus diperbarui, transfer berakhir `FAILED` (saat debit) atau `COMPENSATION_FAILED` (saat _reversal_)
@@ -638,32 +913,7 @@ func (s *PostgresStore) Insert(ctx context.Context,
   ],
 )
 
-#slide(kicker: "SSO dan IdP", title: [_Authorization server_: _embedded_ atau _standalone_])[
-  #{
-    show table.cell: set text(size: 11pt)
-    table(
-      columns: (1.25fr, auto, auto, auto, 1.5fr),
-      inset: (x: 6pt, y: 4.5pt),
-      [Produk], [Jenis], [Bahasa], [Lisensi], [Situs],
-      [Spring Security (_Authorization Server_)], [_Embedded_], [Java], [Apache-2.0], [#link("https://spring.io/projects/spring-security")[`spring.io/projects/spring-security`]],
-      [zitadel/oidc (_package_ `op`)], [_Embedded_], [Go], [Apache-2.0], [#link("https://github.com/zitadel/oidc")[`github.com/zitadel/oidc`]],
-      [node-oidc-provider], [_Embedded_], [Node.js], [MIT], [#link("https://github.com/panva/node-oidc-provider")[`github.com/panva/node-oidc-provider`]],
-      [Laravel Passport], [_Embedded_], [PHP], [MIT], [#link("https://laravel.com/docs/passport")[`laravel.com/docs/passport`]],
-      [Keycloak], [_Standalone_], [Semua], [Apache-2.0], [#link("https://www.keycloak.org")[`keycloak.org`]],
-      [Ory Hydra (digunakan di lab)], [_Standalone_], [Semua], [Apache-2.0], [#link("https://www.ory.sh/hydra")[`ory.sh/hydra`]],
-      [ZITADEL], [_Standalone_], [Semua], [AGPL-3.0], [#link("https://zitadel.com")[`zitadel.com`]],
-    )
-  }
-  #v(6pt)
-  #grid(columns: (1fr, 1fr), column-gutter: 14pt,
-    card([_Embedded_: _library_ di dalam aplikasi], text(size: 12pt)[Satu artefak untuk di-_deploy_, tetapi terikat pada satu _tech stack_, dan tim memelihara kode _security_ tersebut.]),
-    card([_Standalone_: produk terpisah], accent: gold.darken(15%), text(size: 12pt)[Dapat digunakan service dalam bahasa apa pun dan siap dijalankan, tetapi menambah satu server yang harus dioperasikan.]),
-  )
-  #v(4pt)
-  #text(size: 11pt, fill: slate)[SSO untuk pengguna (login aplikasi channel atau karyawan) dan _client credentials_ untuk service menggunakan _authorization server_ yang sama. Studi kasus hanya menggunakan _client credentials_ dengan Hydra, karena tidak ada login pengguna. Hydra tidak menyediakan halaman login dan manajemen pengguna, sehingga SSO dengan Hydra membutuhkan aplikasi login terpisah.]
-]
-
-#slide(kicker: "OAuth2", title: [Alur _client credentials_])[
+#slide(kicker: "Studi kasus", title: [Alur _client credentials_])[
   #diagram(height: 250pt,
     at(0pt, 130pt, node("transfer", sub: "client: transfer-service", width: 150pt)),
     at(330pt, 0pt, node("Ory Hydra", sub: "authorization server", kind: "infra", width: 160pt)),
@@ -922,33 +1172,7 @@ grpc.WithChainUnaryInterceptor(
 #source(("studi-kasus/transfer/internal/accountclient/credentials.go", "lab-07"), ("studi-kasus/transfer/internal/accountclient/client.go", "lab-07"))
 ]
 
-#slide(kicker: "Arsitektur", title: [Posisi API _gateway_])[
-  #flow(
-    node("aplikasi kanal", kind: "ext", width: 130pt),
-    arr(label: "token pengguna", length: 100pt),
-    node("API gateway", sub: "di tepi jaringan", kind: "infra", width: 130pt),
-    arr(label: "token", length: 70pt),
-    node("transfer", width: 110pt),
-    arr(label: "token service", length: 100pt),
-    node("account", width: 110pt),
-  )
-  #v(14pt)
-  #two-col(
-    card([Tugas _gateway_])[
-      - Satu pintu masuk dari luar
-      - Validasi awal token, _rate limiting_, TLS
-      - Menyembunyikan alamat service internal
-    ],
-    card("Tetap dikerjakan service", accent: gold.darken(15%))[
-      - Validasi JWT dan _scope_ di setiap service
-      - _Gateway_ tidak menggantikan pemeriksaan di service, karena panggilan antarservice tidak melewati _gateway_
-    ],
-  )
-  #v(8pt)
-  #note[Studi kasus tidak menjalankan _gateway_. Pembahasan ini menunjukkan letaknya pada arsitektur _production_.]
-]
-
-#slide(kicker: "Security", title: "Alasan kegagalan untuk klien dibuat generik")[
+#slide(kicker: "Lab 7", title: "Alasan kegagalan untuk klien dibuat generik")[
   #two-col(
     card("Sebelum Lab 7", accent: red)[
       ```json
@@ -970,230 +1194,6 @@ grpc.WithChainUnaryInterceptor(
   )
   #v(10pt)
   #note(kind: "tip")[Klien cukup tahu kategori kegagalan. Penyebabnya ditelusuri dari log, dan sesi _observability_ di akhir hari ini menambahkan _correlation ID_ serta _trace_ untuk mempercepat penelusuran tersebut.]
-]
-
-#slide(kicker: "OAuth2 dan OIDC", title: [_Grant_ OAuth2 dan penggunaannya])[
-  #{
-    show table.cell: set text(size: 10.5pt)
-    table(
-      columns: (1.15fr, 0.85fr, 2fr, 1.5fr),
-      inset: (x: 6pt, y: 4pt),
-      [_Grant_], [Token Atas Nama], [Digunakan Untuk], [Status Saat Ini],
-      [_Authorization code_ + PKCE (RFC 6749, RFC 7636)], [Pengguna], [Login pengguna di aplikasi web, SPA, dan _mobile_. Pengguna login di halaman _authorization server_], [Satu-satunya _grant_ untuk aplikasi dengan pengguna. PKCE wajib untuk semua klien],
-      [_Client credentials_], [Service], [Service ke service, _batch job_. Tidak ada interaksi pengguna], [Digunakan di Lab 7],
-      [_Refresh token_], [Sama dengan token awal], [Memperbarui _access token_ tanpa login ulang], [Untuk _public client_: rotasi setiap kali digunakan atau _sender-constrained_],
-      [_Device authorization_ (RFC 8628)], [Pengguna], [Perangkat tanpa _browser_ atau _keyboard_: TV, CLI, kios. Pengguna login di perangkat lain, misalnya HP], [Standar],
-      [CIBA (OpenID Foundation)], [Pengguna], [Tindakan yang dimulai pihak bank lalu disetujui nasabah di aplikasi _mobile_ miliknya, misalnya _call center_ membuka blokir kartu debit atau tim _fraud_ meminta konfirmasi transaksi mencurigakan], [Standar, bagian dari profil FAPI],
-      [_Token exchange_ (RFC 8693)], [Pengguna, diteruskan service], [Service meneruskan identitas pengguna ke service lain dengan token baru yang _scope_-nya lebih sempit, tanpa interaksi pengguna], [Standar, opsional],
-      [_Implicit_], [Pengguna], [Dulu untuk SPA: token dikirim langsung di URL], [Tidak direkomendasikan (RFC 9700), dihapus di _draft_ OAuth 2.1],
-      [_Resource owner password credentials_], [Pengguna], [Aplikasi menerima _password_ pengguna lalu menukarnya dengan token], [Dilarang (RFC 9700), dihapus di _draft_ OAuth 2.1],
-    )
-  }
-  #v(6pt)
-  #note[RFC 9700 (_OAuth 2.0 Security Best Current Practice_, Januari 2025) memuat rekomendasi keamanan terbaru. _Draft_ OAuth 2.1 menggabungkan RFC 6749, PKCE, dan rekomendasi tersebut menjadi satu dokumen.]
-]
-
-#slide(kicker: "OAuth2 dan OIDC", title: "Empat peran dalam OAuth2")[
-  #diagram(height: 208pt,
-    at(0pt, 0pt, node("Resource owner", sub: "pengguna, nasabah", kind: "ext", width: 180pt)),
-    at(684pt, 0pt, node("Authorization server", sub: "Hydra, Keycloak, IdP bank", kind: "infra", width: 180pt)),
-    at(0pt, 150pt, node("Client", sub: "aplikasi mobile, web, service", width: 180pt)),
-    at(684pt, 150pt, node("Resource server", sub: "API: account, transfer", width: 180pt)),
-    edge((180pt, 28pt), (684pt, 28pt), label: "login dan persetujuan"),
-    edge((90pt, 56pt), (90pt, 150pt), label: "menggunakan aplikasi", label-dx: 72pt, label-dy: -6pt),
-    edge((180pt, 160pt), (684pt, 46pt), label: [1. minta token (_grant_)], label-dx: -70pt, label-dy: -22pt),
-    edge((684pt, 60pt), (180pt, 174pt), label: [2. _access token_], dash: "dashed", label-dx: 70pt, label-dy: 12pt),
-    edge((180pt, 192pt), (684pt, 192pt), label: [3. _request_ + _access token_]),
-    edge((774pt, 150pt), (774pt, 56pt), label: [JWKS atau _introspection_], dash: "dashed", label-dx: -80pt, label-dy: -6pt),
-  )
-  #v(6pt)
-  #{
-    show table.cell: set text(size: 11pt)
-    table(
-      columns: (auto, 1fr),
-      inset: (x: 6pt, y: 4pt),
-      [Peran], [Tugas],
-      [_Resource owner_], [Pemilik data atau rekening yang memberi izin. Tidak ada pada _client credentials_],
-      [_Client_], [Aplikasi yang meminta token lalu memanggil API. _Public client_ tidak dapat menyimpan _secret_ (SPA, _mobile_), _confidential client_ dapat (_backend_, BFF)],
-      [_Authorization server_], [Mengautentikasi pengguna dan _client_, lalu mengeluarkan token],
-      [_Resource server_], [Memeriksa token dan _scope_ sebelum melayani _request_],
-      [_Browser_ atau HP pengguna], [Bukan peran tersendiri, melainkan _user agent_ milik _resource owner_. Pada _device flow_, perangkat yang meminta token (TV, CLI) adalah _client_. Pada CIBA, HP nasabah disebut _authentication device_ dan tidak pernah menerima token],
-    )
-  }
-]
-
-#slide(kicker: "OAuth2 dan OIDC", title: "Peran OAuth2 pada beberapa skenario")[
-  #{
-    show table.cell: set text(size: 11pt)
-    table(
-      columns: (1.3fr, 0.9fr, 1.2fr, 0.9fr, 1fr, 1fr),
-      inset: (x: 6pt, y: 5pt),
-      [Skenario], [_Resource Owner_], [_Client_], [_Authorization Server_], [_Resource Server_], [_Grant_],
-      [Login _mobile banking_], [Nasabah], [Aplikasi _mobile_ (_public client_)], [IdP bank], [API di belakang _gateway_], [_Authorization code_ + PKCE],
-      [_Internet banking_ berbasis SPA], [Nasabah], [BFF (_confidential client_)], [IdP bank], [API di belakang _gateway_], [_Authorization code_ + PKCE],
-      [Login CLI internal (_device flow_)], [Pengguna], [CLI (_public client_)], [IdP bank], [API internal], [_Device authorization_],
-      [_Call center_ meminta persetujuan nasabah], [Nasabah], [Aplikasi _call center_], [IdP bank], [API transaksi], [CIBA],
-      [Lab 7: aplikasi kanal memanggil transfer], [Tidak ada], [`channel-app`], [Hydra], [Transfer (REST)], [_Client credentials_],
-      [Lab 7: transfer memanggil account], [Tidak ada], [`transfer-service`], [Hydra], [Account (gRPC)], [_Client credentials_],
-    )
-  }
-  #v(10pt)
-  #bullets(size: 13pt,
-    [Satu service dapat memegang dua peran. Di Lab 7, transfer menjadi _resource server_ bagi `channel-app` sekaligus _client_ bagi account.],
-    [Tanpa _resource owner_, token atas nama _client_ itu sendiri: `sub` berisi `client_id`. Untuk meneruskan identitas nasabah dari transfer ke account, transfer membutuhkan _token exchange_.],
-  )
-]
-
-#slide(kicker: "OAuth2 dan OIDC", title: [OAuth2 untuk otorisasi, OIDC untuk login pengguna])[
-  #two-col(
-    card([OAuth2: _access token_])[
-      - Menjawab pertanyaan: boleh melakukan apa?
-      - Ditujukan ke API (_resource server_). Klaim `aud` berisi API tujuan
-      - Isi token tidak wajib dibaca oleh aplikasi klien
-      - Lab 7 hanya membutuhkan bagian ini, karena tidak ada login pengguna
-    ],
-    card([OIDC: _ID token_], accent: gold.darken(15%))[
-      - Standar identitas yang dibangun di atas OAuth2, diaktifkan dengan _scope_ `openid`
-      - Menjawab pertanyaan: siapa pengguna yang baru login, kapan, dan dengan metode apa?
-      - Ditujukan ke aplikasi klien. Klaim `aud` berisi `client_id` aplikasi
-      - Menambahkan _endpoint_ UserInfo dan _discovery_ `/.well-known/openid-configuration`
-    ],
-  )
-  #v(10pt)
-  #note(kind: "warn")[_ID token_ tidak boleh dikirim ke API sebagai pengganti _access token_. API hanya menerima _access token_ yang `aud`-nya sesuai, dan aplikasi klien hanya membaca _ID token_ yang `aud`-nya sama dengan `client_id` miliknya.]
-]
-
-#slide(kicker: "OAuth2 dan OIDC", title: [Alur _authorization code_ dengan PKCE])[
-  #sequence(width: 864pt, row: 20pt,
-    actors: (("Pengguna + browser", "ext", [_resource owner_]), ("Aplikasi", "svc", [_client_]), ("Authorization server", "infra"), ("API", "svc", [_resource server_])),
-    steps: (
-      (from: 1, to: 1, label: [Buat `code_verifier` acak dan `code_challenge` = SHA-256-nya]),
-      (from: 1, to: 0, label: [_Redirect_ ke `/authorize` + `code_challenge`], reply: true),
-      (from: 0, to: 2, label: [`GET /authorize` + `code_challenge`, `state`, `nonce`, `redirect_uri`]),
-      (from: 2, to: 0, label: [Halaman login dan persetujuan], reply: true),
-      (from: 0, to: 2, label: [_Password_, OTP, persetujuan. Aplikasi tidak pernah menerimanya]),
-      (from: 2, to: 0, label: [_Redirect_ ke `redirect_uri` + `code`, `state`], reply: true),
-      (from: 0, to: 1, label: [`code`, `state`. Aplikasi mencocokkan `state`]),
-      (from: 1, to: 2, label: [`POST /token`: `code` + `code_verifier`]),
-      (from: 2, to: 2, label: [Cek SHA-256(`code_verifier`) = `code_challenge`]),
-      (from: 2, to: 1, label: [_Access token_, _refresh token_, _ID token_], reply: true),
-      (from: 1, to: 3, label: [_Request_ + `Bearer` _access token_]),
-    ),
-  )
-  #two-col(
-    card([Alasan _implicit_ ditinggalkan], accent: red)[
-      Token dikirim di URL, sehingga tercatat di _history browser_, _header_ `Referer`, dan log _proxy_, tanpa cara mengikat token ke aplikasi yang meminta.
-    ],
-    card("Fungsi PKCE", accent: gold.darken(15%))[
-      `code` yang tercuri di langkah 6 tidak dapat ditukar tanpa `code_verifier`. SPA dan aplikasi _mobile_ (_public client_ tanpa _secret_) dapat menggunakan alur ini.
-    ],
-  )
-]
-
-#slide(kicker: "OAuth2 dan OIDC", title: [Login dari perangkat lain: _device flow_ dan CIBA])[
-  #grid(columns: (1fr, 1fr), column-gutter: 24pt,
-    [
-      #text(size: 13pt, weight: "bold", fill: navy)[_Device authorization grant_ (RFC 8628)]
-      #v(2pt)
-      #sequence(width: 420pt, row: 31pt,
-        actors: (("TV / CLI", "ext", [_client_]), ("Authorization server", "infra"), ("HP pengguna", "ext", [_resource owner_])),
-        steps: (
-          (from: 0, to: 1, label: [`POST /device_authorization`]),
-          (from: 1, to: 0, label: [`device_code`, `user_code`, alamat verifikasi], reply: true),
-          (from: 0, to: 0, label: [Tampilkan `user_code` atau QR _code_]),
-          (from: 2, to: 1, label: [Buka alamat verifikasi, login, masukkan `user_code`]),
-          (from: 0, to: 1, label: [`POST /token` + `device_code`, berkala]),
-          (from: 1, to: 0, label: [`authorization_pending` sampai pengguna setuju], reply: true),
-          (from: 1, to: 0, label: [_Access token_], reply: true),
-        ),
-      )
-      #set text(size: 11pt)
-      Risiko: penyerang mengirim `user_code` miliknya ke korban. Halaman persetujuan harus menampilkan perangkat yang meminta akses.
-    ],
-    [
-      #text(size: 13pt, weight: "bold", fill: navy)[CIBA (_Client-Initiated Backchannel Authentication_)]
-      #v(2pt)
-      #sequence(width: 420pt, row: 31pt,
-        actors: (("Aplikasi call center", "svc", [_client_]), ("Authorization server", "infra"), ("HP nasabah", "ext", [_resource owner_])),
-        steps: (
-          (from: 0, to: 1, label: [`POST /bc-authorize` + `login_hint`, `binding_message`]),
-          (from: 1, to: 0, label: [`auth_req_id`], reply: true),
-          (from: 1, to: 2, label: [Permintaan persetujuan (_push notification_)]),
-          (from: 2, to: 2, label: [Nasabah login, memeriksa `binding_message`]),
-          (from: 2, to: 1, label: [Persetujuan]),
-          (from: 0, to: 1, label: [`POST /token` + `auth_req_id`]),
-          (from: 1, to: 0, label: [_Access token_, _ID token_], reply: true),
-        ),
-      )
-      #set text(size: 11pt)
-      Contoh: _call center_ membuka blokir kartu debit, tim _fraud_ meminta konfirmasi transaksi mencurigakan. `binding_message` tampil di kedua sisi agar nasabah dapat memastikan permintaan yang disetujuinya. Token diterima dengan mode _poll_, _ping_, atau _push_. CIBA termasuk dalam profil FAPI.
-    ],
-  )
-]
-
-#slide(kicker: "OAuth2 dan OIDC", title: "Penyimpanan token di sisi klien")[
-  #{
-    show table.cell: set text(size: 11.5pt)
-    table(
-      columns: (auto, 1.5fr, 1.3fr),
-      inset: (x: 6pt, y: 5pt),
-      [Jenis Klien], [Tempat Token], [Yang Dihindari],
-      [Aplikasi web _server-side_], [_Session_ di server. _Browser_ hanya menyimpan _cookie_ `HttpOnly`, `Secure`, `SameSite`], [Token dikirim ke halaman HTML],
-      [SPA dengan BFF], [Di BFF. _Browser_ hanya menyimpan _cookie_ _session_], [—],
-      [SPA tanpa _backend_], [Memori JavaScript, dengan _refresh token_ yang dirotasi], [`localStorage` dan `sessionStorage`: dapat dibaca oleh skrip XSS],
-      [Aplikasi _mobile_], [iOS Keychain, Android Keystore. Login melalui _browser_ sistem (ASWebAuthenticationSession, Custom Tabs) dengan _redirect_ HTTPS milik aplikasi], [WebView di dalam aplikasi (RFC 8252), _custom URL scheme_ yang dapat diklaim aplikasi lain, penyimpanan tanpa enkripsi],
-      [Service _backend_], [Memori proses. `client_secret` di Kubernetes Secret atau _vault_], [_Secret_ di _image_, repositori, atau log],
-      [CLI], [_Credential store_ sistem operasi], [_File_ teks biasa di _home directory_],
-    )
-  }
-  #v(6pt)
-  #note[Prinsipnya sama untuk semua jenis klien: token disimpan sejauh mungkin dari kode yang dapat disusupi, dan umurnya dibuat pendek agar token yang bocor cepat tidak berlaku.]
-]
-
-#slide(kicker: "OAuth2 dan OIDC", title: [Pola _Backend for Frontend_ (BFF)])[
-  #flow(
-    node("browser", sub: "SPA", kind: "ext", width: 110pt),
-    arr(label: "cookie HttpOnly", length: 120pt),
-    node("BFF", sub: "confidential client", kind: "infra", width: 140pt),
-    arr(label: "Bearer access token", length: 140pt),
-    node("API gateway / API", width: 150pt),
-  )
-  #v(4pt)
-  #align(center, text(size: 11pt, fill: slate)[BFF menjalankan alur _authorization code_ + PKCE ke _authorization server_ dan menyimpan _access token_ serta _refresh token_])
-  #v(10pt)
-  #two-col(
-    card("Yang diperoleh")[
-      - Token tidak pernah sampai ke JavaScript, sehingga skrip XSS tidak dapat mengambil dan membawa token keluar
-      - BFF adalah _confidential client_ yang dapat menyimpan _secret_ atau _private key_
-      - _Draft_ IETF _OAuth 2.0 for Browser-Based Applications_ menempatkan BFF sebagai pilihan paling aman untuk SPA
-    ],
-    card("Yang tetap harus dijaga", accent: amber)[
-      - Selama halaman terbuka, skrip XSS masih dapat mengirim _request_ melalui BFF. XSS tetap harus dicegah
-      - _Cookie_ memerlukan perlindungan CSRF: `SameSite` dan _header_ khusus yang diperiksa BFF
-      - BFF menjadi satu komponen tambahan yang harus dioperasikan dan di-_scale_
-    ],
-  )
-]
-
-#slide(kicker: "OAuth2 dan OIDC", title: "Rekomendasi keamanan terkini")[
-  #two-col(
-    card([Klien dan _authorization server_])[
-      - _Authorization code_ + PKCE (`S256`) untuk semua klien, termasuk _confidential client_
-      - `redirect_uri` dicocokkan persis, tanpa _wildcard_
-      - Token tidak dikirim di _query string_ URL
-      - Parameter `/authorize` dikirim melalui PAR (RFC 9126), sehingga tidak dapat diubah di _browser_
-      - Autentikasi klien dengan `private_key_jwt` (RFC 7523) atau mTLS (RFC 8705), lebih kuat dari `client_secret`
-    ],
-    card([_Token_ dan _resource server_], accent: gold.darken(15%))[
-      - _Access token_ berumur pendek, dalam hitungan menit
-      - `aud` diperiksa di setiap API, agar token untuk satu API tidak diterima API lain (Lab 7 belum memeriksanya)
-      - _Scope_ sesempit yang dibutuhkan
-      - _Sender-constrained token_ dengan DPoP (RFC 9449) atau mTLS: token yang tercuri tidak dapat digunakan tanpa _private key_ pemiliknya
-      - _Refresh token_ dirotasi, dan penggunaan ulang _refresh token_ lama mencabut seluruh rangkaian token tersebut
-    ],
-  )
-  #v(10pt)
-  #note[Untuk sektor keuangan, profil FAPI 2.0 dari OpenID Foundation menjadikan sebagian besar rekomendasi ini wajib: PAR, PKCE, _sender-constrained token_, serta autentikasi klien dengan `private_key_jwt` atau mTLS.]
 ]
 
 #slide(kicker: "Lab 7", title: "Transfer dan account diamankan dengan JWT")[
