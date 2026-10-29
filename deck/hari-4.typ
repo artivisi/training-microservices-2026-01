@@ -407,12 +407,12 @@ func LoadConfig() (Config, error) {
 ]
 
 // ════════════════════════════════════════════════════════════════════════════
-#section-slide(number: "04", title: "Deployment ke Kubernetes", subtitle: [Deployment, Service, ConfigMap/Secret, konfigurasi terpusat, _probe_, pemetaan ke OpenShift, _rolling update_, dan HPA di k3d])
+#section-slide(number: "04", title: "Deployment ke Kubernetes", subtitle: [_Pod_, _node_, dan _scheduling_; Deployment, Service, ConfigMap/Secret, konfigurasi terpusat, _probe_, pemetaan ke OpenShift, _rolling update_, dan HPA di k3d])
 
 #decision(title: [Kubernetes sebagai platform _deployment_],
   [
     - Banyak service, masing-masing dengan beberapa _replica_
-    - Penjadwalan ke _node_, _restart_ otomatis, _rolling update_
+    - _Scheduling_ _pod_ ke _node_, _restart_ otomatis, _rolling update_
     - _Service discovery_ dan konfigurasi per _environment_
   ],
   [
@@ -432,30 +432,332 @@ func LoadConfig() (Config, error) {
   ],
 )
 
-#decision(title: [k3d sebagai _cluster_ Kubernetes untuk training],
-  [
-    - _Cluster_ di laptop setiap peserta, mudah dibuat dan dihapus
-    - Kebutuhan RAM kecil, berjalan di Docker yang sudah terpasang
-    - _Image_ hasil _build_ lokal bisa langsung dijalankan tanpa _registry_
-  ],
-  [
-    - minikube
-    - kind (Kubernetes di dalam Docker)
-    - Kubernetes bawaan Docker Desktop, yang tidak tersedia di Docker Engine Linux
-    - k3d (k3s di dalam Docker)
-  ],
-  [
-    - k3d dengan versi k3s yang di-_pin_ (`rancher/k3s:v1.36.5-k3s1`), dibuat dengan `make k3d-up` dan dihapus dengan `make k3d-down`
-    - Traefik Ingress bawaan k3s. _Port_ 28080 laptop diteruskan oleh _load balancer_ k3d ke Traefik (`-p 28080:80@loadbalancer`)
-    - `k3d image import` menyalin _image_ dari Docker lokal ke _cluster_
-  ],
-  [
-    - k3s berbeda dengan OpenShift: SCC dan Route dibahas di bagian OpenShift
-    - Komponen bawaan k3s (Traefik, metrics-server) belum tentu ada di _cluster_ lain
-    - Akses ke infrastruktur lewat `host.k3d.internal` hanya berlaku di lab laptop
-    - k3d, kind, dan minikube hanya untuk pengembangan dan pengujian, bukan untuk _production_
-  ],
-)
+#let k-box(x, y, w, h, title, fill: white, stroke: 1pt + slate, dash: none, size: 10.5pt, color: navy) = at(x, y, box(width: w, height: h, fill: fill, radius: 5pt,
+  stroke: (paint: stroke.paint, thickness: stroke.thickness, dash: dash), inset: (x: 7pt, y: 5pt),
+  align(left + top, text(size: size, weight: "bold", fill: color, title))))
+#let k-ctr(x, y, label, w: 118pt, sidecar: false) = at(x, y, box(width: w, height: 30pt, radius: 3pt,
+  fill: if sidecar { gold.lighten(85%) } else { navy.lighten(85%) },
+  stroke: (paint: if sidecar { gold.darken(15%) } else { navy }, thickness: 1pt),
+  align(center + horizon, text(size: 9.5pt, fill: ink, label))))
+
+#slide(kicker: "Konsep Kubernetes", title: [_Container_, _pod_, _node_, dan _cluster_])[
+  #diagram(height: 262pt,
+    // control plane
+    k-box(0pt, 0pt, 180pt, 258pt, [_control plane_], fill: panel),
+    at(12pt, 30pt, node("API server", kind: "infra", width: 156pt, height: 38pt)),
+    at(12pt, 78pt, node("scheduler", sub: "memilih node", width: 156pt, height: 46pt)),
+    at(12pt, 134pt, node("controller", sub: "Deployment, ReplicaSet", kind: "infra", width: 156pt, height: 46pt)),
+    at(12pt, 192pt, node("etcd", sub: "state cluster", kind: "db", width: 156pt, height: 56pt)),
+    // node 1
+    k-box(205pt, 0pt, 315pt, 258pt, [_node_ 1 · kubelet + _container runtime_], stroke: 1pt + slate, dash: "dashed", color: slate),
+    k-box(218pt, 28pt, 289pt, 105pt, [_pod_ `transfer-…-2w7zm` · IP 10.42.0.14], stroke: 1.2pt + navy),
+    k-ctr(230pt, 60pt, [_container_ `transfer`]),
+    k-ctr(360pt, 60pt, [`vault-agent` (_sidecar_)], w: 135pt, sidecar: true),
+    at(230pt, 98pt, text(size: 9pt, fill: slate)[berbagi IP, port, dan _volume_ `/vault/secrets`]),
+    at(230pt, 112pt, text(size: 8.5pt, fill: slate)[_sidecar_ ini contoh, tidak digunakan di Lab 9]),
+    k-box(218pt, 143pt, 289pt, 105pt, [_pod_ `account-…` · IP 10.42.0.11], stroke: 1.2pt + navy),
+    k-ctr(230pt, 175pt, [_container_ `account`]),
+    // node 2
+    k-box(540pt, 0pt, 315pt, 258pt, [_node_ 2 · kubelet + _container runtime_], stroke: 1pt + slate, dash: "dashed", color: slate),
+    k-box(553pt, 28pt, 289pt, 105pt, [_pod_ `transfer-…-x9k2p` (_replica_ kedua)], stroke: 1.2pt + navy),
+    k-ctr(565pt, 60pt, [_container_ `transfer`]),
+    k-ctr(695pt, 60pt, [`vault-agent` (_sidecar_)], w: 135pt, sidecar: true),
+    k-box(553pt, 143pt, 289pt, 105pt, [_pod_ `notification-…`], stroke: 1.2pt + navy),
+    k-ctr(565pt, 175pt, [_container_ `notification`]),
+  )
+  #v(4pt)
+  #bullets(size: 12pt,
+    [*_Container_*: proses dari satu _image_. *_Pod_*: satu atau lebih _container_ yang berbagi IP, port, dan _volume_, selalu berjalan di satu _node_ yang sama. _Pod_ adalah unit terkecil yang ditempatkan Kubernetes. _Sidecar_ adalah _container_ pendamping di _pod_ yang sama, misalnya Vault Agent yang menulis _secret_ ke _volume_ bersama.],
+    [*_Node_*: mesin (VM atau fisik) yang menjalankan kubelet dan _container runtime_. Kubelet menjalankan _container_ milik _pod_ yang sudah ditetapkan ke _node_-nya.],
+  )
+]
+
+#slide(kicker: "Konsep Kubernetes", title: [_Scheduling_: menentukan _node_ tempat _pod_ berjalan])[
+  #flow(
+    node("kubectl apply", sub: "Deployment", kind: "ext", width: 125pt, height: 52pt),
+    arr(length: 28pt),
+    node("controller", sub: "ReplicaSet → pod", kind: "infra", width: 135pt, height: 52pt),
+    arr(label: "Pending", length: 56pt),
+    node("scheduler", sub: "filter, score, bind", width: 135pt, height: 52pt),
+    arr(label: "nodeName", length: 62pt),
+    node("kubelet di node", sub: "pull, start, probe", kind: "infra", width: 140pt, height: 52pt),
+    arr(length: 28pt),
+    node("Running", sub: "Ready", kind: "ext", width: 90pt, height: 52pt),
+  )
+  #v(6pt)
+  #grid(columns: (1fr, 1fr, 1fr), column-gutter: 14pt,
+    card([1. _Filter_])[
+      #set text(size: 11pt)
+      Buang _node_ yang tidak memenuhi syarat _pod_:
+      - _requests_ CPU dan memori melebihi sisa _allocatable_
+      - `nodeSelector` atau _affinity_ tidak cocok
+      - _taint_ tanpa _toleration_ yang sesuai
+      - _node_ di-_cordon_ (`SchedulingDisabled`)
+    ],
+    card([2. _Score_])[
+      #set text(size: 11pt)
+      Beri nilai _node_ yang tersisa:
+      - menyebar _replica_ satu Deployment ke _node_ berbeda
+      - menyeimbangkan pemakaian _resource_
+      - mengutamakan _node_ yang sudah memiliki _image_
+    ],
+    card([3. _Bind_], accent: gold.darken(15%))[
+      #set text(size: 11pt)
+      Tulis `spec.nodeName` _pod_ ke API server. Kubelet _node_ tersebut melihatnya, lalu menjalankan _container_.
+      #v(2pt)
+      Tidak ada _node_ yang lolos: _pod_ tetap `Pending` dengan _event_ `FailedScheduling`.
+    ],
+  )
+  #v(6pt)
+  #note[_Scheduling_ dilakukan sekali per _pod_. _Pod_ yang sudah berjalan tidak dipindahkan ke _node_ lain. Bila _node_ di-_drain_ atau mati, _pod_ di sana dihapus, ReplicaSet membuat _pod_ pengganti, lalu _scheduler_ memilihkan _node_ untuk _pod_ baru tersebut.]
+]
+
+#slide(kicker: "Konsep Kubernetes", title: [Arti _schedule_ di Kubernetes])[
+  #{
+    show table.cell: set text(size: 11pt)
+    table(
+      columns: (0.9fr, 1.3fr, 1.5fr),
+      [Istilah], [Arti], [Yang terlihat di _cluster_],
+      [_Scheduling_, _scheduler_], [Memilih _node_ untuk _pod_ (di mana), bukan menentukan waktu (kapan)], [_Event_ `Scheduled`: `Successfully assigned bank/transfer-… to k3d-bank-server-0`. Kolom `NODE` di `kubectl get pods -o wide`],
+      [`Pending`, `FailedScheduling`], [Belum ada _node_ yang memenuhi syarat _pod_], [`0/1 nodes are available: 1 Insufficient cpu.`],
+      [`cordon`, `SchedulingDisabled`], [_Node_ tidak menerima _pod_ baru. _Pod_ yang sudah ada tetap berjalan], [STATUS `Ready,SchedulingDisabled` di `kubectl get nodes`],
+      [`drain`], [`cordon` lalu _evict_ semua _pod_ di _node_ tersebut. Penggantinya di-_schedule_ ke _node_ lain], [`pod/web-… evicted`, `node/… drained`],
+      [CronJob `schedule`], [Satu-satunya arti berdasarkan waktu: ekspresi cron untuk menjalankan Job], [`schedule: "0 1 * * *"`. Pod dari Job tersebut tetap melalui _scheduling_ biasa],
+    )
+  }
+  #v(6pt)
+  #note[Uji coba di _cluster_ k3d dengan 3 _node_: 6 _replica_ tersebar 2/2/2. Setelah satu _node_ di-_cordon_ dan Deployment di-_scale_ ke 9, _pod_ baru tidak masuk ke _node_ tersebut, tetapi 2 _pod_ lamanya tetap di sana. Setelah _node_ lain di-_drain_, 4 _pod_-nya diganti _pod_ baru di _node_ yang tersisa.]
+]
+
+#slide(kicker: "Objek Kubernetes", title: "Objek Kubernetes di Lab 9")[
+  #table(
+    columns: (auto, 1fr, 1fr),
+    [Objek], [Fungsi], [Di studi kasus],
+    [Deployment], [Menjaga jumlah _replica_ dan mengatur _rolling update_], [Satu per service],
+    [Service], [Nama DNS dan _load balancing_ ke _pod_ yang _ready_], [`account:9091` dipanggil transfer lewat gRPC],
+    [ConfigMap], [Konfigurasi yang tidak rahasia], [`HTTP_ADDR`, `KAFKA_TOPIC`, `OAUTH_ISSUER`],
+    [Secret], [Konfigurasi rahasia], [`DATABASE_URL`, `OAUTH_CLIENT_SECRET`],
+    [Ingress], [_Routing_ HTTP dari luar _cluster_], [`/transfers` lewat Traefik bawaan k3s],
+    [Kustomize], [_Base_ bersama, _overlay_ per _cluster_], [`k8s/base`, `k8s/overlays/k3d`],
+  )
+  #v(10pt)
+  #note[Manifest sudah disediakan di repositori studi kasus. Fokus Lab 9 adalah menerapkan, membaca, lalu memodifikasi manifest tersebut.]
+]
+
+#slide(kicker: "Objek Kubernetes", title: [Jenis _workload_: Deployment, StatefulSet, DaemonSet, Job, CronJob])[
+  #{
+    show table.cell: set text(size: 10.5pt)
+    table(
+      columns: (0.8fr, 1.7fr, 1.5fr),
+      inset: (x: 6pt, y: 4.5pt),
+      [Objek], [_Pod_ yang dibuat], [Contoh],
+      [Deployment], [Sejumlah _replica_ yang identik dan dapat saling menggantikan. Nama acak (`transfer-6998cc98fb-2w7zm`), dibuat dan dihapus tanpa urutan, mendukung _rolling update_], [Ketiga service studi kasus, Traefik, CoreDNS],
+      [StatefulSet], [_Replica_ dengan identitas tetap: nama berurutan (`db-0`, `db-1`), nama DNS per _pod_ lewat _headless_ Service, dan PVC sendiri per _pod_ yang tetap terpasang walaupun _pod_ dibuat ulang], [PostgreSQL dan Kafka di server pelatihan Lab 10, _broker_ dan database dengan _operator_],
+      [DaemonSet], [Tepat satu _pod_ di setiap _node_ (atau _node_ tertentu). _Node_ baru otomatis mendapat _pod_-nya], [_Agent_ log (Fluent Bit, Alloy), `kube-proxy`, `svclb-traefik` di k3s],
+      [Job], [_Pod_ yang berjalan sampai selesai (_exit_ 0). Gagal diulang sampai `backoffLimit`], [Migrasi database, pembuatan _topic_ Kafka, impor data satu kali],
+      [CronJob], [Membuat Job sesuai jadwal cron di _field_ `schedule`, satu-satunya arti _schedule_ berdasarkan waktu. `concurrencyPolicy` mengatur Job yang masih berjalan saat jadwal berikutnya tiba], [Rekonsiliasi harian, laporan, pembersihan data],
+    )
+  }
+  #v(6pt)
+  #note[Semua objek ini membuat _pod_ yang melalui _scheduling_ yang sama. Bedanya ada pada jumlah _pod_, identitasnya, dan kapan _pod_ dianggap selesai. Lab 9 hanya menggunakan Deployment.]
+]
+
+#slide(kicker: "Objek Kubernetes", title: [_Stateless_ dengan Deployment, _stateful_ dengan StatefulSet])[
+  #two-col(
+    card([Deployment (_stateless_)])[
+      - _Pod_ pengganti mendapat nama dan IP baru
+      - Semua _replica_ sama, Service membagi _request_ ke _replica_ mana pun
+      - _Scale down_ menghapus _pod_ mana saja
+      - Bila ada PVC, semua _replica_ menggunakan PVC yang sama, sehingga _replica_ di _node_ berbeda membutuhkan `ReadWriteMany`
+      - Cocok untuk service yang menyimpan _state_ di database atau _broker_
+    ],
+    card([StatefulSet (_stateful_)], accent: gold.darken(15%))[
+      - `db-0` yang dihapus dibuat ulang dengan nama `db-0` dan PVC `data-db-0` yang sama, sehingga datanya tetap ada
+      - `db-1.db.<namespace>.svc` menunjuk satu _pod_ tertentu
+      - Dibuat berurutan dari `db-0`, _scale down_ dimulai dari nomor terbesar
+      - PVC `data-db-1` tetap ada setelah _scale down_, sampai dihapus manual
+    ],
+  )
+  #v(8pt)
+  #note(kind: "warn")[StatefulSet hanya memberi identitas dan _storage_ yang tetap. Replikasi data, pemilihan _primary_, dan _failover_ tetap tugas aplikasi atau _operator_-nya. Tiga _pod_ PostgreSQL dalam satu StatefulSet adalah tiga database terpisah, bukan satu _cluster_. Perilaku di atas diuji di k3d dengan StatefulSet `db` dua _replica_.]
+]
+
+#slide(kicker: "Objek Kubernetes", title: [PersistentVolume, PersistentVolumeClaim, dan StorageClass])[
+  #flow(
+    node("pod", sub: "volumeMounts /data", width: 130pt, height: 52pt),
+    arr(label: "claimName", length: 70pt),
+    node("PVC", sub: "1Gi, RWO, local-path", kind: "infra", width: 150pt, height: 52pt),
+    arr(label: "bound", length: 60pt),
+    node("PV", sub: "volume nyata", kind: "db", width: 130pt, height: 56pt),
+    arr(label: "dibuat oleh", dir: "l", length: 80pt),
+    node("StorageClass", sub: "provisioner", kind: "infra", width: 140pt, height: 52pt),
+  )
+  #v(4pt)
+  #{
+    show table.cell: set text(size: 10.5pt)
+    table(
+      columns: (0.8fr, 2fr),
+      inset: (x: 6pt, y: 4pt),
+      [Objek atau _field_], [Arti],
+      [PersistentVolumeClaim], [Permintaan _storage_ dari aplikasi: ukuran, _access mode_, dan StorageClass. Ditulis di _namespace_ aplikasi],
+      [PersistentVolume], [_Volume_ yang benar-benar ada (disk _cloud_, LUN SAN, NFS, direktori lokal). Objek tingkat _cluster_, dibuat admin atau otomatis oleh StorageClass],
+      [StorageClass], [Jenis _storage_ dan _provisioner_-nya. k3s: `local-path` (direktori di _node_). _Cloud_: disk blok milik _provider_. _On-premise_: Ceph, vSphere, atau SAN lewat _driver_ CSI],
+      [_Access mode_], [`ReadWriteOnce` (satu _node_), `ReadWriteOncePod` (satu _pod_), `ReadOnlyMany`, `ReadWriteMany` (banyak _node_, misalnya NFS atau CephFS)],
+      [`reclaimPolicy`], [`Delete` (bawaan untuk PV dinamis): PV dan datanya ikut terhapus saat PVC dihapus. `Retain`: PV tetap ada untuk dipulihkan manual],
+    )
+  }
+  #v(4pt)
+  #text(size: 10.5pt, fill: slate)[`local-path` k3s menggunakan `WaitForFirstConsumer`: PV baru dibuat di _node_ tempat _pod_ pertama di-_schedule_, lalu _pod_ terikat ke _node_ tersebut. Data di `emptyDir` hilang bersama _pod_. Ketiga service studi kasus tidak menggunakan _volume_ sama sekali (`readOnlyRootFilesystem: true`).]
+]
+
+#slide(kicker: "Objek Kubernetes", title: [Objek lain yang sering ditemui])[
+  #{
+    show table.cell: set text(size: 10.5pt)
+    table(
+      columns: (0.9fr, 1.6fr, 1.4fr),
+      inset: (x: 6pt, y: 4pt),
+      [Objek], [Fungsi], [Di training],
+      [Namespace], [Pemisah nama dan batas RBAC, _quota_, serta NetworkPolicy], [`bank` di k3d, satu _namespace_ per peserta di server pelatihan],
+      [ServiceAccount, Role, RoleBinding], [Identitas _pod_ atau _pipeline_ dan haknya di API Kubernetes], [`deployer` dengan ClusterRole `edit` di _namespace_ peserta (Lab 10)],
+      [Service: ClusterIP, NodePort, LoadBalancer, _headless_], [Alamat stabil di dalam _cluster_, port di setiap _node_, IP dari _load balancer_, atau DNS langsung ke setiap _pod_], [ClusterIP untuk ketiga service dan infrastruktur server pelatihan, LoadBalancer untuk Traefik],
+      [Ingress, Gateway API], [_Routing_ HTTP dari luar _cluster_. Gateway API adalah penerus Ingress dengan pemisahan peran yang lebih jelas], [Ingress `transfer` lewat Traefik],
+      [ResourceQuota, LimitRange], [Batas total _resource_ per _namespace_ dan nilai bawaan per _container_], [_Quota_ per peserta di server pelatihan],
+      [NetworkPolicy], [_Firewall_ antar-_pod_ berdasarkan label dan _namespace_], [_Pod_ peserta hanya menerima koneksi dari _namespace_ sendiri dan Traefik],
+      [PodDisruptionBudget], [Batas jumlah _pod_ yang boleh dihentikan bersamaan saat `drain` atau _upgrade_ _node_], [Belum digunakan. Dibutuhkan untuk service dengan beberapa _replica_ di _production_],
+      [HorizontalPodAutoscaler], [Menambah dan mengurangi _replica_ berdasarkan metrik], [`k8s/hpa/transfer.yaml` (Lab 9, opsional)],
+    )
+  }
+]
+
+#slide(kicker: "Pilihan platform", title: [Satu VPS bersama, VPS per aplikasi, dan Kubernetes])[
+  #{
+    show table.cell: set text(size: 10.5pt)
+    table(
+      columns: (0.75fr, 1.2fr, 1.1fr, 1.25fr),
+      inset: (x: 6pt, y: 4pt),
+      [Aspek], [Satu VPS untuk beberapa aplikasi], [Satu VPS per aplikasi], [Kubernetes],
+      [Isolasi], [Batas proses dan _user_ dalam satu OS. Aplikasi yang menghabiskan memori atau disk mengganggu aplikasi lain], [Batas VM. Gangguan satu aplikasi tidak menyebar], [_Requests_/_limits_ per _container_, _namespace_, ResourceQuota, NetworkPolicy],
+      [Dependensi OS dan _runtime_], [Digunakan bersama. _Upgrade_ untuk satu aplikasi ikut mengubah aplikasi lain, kecuali setiap aplikasi dijalankan sebagai _container_], [Bebas per aplikasi], [Dibawa di _image_ masing-masing],
+      [Rilis dan _rollback_], [Skrip atau manual, biasanya dengan _downtime_ singkat], [Sama dengan VPS bersama], [_Rolling update_ dan `rollout undo` bawaan],
+      [Saat gagal], [systemd me-_restart_ proses. Bila _host_ mati, semua aplikasi berhenti], [Bila _host_ mati, aplikasi tersebut berhenti sampai VM dipulihkan], [_Container_ di-_restart_. Bila _node_ mati, _pod_ pengganti di-_schedule_ ke _node_ lain],
+      [Skala], [Vertikal: memperbesar VPS], [Vertikal, atau menambah VPS dan _load balancer_ secara manual], [Menambah _replica_ atau HPA. _Node_ ditambah manual atau oleh _cluster autoscaler_],
+      [Pemakaian _resource_], [Padat, tetapi aplikasi saling berebut], [Banyak VM yang sebagian besar menganggur], [_Pod_ ditempatkan ke _node_ berdasarkan _requests_],
+      [Biaya tetap], [Paling rendah: satu server, satu admin], [Naik sebanding jumlah aplikasi. Setiap OS di-_patch_ sendiri], [_Control plane_, minimal 3 _node_ untuk HA, dan tim platform. Versi _managed_ mengurangi beban tim],
+    )
+  }
+  #v(6pt)
+  #text(size: 11pt, fill: slate)[Hari 1 membandingkan VM dan Kubernetes dari sisi _concern_ yang ditangani tim atau platform. Tabel ini membandingkannya dari sisi operasional: isolasi, rilis, kegagalan, skala, dan biaya.]
+]
+
+#slide(kicker: "Pilihan platform", title: [Memilih tempat menjalankan aplikasi])[
+  #grid(columns: (1fr, 1fr, 1fr), column-gutter: 14pt,
+    card([Satu VPS untuk beberapa aplikasi])[
+      #set text(size: 11.5pt)
+      Layak bila:
+      - aplikasi kecil, beban rendah, dan dimiliki satu tim
+      - _downtime_ singkat saat rilis masih dapat diterima
+      - tidak ada aturan yang mewajibkan pemisahan data
+      Jalankan setiap aplikasi sebagai _container_ (Docker Compose) dengan batas memori, di belakang satu _reverse proxy_.
+    ],
+    card([Satu VPS per aplikasi])[
+      #set text(size: 11.5pt)
+      Layak bila:
+      - klasifikasi data atau regulasi mewajibkan pemisahan
+      - aplikasi dimiliki tim atau vendor yang berbeda
+      - aplikasi membutuhkan OS tertentu atau _resource_ besar, misalnya database atau aplikasi _legacy_
+      - jumlah aplikasi sedikit dan jarang dirilis
+    ],
+    card([Kubernetes], accent: gold.darken(15%))[
+      #set text(size: 11.5pt)
+      Layak bila:
+      - banyak service yang dirilis sering dan independen
+      - service membutuhkan beberapa _replica_, HA, atau _autoscaling_
+      - beberapa tim menggunakan satu platform yang sama
+      - organisasi memiliki tim platform, atau menggunakan Kubernetes _managed_
+    ],
+  )
+  #v(8pt)
+  #note[Platform yang sudah ada mengubah perhitungannya. Bila organisasi sudah menjalankan OpenShift, menambah satu aplikasi kecil ke sana lebih murah dibanding menyiapkan VPS baru. Bila belum ada platform sama sekali, membangun _cluster_ untuk dua atau tiga aplikasi biasanya berlebihan. Pilihan di antaranya: k3s satu _node_ di satu VPS, seperti `studi-kasus/server/setup.sh` di Lab 10. Manifest dan _rolling update_-nya sama, tetapi tanpa HA.]
+]
+
+#slide(kicker: "Pilihan platform", title: [Aplikasi di dalam dan di luar Kubernetes])[
+  #grid(columns: (1fr, 1fr, 1fr), column-gutter: 14pt,
+    card([Cocok di dalam], accent: gold.darken(15%))[
+      #set text(size: 11.5pt)
+      - _Stateless_: _state_ ada di database atau _broker_
+      - Boleh di-_restart_ dan dipindah kapan saja, _startup_ cepat
+      - HTTP atau gRPC di belakang Service dan Ingress
+      - Dirilis sering, diskalakan dengan _replica_
+      - Konfigurasi dari _environment_ (12-factor)
+      #v(2pt)
+      _Contoh_: ketiga service studi kasus, API _gateway_, _consumer_ Kafka, _batch_ dengan CronJob, _frontend_ web
+    ],
+    card([Bisa di dalam, dengan syarat])[
+      #set text(size: 11.5pt)
+      - _Stateful_ dengan _operator_ yang matang untuk replikasi, _failover_, _backup_, dan _upgrade_
+      - _Node_ khusus, _storage_ yang cepat, PodDisruptionBudget
+      - Tim yang menguasai aplikasi tersebut dan Kubernetes sekaligus
+      #v(2pt)
+      _Contoh_: PostgreSQL (CloudNativePG), Kafka (Strimzi), Elasticsearch (ECK), Redis, Vault dengan Helm _chart_ resmi
+    ],
+    card([Lebih baik di luar], accent: amber)[
+      #set text(size: 11.5pt)
+      - Membutuhkan perangkat fisik: HSM, _dongle_ lisensi, modem GSM
+      - Protokol di luar HTTP/TCP biasa: UDP dengan rentang port lebar, alamat IP yang harus tetap
+      - Lisensi per _host_ atau vendor tidak mendukung _container_
+      - Dibutuhkan untuk memulihkan _cluster_ itu sendiri: DNS, _registry_, git server GitOps, _secret manager_
+    ],
+  )
+  #v(8pt)
+  #note[Pertanyaan utamanya: apa yang terjadi bila Kubernetes menghentikan, memindahkan, atau membatasi CPU _pod_ ini kapan saja? Service _stateless_ tidak terganggu. Database, panggilan telepon yang sedang berlangsung, dan _secret manager_ yang ter-_seal_ ulang akan terganggu.]
+]
+
+#slide(kicker: "Pilihan platform", title: [Database relasional umumnya dijalankan di luar Kubernetes])[
+  #two-col(ratio: (1.25fr, 1fr),
+    [
+      #bullets(size: 12pt,
+        [*_Storage_ mengikat _pod_ ke tempatnya.* _Volume_ `ReadWriteOnce` hanya bisa dipasang di satu _node_ atau satu _zone_. _Pod_ pengganti harus menunggu _volume_ dilepas, atau tidak bisa berjalan di _node_ lain sama sekali bila menggunakan _local volume_.],
+        [*Kubernetes tidak mengenal _primary_ dan _replica_.* Kubernetes hanya me-_restart_ _pod_. Replikasi, _failover_, _backup_ dengan PITR, dan _upgrade_ versi mayor tetap prosedur database, kecuali diserahkan ke _operator_.],
+        [*Perilaku Kubernetes merugikan database.* _Memory limit_ memicu OOM _kill_ di tengah transaksi, _CPU limit_ menambah latensi, dan `drain` saat _upgrade_ _node_ memicu _failover_.],
+        [*Organisasi dan vendor.* DBA sudah memiliki prosedur di VM. Dukungan vendor dan lisensi per _core_ (misalnya Oracle Database) umumnya menghitung semua _core_ _host_ tempat _pod_ bisa berjalan.],
+      )
+    ],
+    [
+      #card([Pilihan umum])[
+        #set text(size: 11.5pt)
+        - Layanan database _managed_ (RDS, Cloud SQL, Azure Database)
+        - VM atau _bare metal_ khusus database yang dikelola DBA
+      ]
+      #v(8pt)
+      #card([Bila tetap di dalam], accent: gold.darken(15%))[
+        #set text(size: 11.5pt)
+        - _Operator_: CloudNativePG, Crunchy PGO, Percona
+        - _Node_ khusus dengan _taint_, _storage_ lokal yang cepat
+        - _Backup_ ke _object storage_, uji _restore_ berkala
+        - PodDisruptionBudget agar `drain` tidak menghentikan _primary_ dan _replica_ sekaligus
+      ]
+    ],
+  )
+  #v(6pt)
+  #note[Lab 9 mengikuti pola ini: service di k3d, PostgreSQL dan Kafka tetap di Docker Compose. Server pelatihan Lab 10 menjalankan PostgreSQL sebagai StatefulSet satu _instance_ dengan _volume_ `local-path`, tanpa _replica_ dan _backup_: cukup untuk training, tidak untuk _production_.]
+]
+
+#slide(kicker: "Pilihan platform", title: [Contoh aplikasi yang sering dijalankan di luar Kubernetes])[
+  #{
+    show table.cell: set text(size: 10.5pt)
+    table(
+      columns: (0.8fr, 1.7fr, 1.2fr),
+      inset: (x: 6pt, y: 4pt),
+      [Aplikasi], [Hambatan di Kubernetes], [Praktik umum],
+      [Vault, OpenBao], [Kembali ter-_seal_ setiap kali _pod_ di-_restart_ atau dipindah, kecuali menggunakan _auto-unseal_ lewat KMS atau HSM. _Secret_ untuk memulihkan _cluster_ tidak boleh bergantung pada _cluster_ yang sedang dipulihkan. HSM fisik membutuhkan akses perangkat dari _node_], [_Cluster_ Vault di VM khusus, terpisah dari _cluster_ aplikasi. Aplikasi di Kubernetes membaca _secret_ lewat Vault Agent atau External Secrets Operator],
+      [Asterisk, VoIP], [SIP dan RTP menggunakan UDP. RTP membutuhkan rentang port lebar (bawaan Asterisk 10000–20000) yang tidak praktis dibuka lewat Service. NAT `kube-proxy` mengubah alamat yang ditulis di SDP. _Rolling update_ memutus panggilan yang sedang berlangsung, dan _CPU throttling_ menambah _jitter_ audio], [VM atau _bare metal_ dengan IP publik tetap. Bila di Kubernetes: `hostNetwork: true` di _node_ khusus, yang menghilangkan sebagian besar isolasi],
+      [Kafka], [_Broker_ _stateful_ dengan alamat yang harus bisa dijangkau _client_ secara langsung, bukan lewat _load balancer_], [Layanan _managed_, VM khusus, atau Strimzi dengan _node_ dan _storage_ khusus],
+      [Aplikasi dengan HSM, _dongle_, atau modem], [Perangkat fisik terpasang di satu _host_, sehingga _pod_ tidak bisa di-_schedule_ ke _node_ lain], [VM atau _host_ fisik tempat perangkat terpasang],
+      [Produk vendor berlisensi], [Lisensi terikat _host_, MAC, atau jumlah _core_. Vendor sering tidak mendukung instalasi di _container_], [Sesuai matriks dukungan vendor, umumnya VM],
+      [Dependensi _cluster_], [DNS, _registry_ _image_, git server GitOps, IdP, dan _monitoring_ dibutuhkan untuk memulihkan atau memantau _cluster_. Bila ada di dalamnya, ikut mati bersama _cluster_], [Di luar _cluster_ yang dilayani, atau di _cluster_ manajemen terpisah],
+    )
+  }
+]
 
 #slide(kicker: "Production", title: [Pilihan _cluster_ Kubernetes untuk _production_])[
   #{
@@ -476,6 +778,31 @@ func LoadConfig() (Config, error) {
   #v(4pt)
   #text(size: 10.5pt, fill: slate)[Harga _managed_ per Oktober 2026 dari situs resmi masing-masing, belum termasuk _node_, _storage_, dan jaringan. Pada _self-managed_, biaya terbesar umumnya adalah tim platform yang melakukan _upgrade_, _patching_, dan pemulihan _cluster_, bukan lisensi. VMware Tanzu tidak dicantumkan karena Broadcom sedang menggabungkannya ke VMware Cloud Foundation dan tidak lagi menawarkannya sebagai produk terpisah.]
 ]
+
+#decision(title: [k3d sebagai _cluster_ Kubernetes untuk training],
+  [
+    - _Cluster_ di laptop setiap peserta, mudah dibuat dan dihapus
+    - Kebutuhan RAM kecil, berjalan di Docker yang sudah terpasang
+    - _Image_ hasil _build_ lokal bisa langsung dijalankan tanpa _registry_
+  ],
+  [
+    - minikube
+    - kind (Kubernetes di dalam Docker)
+    - Kubernetes bawaan Docker Desktop, yang tidak tersedia di Docker Engine Linux
+    - k3d (k3s di dalam Docker)
+  ],
+  [
+    - k3d dengan versi k3s yang di-_pin_ (`rancher/k3s:v1.36.5-k3s1`), dibuat dengan `make k3d-up` dan dihapus dengan `make k3d-down`. Setiap _node_ adalah satu _container_ Docker (`k3d-bank-server-0`)
+    - Traefik Ingress bawaan k3s. _Port_ 28080 laptop diteruskan oleh _load balancer_ k3d ke Traefik (`-p 28080:80@loadbalancer`)
+    - `k3d image import` menyalin _image_ dari Docker lokal ke _cluster_
+  ],
+  [
+    - k3s berbeda dengan OpenShift: SCC dan Route dibahas di bagian OpenShift
+    - Komponen bawaan k3s (Traefik, metrics-server) belum tentu ada di _cluster_ lain
+    - Akses ke infrastruktur lewat `host.k3d.internal` hanya berlaku di lab laptop
+    - k3d, kind, dan minikube hanya untuk pengembangan dan pengujian, bukan untuk _production_
+  ],
+)
 
 #slide(kicker: "Lab 9", title: [Arsitektur _deployment_ di laptop])[
   #diagram(height: 330pt,
@@ -498,21 +825,6 @@ func LoadConfig() (Config, error) {
     edge((620pt, 175pt), (680pt, 175pt), both: true),
     at(560pt, 300pt, text(size: 10pt, fill: slate)[`host.k3d.internal`]),
   )
-]
-
-#slide(kicker: "Objek Kubernetes", title: "Objek Kubernetes di Lab 9")[
-  #table(
-    columns: (auto, 1fr, 1fr),
-    [Objek], [Fungsi], [Di studi kasus],
-    [Deployment], [Menjaga jumlah _replica_ dan mengatur _rolling update_], [Satu per service],
-    [Service], [Nama DNS dan _load balancing_ ke _pod_ yang _ready_], [`account:9091` dipanggil transfer lewat gRPC],
-    [ConfigMap], [Konfigurasi yang tidak rahasia], [`HTTP_ADDR`, `KAFKA_TOPIC`, `OAUTH_ISSUER`],
-    [Secret], [Konfigurasi rahasia], [`DATABASE_URL`, `OAUTH_CLIENT_SECRET`],
-    [Ingress], [_Routing_ HTTP dari luar _cluster_], [`/transfers` lewat Traefik bawaan k3s],
-    [Kustomize], [_Base_ bersama, _overlay_ per _cluster_], [`k8s/base`, `k8s/overlays/k3d`],
-  )
-  #v(10pt)
-  #note[Manifest sudah disediakan di repositori studi kasus. Fokus Lab 9 adalah menerapkan, membaca, lalu memodifikasi manifest tersebut.]
 ]
 
 #slide(kicker: "Konfigurasi terpusat", title: [Pilihan tempat menyimpan konfigurasi])[
@@ -824,14 +1136,15 @@ wget -qO- account:8081/readyz
   ],
   [
     - `make images VERSION=1.0.0`, `make k3d-up`, `make k3d-import VERSION=1.0.0`, `make k8s-apply`
-    - Transfer lewat Ingress `localhost:28080`, cek hasilnya di Grafana
+    - Transfer lewat Ingress `localhost:28080`, cek di Grafana
+    - Kolom `NODE`, _pod_ `Pending` karena `Insufficient cpu`
     - `kubectl scale` notification menjadi 3 dan 4 _replica_
     - Hapus `KAFKA_GROUP_ID` dari ConfigMap notification, _apply_, lalu `rollout restart`; kembalikan nilainya dan `rollout restart` lagi
     - `VERSION=1.0.1`, `set image`, `rollout status`, `rollout undo`
-    - `kubectl debug`: konfigurasi, _file_, DNS, dan port dari dalam _pod_; kasus port dan nama service yang salah
+    - `kubectl debug`: konfigurasi, _file_, DNS, port; kasus port dan nama yang salah
   ],
   "lab-08",
-  [#note[`make k3d-up` menunggu 40–60 detik sampai DNS _cluster_ mengenal `host.k3d.internal`. Bila _pod_ masuk `CrashLoopBackOff` dengan pesan `no such host` setelah Docker atau laptop di-_restart_, jalankan `k3d cluster stop bank` lalu `k3d cluster start bank`. Bila `curl` ke `localhost:28080` menghasilkan `Empty reply from server`, Traefik belum siap: tunggu `kubectl -n kube-system rollout status deploy/traefik`, lalu ulangi.]],
+  [#note[`no such host` setelah Docker di-_restart_: `k3d cluster stop bank`, lalu `k3d cluster start bank`. `Empty reply from server` dari `localhost:28080`: Traefik belum siap, tunggu `kubectl -n kube-system rollout status deploy/traefik`.]],
 )
 
 // ════════════════════════════════════════════════════════════════════════════
