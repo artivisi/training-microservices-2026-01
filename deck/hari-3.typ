@@ -1281,7 +1281,7 @@ grpc.WithChainUnaryInterceptor(
   ],
   [
     - Ditujukan untuk pengembangan, demo, dan _testing_. Tidak ada _high availability_ maupun kontrol akses per tim
-    - Di _production_, setiap komponen dijalankan dan diskalakan sendiri (Hari 4, bagian Operasional)
+    - Di _production_, setiap komponen dijalankan dan diskalakan sendiri (Hari 4, sebelum Lab 8)
     - Kode service tidak berubah saat pindah ke _stack_ terpisah, cukup alamat OTLP yang diganti
   ],
 )

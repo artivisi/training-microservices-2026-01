@@ -31,20 +31,20 @@
     [Waktu], [Topik], [Format],
     [08:00 – 08:15], [Rekap Hari 3 dan penyamaan posisi dari _checkpoint_ `lab-07` bagi peserta yang tertinggal], [Diskusi],
     [08:15 – 09:00], [Peta _concern_ microservices. Lanskap _cloud_ untuk perbankan: model _deployment_, _managed_ vs _self-managed_, service pendukung, analisis _build_/_reuse_/_buy_, regulasi, posisi Kubernetes], [Presentasi + diskusi],
-    [09:00 – 10:15], [*Lab 8*: melacak satu transfer lintas tiga service di Grafana], [_Hands-on_],
-    [10:30 – 12:00], [_Containerization_, konfigurasi, Kubernetes, dan *Lab 9* (1): seluruh sistem berjalan di k3d], [Demo + _hands-on_],
+    [09:00 – 10:15], [Penempatan _observability stack_ dan pengiriman log di _production_. *Lab 8*: melacak satu transfer lintas tiga service di Grafana], [_Hands-on_],
+    [10:30 – 12:00], [_Containerization_, konfigurasi, Kubernetes, pemetaan ke OpenShift, HPA, dan *Lab 9* (1): seluruh sistem berjalan di k3d], [Demo + _hands-on_],
     [12:00 – 13:00], [Istirahat makan siang], [—],
     [13:00 – 13:30], [*Lab 9* (2): _rolling update_, perubahan konfigurasi, _probe_], [_Hands-on_],
     [13:30 – 14:15], [CI/CD per service dan pemetaannya ke Jenkins dan GitHub Actions; GitOps sekilas], [Presentasi + demo],
     [14:15 – 15:45], [*Lab 10*: dari _commit_ hingga _rolling update_], [_Hands-on_],
-    [16:00 – 17:00], [Operasional: HPA, penempatan _observability stack_, OpenShift. Peta _concern_ lengkap, ringkasan keputusan desain, diskusi dan tanya jawab], [Presentasi + diskusi],
+    [16:00 – 17:00], [Peta _concern_ lengkap, ringkasan keputusan desain, diskusi dan tanya jawab], [Presentasi + diskusi],
   )
 ]
 
 #slide(kicker: "Peta concern microservices", title: [_Concern_ yang dibahas di Hari 4])[
   #concern-map(highlight: (6, 7, 8, 9, 10))
   #v(8pt)
-  #note[Hari 1–3 banyak membahas sisi kode. Hari 4 membahas _concern_ yang sebagian besar ditangani platform: Kubernetes dan _pipeline_. _Observability_ hanya muncul di Lab 8, yang mempraktikkan konsep dan kode dari akhir Hari 3.]
+  #note[Hari 1–3 banyak membahas sisi kode. Hari 4 membahas _concern_ yang sebagian besar ditangani platform: Kubernetes dan _pipeline_. _Observability_ muncul di Lab 8, yang mempraktikkan konsep dan kode dari akhir Hari 3, didahului penempatan _observability stack_ dan pengiriman log di _production_.]
 ]
 
 #slide(kicker: "Studi kasus", title: "Posisi sistem di awal Hari 4")[
@@ -175,7 +175,58 @@
 ]
 
 // ════════════════════════════════════════════════════════════════════════════
-#section-slide(number: "02", title: "Lab 8: Observability lintas service", subtitle: [Melacak satu transfer lintas tiga service di Grafana])
+#section-slide(number: "02", title: "Lab 8: Observability lintas service", subtitle: [Penempatan _observability stack_ dan pengiriman log di _production_, lalu melacak satu transfer lintas tiga service di Grafana])
+
+#slide(kicker: "Observability", title: [Penempatan _observability stack_])[
+  #two-col(
+    card([Di dalam _cluster_ aplikasi])[
+      - _Collector_ OpenTelemetry sebagai DaemonSet atau _sidecar_ di setiap _cluster_
+      - Penyimpanan jangka pendek dekat dengan sumber data
+      - Risiko: gangguan _cluster_ ikut mematikan Grafana, Tempo, dan Loki yang dibutuhkan untuk menyelidiki gangguan tersebut
+    ],
+    card([_Cluster_ terpisah atau terpusat], accent: gold.darken(15%))[
+      - Tempo, Loki, Prometheus, dan Grafana di _cluster_ khusus _observability_
+      - Satu tempat untuk melihat semua _environment_
+      - Data tetap tersedia saat _cluster_ aplikasi bermasalah
+    ],
+  )
+  #v(12pt)
+  #bullets(size: 13pt,
+    [Pola yang umum: _collector_ di setiap _cluster_ aplikasi, penyimpanan dan Grafana di tempat terpusat.],
+    [Kode aplikasi tidak perlu diubah: _trace_ dikirim ke alamat di `OTEL_EXPORTER_OTLP_ENDPOINT` dan metrik diambil dari `/metrics`. Bila log dikumpulkan _agent_ dari stdout, salinan log melalui OTLP tidak lagi dibutuhkan.],
+    [_Log_ dan _trace_ bisa berisi data nasabah. Retensi dan hak akses mengikuti klasifikasi data yang sama dengan aplikasinya.],
+  )
+]
+
+#slide(kicker: "Observability", title: [Pengiriman log per jenis _deployment_])[
+  #{
+    show table.cell: set text(size: 10.5pt)
+    table(
+      columns: (1fr, 0.9fr, 1.1fr, 1.6fr),
+      inset: (x: 6pt, y: 4pt),
+      [_Deployment_], [Aplikasi Menulis ke], [_Agent_ Membaca], [Yang Perlu Diatur],
+      [Kubernetes atau OpenShift], [stdout], [_File_ di `/var/log/pods`, _agent_ sebagai DaemonSet], [OpenShift Logging 6: Vector sebagai _agent_, LokiStack sebagai penyimpanan],
+      [VM dengan systemd], [stdout], [journald], [`RateLimitBurst` (journald membuang log di atas batas), `Storage=persistent`, `SystemMaxUse`],
+      [VM, volume log tinggi atau aplikasi Java], [_File_ JSON dengan rotasi], [_File_ tersebut], [Rotasi dengan _rename_. `copytruncate` di logrotate dapat menghilangkan baris],
+      [Docker tanpa Kubernetes], [stdout], [_File_ dari _driver_ `json-file` atau journald], [`max-size` dan `max-file`, karena _driver_ `json-file` tidak merotasi secara bawaan],
+    )
+  }
+  #v(6pt)
+  #two-col(
+    card([Syslog])[
+      #set text(size: 11.5pt)
+      - rsyslog tetap digunakan untuk log OS, perangkat jaringan, dan pengiriman ke SIEM (_Security Information and Event Management_)
+      - Log aplikasi baru jarang dikirim lewat syslog: ukuran pesan terbatas, dan UDP dapat kehilangan pesan tanpa tanda
+    ],
+    card([Pola yang sama di semua baris], accent: gold.darken(15%))[
+      #set text(size: 11.5pt)
+      - Aplikasi menulis satu baris JSON per event, lengkap dengan `trace_id` dan `correlation_id`
+      - _Agent_ menambahkan _metadata_, menyimpan _buffer_ di disk, lalu mengirim log. _Binary_ Go studi kasus tidak berubah
+    ],
+  )
+  #v(4pt)
+  #note(kind: "warn")[Pengiriman log tidak menjamin semua baris sampai, misalnya _file_ dirotasi sebelum dibaca _agent_. Jejak audit yang tidak boleh hilang ditulis ke database dalam transaksi yang sama dengan data bisnis, misalnya ke tabel audit atau outbox.]
+]
 
 #lab-slide("8", "Melacak satu transfer di Grafana",
   [
@@ -356,7 +407,7 @@ func LoadConfig() (Config, error) {
 ]
 
 // ════════════════════════════════════════════════════════════════════════════
-#section-slide(number: "04", title: "Deployment ke Kubernetes", subtitle: [Deployment, Service, ConfigMap/Secret, konfigurasi terpusat, _probe_, dan _rolling update_ di k3d])
+#section-slide(number: "04", title: "Deployment ke Kubernetes", subtitle: [Deployment, Service, ConfigMap/Secret, konfigurasi terpusat, _probe_, pemetaan ke OpenShift, _rolling update_, dan HPA di k3d])
 
 #decision(title: [Kubernetes sebagai platform _deployment_],
   [
@@ -578,6 +629,65 @@ spec:
 #source(("studi-kasus/k8s/base/transfer/deployment.yaml", "lab-09"))
 ]
 
+#slide(kicker: "OpenShift", title: "Pemetaan Kubernetes ke OpenShift")[
+  #table(
+    columns: (auto, auto, 1fr),
+    [Kubernetes (lab)], [OpenShift], [Catatan],
+    [Ingress (Traefik)], [Route], [OpenShift juga menerima Ingress dan mengubahnya menjadi Route. Route menambahkan opsi TLS _edge_, _passthrough_, _reencrypt_],
+    [`securityContext` + Pod Security], [SCC `restricted-v2`], [Pengganti SCC `restricted` sejak OpenShift 4.11. UID acak, tanpa _privilege escalation_, _capabilities_ dibuang, _seccomp_ `RuntimeDefault`. Manifest Lab 9 sudah memenuhinya],
+    [`kubectl`], [`oc`], [`oc` mencakup semua perintah `kubectl`, ditambah `oc login`, `oc new-project`, `oc adm`],
+    [_Namespace_], [_Project_], [_Project_ = _namespace_ dengan anotasi dan kuota tambahan],
+    [_Registry_ eksternal], [_Internal registry_ + ImageStream], [_Pipeline_ tetap bisa melakukan _push image_ ke _registry_ eksternal],
+  )
+  #v(10pt)
+  #note(kind: "tip")[Uji kecocokan sebelum ke OpenShift: jalankan _image_ dengan UID acak dan _root filesystem_ _read-only_. Bila keduanya lolos, sebagian besar masalah SCC sudah tertangani.]
+]
+
+#slide(kicker: "OpenShift", title: [Route vs Ingress])[
+  #two-col(
+    [
+```yaml
+# Kubernetes: Ingress
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata: { name: transfer }
+spec:
+  ingressClassName: traefik
+  rules:
+  - http:
+      paths:
+      - path: /transfers
+        pathType: Prefix
+        backend:
+          service:
+            name: transfer
+            port: { name: http }
+```
+#source(("studi-kasus/k8s/base/transfer/ingress.yaml", "lab-09"))
+    ],
+    [
+```yaml
+# OpenShift: Route
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata: { name: transfer }
+spec:
+  path: /transfers
+  to:
+    kind: Service
+    name: transfer
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+```
+#source(ilustrasi: true)
+    ],
+  )
+  #v(8pt)
+  #text(size: 13pt)[Kedua objek mengarahkan _traffic_ HTTP ke Service yang sama. Perbedaannya hanya pada objek _routing_, sedangkan Deployment dan Service tetap sama.]
+]
+
 #slide(kicker: "Rolling update", title: [_Rolling update_ tanpa _downtime_])[
   #flow(
     node("v1 · v1 · v1", sub: "3 pod ready", width: 120pt),
@@ -631,6 +741,41 @@ spec:
             seconds: 5
 ```
 #source(("studi-kasus/k8s/base/transfer/deployment.yaml", "lab-09"))
+]
+
+#code-slide(kicker: "Scaling", title: [_Horizontal Pod Autoscaler_ (HPA)],
+  side: [
+    - HPA menambah atau mengurangi _replica_ berdasarkan metrik, umumnya CPU terhadap `requests`
+    - Syarat: `resources.requests` terisi dan _metrics-server_ berjalan (k3s menyediakannya)
+    - Service harus _stateless_ agar _replica_ bisa ditambah kapan saja
+    - _Scaling_ transfer tidak menolong bila yang lambat adalah database account
+    - Dicoba mandiri: `make hpa-apply`, `make hpa-watch`, `make hpa-load DURATION=180 CONCURRENCY=10` (panduan Lab 9)
+  ],
+)[
+```yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: transfer
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: transfer
+  minReplicas: 1
+  maxReplicas: 4
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 60
+```
+#source(("studi-kasus/k8s/hpa/transfer.yaml", "lab-09"))
 ]
 
 #slide(kicker: "Infra dari cluster", title: [_Pod_ mengakses infrastruktur di _host_])[
@@ -882,154 +1027,6 @@ pipeline {
   "lab-09",
   [#note(kind: "warn")[Bagian _deploy_ ke k3d dengan runner lokal didemonstrasikan instruktur. Runner tidak dipasang di laptop peserta.]],
 )
-
-// ════════════════════════════════════════════════════════════════════════════
-#section-slide(number: "06", title: [Operasional di _cloud_], subtitle: [HPA, penempatan _observability stack_, dan pemetaan ke OpenShift])
-
-#code-slide(kicker: "Scaling", title: [_Horizontal Pod Autoscaler_ (HPA)],
-  side: [
-    - HPA menambah atau mengurangi _replica_ berdasarkan metrik, umumnya CPU terhadap `requests`
-    - Syarat: `resources.requests` terisi dan _metrics-server_ berjalan (k3s menyediakannya)
-    - Service harus _stateless_ agar _replica_ bisa ditambah kapan saja
-    - _Scaling_ transfer tidak menolong bila yang lambat adalah database account
-    - Dicoba mandiri: `make hpa-apply`, `make hpa-watch`, `make hpa-load DURATION=180 CONCURRENCY=10` (panduan Lab 9)
-  ],
-)[
-```yaml
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: transfer
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: transfer
-  minReplicas: 1
-  maxReplicas: 4
-  metrics:
-  - type: Resource
-    resource:
-      name: cpu
-      target:
-        type: Utilization
-        averageUtilization: 70
-  behavior:
-    scaleDown:
-      stabilizationWindowSeconds: 60
-```
-#source(("studi-kasus/k8s/hpa/transfer.yaml", "lab-09"))
-]
-
-#slide(kicker: "Observability", title: [Penempatan _observability stack_])[
-  #two-col(
-    card([Di dalam _cluster_ aplikasi])[
-      - _Collector_ OpenTelemetry sebagai DaemonSet atau _sidecar_ di setiap _cluster_
-      - Penyimpanan jangka pendek dekat dengan sumber data
-      - Risiko: gangguan _cluster_ ikut mematikan Grafana, Tempo, dan Loki yang dibutuhkan untuk menyelidiki gangguan tersebut
-    ],
-    card([_Cluster_ terpisah atau terpusat], accent: gold.darken(15%))[
-      - Tempo, Loki, Prometheus, dan Grafana di _cluster_ khusus _observability_
-      - Satu tempat untuk melihat semua _environment_
-      - Data tetap tersedia saat _cluster_ aplikasi bermasalah
-    ],
-  )
-  #v(12pt)
-  #bullets(size: 13pt,
-    [Pola yang umum: _collector_ di setiap _cluster_ aplikasi, penyimpanan dan Grafana di tempat terpusat.],
-    [Kode aplikasi tidak perlu diubah: _trace_ dikirim ke alamat di `OTEL_EXPORTER_OTLP_ENDPOINT` dan metrik diambil dari `/metrics`. Bila log dikumpulkan _agent_ dari stdout, salinan log melalui OTLP tidak lagi dibutuhkan.],
-    [_Log_ dan _trace_ bisa berisi data nasabah. Retensi dan hak akses mengikuti klasifikasi data yang sama dengan aplikasinya.],
-  )
-]
-
-#slide(kicker: "Observability", title: [Pengiriman log per jenis _deployment_])[
-  #{
-    show table.cell: set text(size: 10.5pt)
-    table(
-      columns: (1fr, 0.9fr, 1.1fr, 1.6fr),
-      inset: (x: 6pt, y: 4pt),
-      [_Deployment_], [Aplikasi Menulis ke], [_Agent_ Membaca], [Yang Perlu Diatur],
-      [Kubernetes atau OpenShift], [stdout], [_File_ di `/var/log/pods`, _agent_ sebagai DaemonSet], [OpenShift Logging 6: Vector sebagai _agent_, LokiStack sebagai penyimpanan],
-      [VM dengan systemd], [stdout], [journald], [`RateLimitBurst` (journald membuang log di atas batas), `Storage=persistent`, `SystemMaxUse`],
-      [VM, volume log tinggi atau aplikasi Java], [_File_ JSON dengan rotasi], [_File_ tersebut], [Rotasi dengan _rename_. `copytruncate` di logrotate dapat menghilangkan baris],
-      [Docker tanpa Kubernetes], [stdout], [_File_ dari _driver_ `json-file` atau journald], [`max-size` dan `max-file`, karena _driver_ `json-file` tidak merotasi secara bawaan],
-    )
-  }
-  #v(6pt)
-  #two-col(
-    card([Syslog])[
-      #set text(size: 11.5pt)
-      - rsyslog tetap digunakan untuk log OS, perangkat jaringan, dan pengiriman ke SIEM (_Security Information and Event Management_)
-      - Log aplikasi baru jarang dikirim lewat syslog: ukuran pesan terbatas, dan UDP dapat kehilangan pesan tanpa tanda
-    ],
-    card([Pola yang sama di semua baris], accent: gold.darken(15%))[
-      #set text(size: 11.5pt)
-      - Aplikasi menulis satu baris JSON per event, lengkap dengan `trace_id` dan `correlation_id`
-      - _Agent_ menambahkan _metadata_, menyimpan _buffer_ di disk, lalu mengirim log. _Binary_ Go studi kasus tidak berubah
-    ],
-  )
-  #v(4pt)
-  #note(kind: "warn")[Pengiriman log tidak menjamin semua baris sampai, misalnya _file_ dirotasi sebelum dibaca _agent_. Jejak audit yang tidak boleh hilang ditulis ke database dalam transaksi yang sama dengan data bisnis, misalnya ke tabel audit atau outbox.]
-]
-
-#slide(kicker: "OpenShift", title: "Pemetaan Kubernetes ke OpenShift")[
-  #table(
-    columns: (auto, auto, 1fr),
-    [Kubernetes (lab)], [OpenShift], [Catatan],
-    [Ingress (Traefik)], [Route], [OpenShift juga menerima Ingress dan mengubahnya menjadi Route. Route menambahkan opsi TLS _edge_, _passthrough_, _reencrypt_],
-    [`securityContext` + Pod Security], [SCC `restricted-v2`], [Pengganti SCC `restricted` sejak OpenShift 4.11. UID acak, tanpa _privilege escalation_, _capabilities_ dibuang, _seccomp_ `RuntimeDefault`. Manifest Lab 9 sudah memenuhinya],
-    [`kubectl`], [`oc`], [`oc` mencakup semua perintah `kubectl`, ditambah `oc login`, `oc new-project`, `oc adm`],
-    [_Namespace_], [_Project_], [_Project_ = _namespace_ dengan anotasi dan kuota tambahan],
-    [_Registry_ eksternal], [_Internal registry_ + ImageStream], [_Pipeline_ tetap bisa melakukan _push image_ ke _registry_ eksternal],
-  )
-  #v(10pt)
-  #note(kind: "tip")[Uji kecocokan sebelum ke OpenShift: jalankan _image_ dengan UID acak dan _root filesystem_ _read-only_. Bila keduanya lolos, sebagian besar masalah SCC sudah tertangani.]
-]
-
-#slide(kicker: "OpenShift", title: [Route vs Ingress])[
-  #two-col(
-    [
-```yaml
-# Kubernetes: Ingress
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata: { name: transfer }
-spec:
-  ingressClassName: traefik
-  rules:
-  - http:
-      paths:
-      - path: /transfers
-        pathType: Prefix
-        backend:
-          service:
-            name: transfer
-            port: { name: http }
-```
-#source(("studi-kasus/k8s/base/transfer/ingress.yaml", "lab-09"))
-    ],
-    [
-```yaml
-# OpenShift: Route
-apiVersion: route.openshift.io/v1
-kind: Route
-metadata: { name: transfer }
-spec:
-  path: /transfers
-  to:
-    kind: Service
-    name: transfer
-  port:
-    targetPort: http
-  tls:
-    termination: edge
-```
-#source(ilustrasi: true)
-    ],
-  )
-  #v(8pt)
-  #text(size: 13pt)[Kedua objek mengarahkan _traffic_ HTTP ke Service yang sama. Perbedaannya hanya pada objek _routing_, sedangkan Deployment dan Service tetap sama.]
-]
 
 // ════════════════════════════════════════════════════════════════════════════
 
