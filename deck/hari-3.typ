@@ -1305,6 +1305,48 @@ grpc.WithChainUnaryInterceptor(
   #note[*12-factor, faktor XI (_logs_).* Service menulis log sebagai aliran event ke stdout, tanpa mengatur _file_ atau rotasi. Pengumpulan dan penyimpanan log menjadi tugas platform, misalnya `kubectl logs` dan _log collector_ di Kubernetes. Daftar 12-factor diperkenalkan di Hari 1, sesi Anatomi Service Go. Di Lab 8, catatan log yang sama juga dikirim melalui OTLP agar langsung tampil di Loki.]
 ]
 
+#slide(kicker: "Log terpusat", title: "Dua cara mengirim log ke penyimpanan pusat")[
+  #grid(columns: (1fr, 1fr), column-gutter: 16pt,
+    [
+      #text(size: 12pt, weight: "bold", fill: navy)[1. Service mengirim OTLP (lab)]
+      #flow(
+        node("service", width: 90pt),
+        arr(label: "OTLP", length: 60pt),
+        node("collector", kind: "infra", width: 90pt),
+        arr(length: 40pt),
+        node("Loki", kind: "infra", width: 70pt),
+      )
+    ],
+    [
+      #text(size: 12pt, weight: "bold", fill: navy)[2. _Agent_ di setiap _node_ membaca stdout (praktik umum)]
+      #flow(
+        node("service", width: 80pt),
+        arr(label: "stdout", length: 50pt),
+        node("agent", sub: "DaemonSet", kind: "infra", width: 90pt),
+        arr(length: 40pt),
+        node("Loki / ES", kind: "infra", width: 90pt),
+      )
+    ],
+  )
+  #v(4pt)
+  #{
+    show table.cell: set text(size: 10.5pt)
+    table(
+      columns: (0.9fr, 1.5fr, 1.5fr),
+      inset: (x: 6pt, y: 4pt),
+      [Aspek], [Service Mengirim OTLP], [_Agent_ Membaca stdout],
+      [Kode service], [SDK log OpenTelemetry dan alamat _collector_], [Hanya _handler_ JSON ke stdout],
+      [Log yang terkumpul], [Hanya log yang ditulis melalui `slog`], [Semua _output_ _container_, termasuk pesan `panic` dan log sebelum paket `telemetry` siap],
+      [Penulisan log], [stdout sinkron. OTLP asinkron: _record_ masuk antrean di memori (2048 _record_), lalu dikirim per _batch_ oleh _goroutine_ lain], [Sinkron ke stdout. _Container runtime_ menulisnya ke _file_ di _node_],
+      [Saat tujuan mati atau proses berhenti mendadak], [_Record_ terlama dibuang saat antrean penuh. Isi antrean hilang saat proses mati karena OOM atau SIGKILL], [Log sudah ada di _file_ _node_. _Agent_ melanjutkan dari posisi terakhir, selama _file_ tersebut belum dirotasi],
+      [_Metadata_ Kubernetes], [Hanya atribut _resource_ yang diisi service, misalnya `service.name`], [Ditambahkan _agent_: _namespace_, _pod_, _container_, _node_],
+      [Contoh _agent_], [—], [Fluent Bit, Vector, Grafana Alloy, Filebeat, OTel Collector dengan _receiver_ `filelog`],
+    )
+  }
+  #v(4pt)
+  #note[OpenShift Logging 6 menggunakan cara kedua: Vector sebagai _agent_ dan LokiStack sebagai penyimpanan. Elasticsearch dan Kibana yang dikelola Red Hat tidak lagi disediakan, tetapi Elasticsearch milik organisasi tetap dapat menjadi tujuan _forward_. JSON di stdout studi kasus sudah memuat `correlation_id`, `trace_id`, dan `span_id`, sehingga cara kedua tidak membutuhkan perubahan kode.]
+]
+
 #slide(kicker: "Correlation ID", title: [_Correlation ID_ lintas tiga service])[
   #flow(
     node("klien", kind: "ext", width: 100pt),
@@ -1501,6 +1543,26 @@ func (h contextHandler) WithGroup(n string) slog.Handler {
     [Hasilnya adalah log transfer, account, dan notification untuk satu transaksi, berurutan menurut waktu. Syaratnya, ketiga service menulis atribut dengan nama yang sama dan jam server disinkronkan dengan NTP (_Network Time Protocol_).],
     [Log notification muncul paling akhir, karena _event_ sampai melalui Kafka setelah transfer selesai. Kode service sama untuk Loki dan Elasticsearch. Yang berbeda hanya _collector_ yang mengirim log.],
   )
+]
+
+#slide(kicker: "Log terpusat", title: "Loki dan Elasticsearch")[
+  #{
+    show table.cell: set text(size: 11pt)
+    table(
+      columns: (0.8fr, 1.6fr, 1.6fr),
+      inset: (x: 6pt, y: 4.5pt),
+      [Aspek], [Loki], [Elasticsearch atau OpenSearch],
+      [Peran], [Penyimpanan log, ditampilkan di Grafana dengan LogQL], [Penyimpanan log, ditampilkan di Kibana atau OpenSearch Dashboards dengan KQL],
+      [Yang diindeks], [Label saja, misalnya `service_name`, _namespace_, dan level. Isi log dan atribut lain tidak diindeks], [Setiap _field_ dan teks pesan (_inverted index_)],
+      [Cara mencari], [Memilih _stream_ berdasarkan label dan rentang waktu, lalu memindai isinya], [Langsung dari indeks, untuk rentang waktu berapa pun],
+      [Penyimpanan], [_Chunk_ terkompresi di _object storage_ (S3, MinIO) dengan indeks kecil], [Indeks di disk setiap _node_ _cluster_. Kebutuhan disk dan RAM jauh lebih besar],
+      [Cocok untuk], [Volume log besar. Pencarian berawal dari service dan waktu yang diketahui, dari _alert_, atau dari _trace_], [Pencarian _ad-hoc_ untuk periode panjang: audit, investigasi _fraud_, keluhan nasabah atas transaksi bulan lalu, analitik atas _field_ log],
+    )
+  }
+  #v(8pt)
+  #note(kind: "warn")[`correlation_id` dan `trace_id` tidak boleh dijadikan label Loki. Satu nilai label per transaksi membuat jumlah _stream_ membengkak (_high cardinality_). Simpan sebagai _structured metadata_ atau _field_ JSON, lalu persempit label service dan rentang waktu saat mencari.]
+  #v(4pt)
+  #text(size: 11pt, fill: slate)[Grafana juga dapat membaca Elasticsearch sebagai _data source_, sehingga kedua penyimpanan dapat digunakan berdampingan. Lab menggunakan Loki karena sudah tersedia di `otel-lgtm`.]
 ]
 
 #slide(kicker: "Panduan logging", title: "Isi log untuk kebutuhan operasional")[

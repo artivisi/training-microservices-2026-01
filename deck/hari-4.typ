@@ -937,9 +937,39 @@ spec:
   #v(12pt)
   #bullets(size: 13pt,
     [Pola yang umum: _collector_ di setiap _cluster_ aplikasi, penyimpanan dan Grafana di tempat terpusat.],
-    [Kode aplikasi tidak perlu diubah karena service hanya mengenal `OTEL_EXPORTER_OTLP_ENDPOINT`. Cukup alamat tersebut yang diganti.],
+    [Kode aplikasi tidak perlu diubah: _trace_ dikirim ke alamat di `OTEL_EXPORTER_OTLP_ENDPOINT` dan metrik diambil dari `/metrics`. Bila log dikumpulkan _agent_ dari stdout, salinan log melalui OTLP tidak lagi dibutuhkan.],
     [_Log_ dan _trace_ bisa berisi data nasabah. Retensi dan hak akses mengikuti klasifikasi data yang sama dengan aplikasinya.],
   )
+]
+
+#slide(kicker: "Observability", title: [Pengiriman log per jenis _deployment_])[
+  #{
+    show table.cell: set text(size: 10.5pt)
+    table(
+      columns: (1fr, 0.9fr, 1.1fr, 1.6fr),
+      inset: (x: 6pt, y: 4pt),
+      [_Deployment_], [Aplikasi Menulis ke], [_Agent_ Membaca], [Yang Perlu Diatur],
+      [Kubernetes atau OpenShift], [stdout], [_File_ di `/var/log/pods`, _agent_ sebagai DaemonSet], [OpenShift Logging 6: Vector sebagai _agent_, LokiStack sebagai penyimpanan],
+      [VM dengan systemd], [stdout], [journald], [`RateLimitBurst` (journald membuang log di atas batas), `Storage=persistent`, `SystemMaxUse`],
+      [VM, volume log tinggi atau aplikasi Java], [_File_ JSON dengan rotasi], [_File_ tersebut], [Rotasi dengan _rename_. `copytruncate` di logrotate dapat menghilangkan baris],
+      [Docker tanpa Kubernetes], [stdout], [_File_ dari _driver_ `json-file` atau journald], [`max-size` dan `max-file`, karena _driver_ `json-file` tidak merotasi secara bawaan],
+    )
+  }
+  #v(6pt)
+  #two-col(
+    card([Syslog])[
+      #set text(size: 11.5pt)
+      - rsyslog tetap digunakan untuk log OS, perangkat jaringan, dan pengiriman ke SIEM (_Security Information and Event Management_)
+      - Log aplikasi baru jarang dikirim lewat syslog: ukuran pesan terbatas, dan UDP dapat kehilangan pesan tanpa tanda
+    ],
+    card([Pola yang sama di semua baris], accent: gold.darken(15%))[
+      #set text(size: 11.5pt)
+      - Aplikasi menulis satu baris JSON per event, lengkap dengan `trace_id` dan `correlation_id`
+      - _Agent_ menambahkan _metadata_, menyimpan _buffer_ di disk, lalu mengirim log. _Binary_ Go studi kasus tidak berubah
+    ],
+  )
+  #v(4pt)
+  #note(kind: "warn")[Pengiriman log tidak menjamin semua baris sampai, misalnya _file_ dirotasi sebelum dibaca _agent_. Jejak audit yang tidak boleh hilang ditulis ke database dalam transaksi yang sama dengan data bisnis, misalnya ke tabel audit atau outbox.]
 ]
 
 #slide(kicker: "OpenShift", title: "Pemetaan Kubernetes ke OpenShift")[
