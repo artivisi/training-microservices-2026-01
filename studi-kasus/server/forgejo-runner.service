@@ -1,0 +1,17 @@
+[Unit]
+Description=Forgejo runner (Lab 10 pipelines, label host)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+User=runner
+Group=runner
+WorkingDirectory=/home/runner
+Environment=HOME=/home/runner
+Environment=PATH=/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/local/bin/forgejo-runner daemon --config /etc/forgejo-runner/config.yml
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

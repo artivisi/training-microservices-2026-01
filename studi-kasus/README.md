@@ -574,6 +574,7 @@ Setiap service memiliki _pipeline_ sendiri. _Commit_ yang mengubah `account` han
 | `<service>/Jenkinsfile` | _Declarative pipeline_ Jenkins dengan _stage_ dan _make target_ yang sama, untuk pemetaan ke Bitbucket + Jenkins |
 | `pipeline.mk` | _Target_ `image`, `push`, `apply`, `deploy`, di-_include_ oleh `Makefile` setiap service |
 | `k8s/overlays/server/` | _Overlay_ untuk server pelatihan: satu _namespace_ per peserta, infrastruktur bersama |
+| `server/setup.sh` | Memasang git server, runner, k3s, dan infrastruktur lab di satu VPS Ubuntu 24.04, untuk mengulang _pipeline_ server pelatihan setelah training (Lab 10, Langkah 11) |
 
 ### Tahapan
 

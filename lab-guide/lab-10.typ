@@ -50,7 +50,7 @@ Alur yang sama di laptop, tanpa git server dan registry:
 ```
 
 #note[
-  *Status server pelatihan.* _Workflow_ dan _overlay_ `k8s/overlays/server` sudah dijalankan dari awal hingga akhir di server pelatihan (Langkah 10): _deploy_ pertama ke _namespace_ kosong, _rolling update_, dan dua peserta yang melakukan _push_ bersamaan. Ketiga `Jenkinsfile` sudah dijalankan di Jenkins LTS 2.580.1 dengan _deploy_ ke k3d (Langkah 6). Latihan yang bisa dijalankan sepenuhnya di laptop adalah `make pipeline-k3d` pada Langkah 8.
+  *Status server pelatihan.* _Workflow_ dan _overlay_ `k8s/overlays/server` sudah dijalankan dari awal hingga akhir di server pelatihan (Langkah 10): _deploy_ pertama ke _namespace_ kosong, _rolling update_, dan dua peserta yang melakukan _push_ bersamaan. Ketiga `Jenkinsfile` sudah dijalankan di Jenkins LTS 2.580.1 dengan _deploy_ ke k3d (Langkah 6). Latihan yang bisa dijalankan sepenuhnya di laptop adalah `make pipeline-k3d` pada Langkah 8. Setelah training, Langkah 10 bisa diulang di VPS sendiri dengan `studi-kasus/server/setup.sh` (Langkah 11), yang sudah diuji dari VPS kosong hingga transfer lewat Ingress.
 ]
 
 == Titik Awal
@@ -972,6 +972,86 @@ _Pod_ membaca ConfigMap hanya saat _startup_, sehingga `rollout restart` diperlu
 
 Di server pelatihan, sama seperti di k3d, Prometheus tidak mengambil _metric_ dari _pod_. Yang sampai ke _collector_ hanya _trace_ dan log.
 
+=== Langkah 11: _Pipeline_ di server sendiri
+
+Server pelatihan Langkah 10 hanya tersedia selama training. Alur yang sama bisa dijalankan di satu VPS milik sendiri. _Script_ `studi-kasus/server/setup.sh` memasang semua komponen yang di server pelatihan disiapkan instruktur, di satu mesin:
+
+#table(
+  columns: (1fr, 1.3fr, 1.3fr),
+  [Komponen], [Server pelatihan], [Server sendiri],
+  [Git server, registry, _Actions_], [Host terpisah, satu akun per peserta], [Forgejo di Docker, satu akun admin, git hanya lewat HTTPS],
+  [TLS], [_Wildcard certificate_ dari instruktur], [Caddy di port 80/443 meminta _certificate_ Let's Encrypt untuk `git.`, `auth.`, dan `app.`],
+  [Runner], [Satu runner untuk semua peserta, label `host`], [Satu runner di VPS yang sama, label `host`],
+  [_Cluster_], [k3s, satu _namespace_ per peserta, _quota_ dan NetworkPolicy], [k3s, satu _namespace_. Traefik menerima _traffic_ dari Caddy di port 8080],
+  [Infrastruktur lab], [_Namespace_ `infra`: PostgreSQL, Kafka, Hydra, otel-lgtm], [Sama, dengan _resource_ yang lebih kecil],
+  [_Variable_ dan _secret_ repository], [Diisi instruktur], [Diisi sendiri dari nilai di `/root/lab10.txt`],
+)
+
+Alamat `infra` sama dengan server pelatihan, sehingga _workflow_, `pipeline.mk`, dan _overlay_ `k8s/overlays/server` digunakan tanpa perubahan. Yang berbeda hanya nilai pengganti `replace-me`.
+
+Kebutuhan:
+
+- VPS Ubuntu 24.04 x86_64 dengan 4 vCPU, RAM 8 GB, disk minimal 50 GB, IP publik, dan akses `root` lewat SSH. Biayanya dihitung per jam di kebanyakan penyedia _cloud_, jadi hapus VPS setelah latihan selesai.
+- Satu domain dengan tiga _record_ A, yaitu `git.<domain>`, `auth.<domain>`, dan `app.<domain>`, yang mengarah ke IP VPS. Tanpa domain sendiri, daftarkan nama gratis di DuckDNS (`<nama>.duckdns.org`). Semua nama turunan seperti `git.<nama>.duckdns.org` otomatis mengarah ke IP yang sama, sehingga `<domain>` cukup diisi `<nama>.duckdns.org`.
+- Port 22, 80, dan 443 terbuka dari internet. Let's Encrypt memeriksa kepemilikan nama lewat port 80.
+
+#note[
+  Layanan seperti sslip.io dan nip.io (`git.<ip>.sslip.io`) tidak membutuhkan pendaftaran, tetapi Let's Encrypt membatasi jumlah _certificate_ per domain terdaftar setiap minggu. Semua pengguna sslip.io berbagi batas yang sama, sehingga permintaan _certificate_ bisa ditolak. DuckDNS terdaftar di _Public Suffix List_, sehingga setiap nama DuckDNS mendapat batas sendiri.
+]
+
+Jalankan _script_ sebagai `root` dari _clone_ repository di VPS. `FORGE_USER` menjadi nama akun git server sekaligus nama _namespace_, awalan database, awalan _topic_ Kafka, dan awalan _client_ OAuth2, sehingga hanya boleh berisi huruf kecil, angka, dan tanda hubung:
+
+#perintah[
+```bash
+ssh root@<ip-vps>
+git clone https://github.com/artivisi/training-microservices-2026-01.git
+cd training-microservices-2026-01
+DOMAIN=<domain> FORGE_USER=<nama> FORGE_EMAIL=<email> ./studi-kasus/server/setup.sh
+```
+]
+
+_Script_ berhenti dengan pesan error bila ada _variable_ yang kosong, bila nama DNS belum mengarah ke VPS, atau bila `https://git.<domain>` tidak bisa dibuka setelah Caddy berjalan. _Script_ boleh dijalankan ulang: yang sudah ada dibiarkan, dan _password_ yang sudah dibuat tetap disimpan di `/opt/lab10/secrets`. Pada uji coba di VPS 4 vCPU, _script_ selesai dalam sekitar 3,5 menit, lalu mencetak isi `/root/lab10.txt`.
+
+Langkah persiapan di git server:
+
++ Masuk ke `https://git.<domain>` dengan _username_ dan _password_ dari `/root/lab10.txt`.
++ Buat repository baru bernama `training-microservices-2026-01` dari menu _New Repository_. Biarkan kosong: jangan centang pilihan yang membuat README atau `.gitignore`.
++ Isi _variable_ `REGISTRY` dan `NAMESPACE` di menu _Settings_ → _Actions_ → _Variables_ repository tersebut, lalu _secret_ `REGISTRY_USER`, `REGISTRY_PASSWORD`, dan `KUBE_CONFIG` di _Settings_ → _Actions_ → _Secrets_. Nilainya ada di `/root/lab10.txt`. Isi `KUBE_CONFIG` adalah seluruh isi _file_ `/opt/lab10/kubeconfig`.
+
+Isi _variable_ dan _secret_ sebelum _push_ pertama, karena _push_ pertama langsung menjalankan _workflow_. _Variable_ yang kosong membuat `make` berhenti dengan `missing required variables`.
+
+Alur selanjutnya sama dengan Langkah 10. Kerjakan langsung di _clone_ yang sudah ada di VPS:
+
+#perintah[
+```bash
+git config --global user.name "<nama>"
+git config --global user.email "<email>"
+git remote add vps https://git.<domain>/<nama>/training-microservices-2026-01.git
+git push vps main
+# perintah sed dari /root/lab10.txt, lalu:
+kubectl kustomize studi-kasus/k8s/overlays/server | grep replace-me
+echo '# first deploy to my own server' >> studi-kasus/pipeline.mk
+git commit -am "Fill server overlay"
+git push vps main
+```
+]
+
+`git push` menanyakan _username_ dan _password_ git server. `grep replace-me` tidak boleh mencetak apa pun.
+
+_Push_ pertama hanya mengisi repository yang masih kosong dan tidak menjalankan _workflow_ apa pun. _Branch_ `main` belum ada sebelumnya, sehingga tidak ada _commit_ pembanding untuk filter `paths`. _Push_ kedua berisi perubahan `pipeline.mk`, sehingga ketiga _workflow_ berjalan, sama seperti _push_ pertama di Langkah 10.
+
+Pantau _pipeline_ di `https://git.<domain>/<nama>/training-microservices-2026-01/actions`, lalu periksa hasilnya di VPS dengan `kubectl get deploy,pods,ingress`. `kubectl` milik `root` di VPS sudah diarahkan ke _namespace_ `<nama>`, dengan hak akses yang sama seperti `KUBE_CONFIG` _pipeline_. Untuk melihat _namespace_ `infra`, gunakan _kubeconfig_ admin: `KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl -n infra get pods`. Buat dua rekening dan kirim transfer dengan perintah di `/root/lab10.txt`. Transfer dikirim ke `https://app.<domain>/transfers`.
+
+Setelah itu, ubah pesan log di `studi-kasus/transfer/main.go`, _commit_, lalu `git push vps main`. Hanya _workflow_ `transfer` yang berjalan, dan `kubectl rollout history deployment/transfer` menampilkan dua revisi dengan SHA _commit_ masing-masing.
+
+Pada uji coba di VPS 4 vCPU, _pipeline_ pertama selesai dalam sekitar 6,5 menit. Runner menjalankan dua _job_ sekaligus, sehingga `transfer` menunggu `account` dan `notification` selesai, dan _cache_ Go serta Docker masih kosong. _Pipeline_ `transfer` berikutnya selesai dalam sekitar 1,5 menit, termasuk _rolling update_. Seluruh sistem menggunakan sekitar 2,5 GB RAM.
+
+Setelah latihan selesai, hapus VPS dari konsol penyedia _cloud_. Data git server, registry, dan _cluster_ ikut terhapus.
+
+#note[
+  Setiap _certificate_ Let's Encrypt tercatat di _Certificate Transparency log_ yang terbuka untuk umum. Beberapa menit setelah _certificate_ terbit, _scanner_ otomatis mulai mencoba alamat seperti `/.env` dan `/.git/config` di ketiga nama tersebut. Jangan menyimpan data asli di server latihan ini, dan jangan membuka port lain selain 22, 80, dan 443 bila penyedia _cloud_ menyediakan _firewall_.
+]
+
 == Verifikasi
 
 Jalankan ulang `make pipeline-k3d SERVICE=transfer` setelah Langkah 9, karena `make k8s-apply` di Langkah 9 mengembalikan _image_ ke `1.0.0`.
@@ -1022,6 +1102,12 @@ git diff --no-index studi-kasus/transfer/Jenkinsfile studi-kasus/account/Jenkins
 *_Build_ Jenkins setelah _build_ yang gagal melewati semua _stage_.* _Changeset_ dibandingkan dengan _build_ sebelumnya, termasuk _build_ yang gagal, sehingga _build_ berikutnya tanpa _commit_ baru di direktori service tidak menjalankan apa pun. Perbaiki penyebabnya, lalu jalankan _Build Now_ atau _push_ _commit_ perbaikan.
 
 *_Build_ Jenkins berhenti dengan `GIT_COMMIT is empty`.* _Checkout_ SCM bawaan _declarative pipeline_ dimatikan, misalnya dengan `options { skipDefaultCheckout() }`, sehingga `VERSION` tidak berisi SHA _commit_. Hapus opsi tersebut.
+
+*`setup.sh` berhenti dengan `https://git.<domain> unreachable`.* Caddy belum mendapat _certificate_ dari Let's Encrypt. Periksa bahwa ketiga nama mengarah ke IP VPS (`getent hosts git.<domain>`) dan port 80/443 terbuka, lalu baca alasannya di `docker compose -f /opt/lab10/forge/compose.yaml logs caddy`. Setelah penyebabnya diperbaiki, jalankan ulang `setup.sh`.
+
+*_Run_ di server sendiri tertahan dengan status _Waiting_.* Tidak ada runner berlabel `host` yang aktif. Periksa `systemctl status forgejo-runner` dan `journalctl -u forgejo-runner` di VPS. Runner menjalankan dua _job_ sekaligus, sehingga _run_ ketiga memang menunggu sampai salah satu _job_ selesai.
+
+*Tidak ada _workflow_ yang berjalan setelah _push_ ke repository server sendiri.* _Push_ yang membuat _branch_ `main` di repository kosong tidak menjalankan _workflow_ (Langkah 11). _Push_ _commit_ berikutnya yang mengubah _file_ di `on.push.paths`.
 
 == Eksplorasi Mandiri
 

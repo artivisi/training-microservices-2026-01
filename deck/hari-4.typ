@@ -911,15 +911,40 @@ deploy:
     at(450pt, 30pt, node("runner CI", sub: "pusat", kind: "infra", width: 130pt)),
     at(690pt, 30pt, node("server pelatihan", sub: "namespace per peserta", width: 160pt)),
     at(215pt, 190pt, node("container registry", sub: "di git server", kind: "infra", width: 150pt)),
-    at(0pt, 190pt, node("k3d laptop", sub: "imagePullSecret", width: 130pt)),
+    at(0pt, 190pt, node("k3d laptop", sub: "make pipeline-k3d", width: 130pt)),
     edge((130pt, 58pt), (215pt, 58pt), label: "push"),
     edge((345pt, 58pt), (450pt, 58pt), label: "trigger"),
     edge((580pt, 58pt), (690pt, 58pt), label: "deploy"),
     edge((480pt, 86pt), (365pt, 200pt), label: "push image", label-dx: 40pt),
-    edge((215pt, 218pt), (130pt, 218pt), label: "pull", dash: "dashed"),
+    edge((65pt, 86pt), (65pt, 190pt), label: "k3d image import", dash: "dashed", label-dx: 55pt, label-dy: -6pt),
     edge((365pt, 230pt), (740pt, 86pt), label: "pull", dash: "dashed", label-dx: 50pt, label-dy: 10pt),
   )
   #note[Alamat server dan akses setiap peserta dibagikan saat lab.]
+]
+
+#slide(kicker: "Lab 10", title: [Lab 10 di server sendiri])[
+  #diagram(height: 250pt,
+    at(150pt, 0pt, rect(width: 700pt, height: 250pt, radius: 6pt, stroke: (paint: slate, thickness: 1pt, dash: "dashed"))),
+    at(162pt, 8pt, text(size: 10pt, fill: slate)[VPS Ubuntu 24.04, 4 vCPU, 8 GB · `studi-kasus/server/setup.sh`]),
+    at(0pt, 100pt, node("laptop", sub: "git push (HTTPS)", kind: "ext", width: 115pt)),
+    at(185pt, 100pt, node("Caddy", sub: "80, 443, TLS", kind: "infra", width: 115pt)),
+    at(370pt, 35pt, node("git server", sub: "git., registry, Actions", kind: "infra", width: 170pt)),
+    at(640pt, 35pt, node("runner", sub: "label host", kind: "infra", width: 170pt)),
+    at(370pt, 170pt, node("k3s", sub: "Traefik :8080, namespace service", width: 170pt)),
+    at(640pt, 170pt, node("namespace infra", sub: "Postgres, Kafka, Hydra, otel", kind: "db", width: 170pt)),
+    edge((115pt, 128pt), (185pt, 128pt)),
+    edge((300pt, 118pt), (370pt, 70pt), label: "git.", label-dx: -10pt),
+    edge((300pt, 138pt), (370pt, 190pt), label: "auth., app.", label-dx: -30pt, label-dy: 4pt),
+    edge((540pt, 63pt), (640pt, 63pt), label: "job"),
+    edge((680pt, 91pt), (500pt, 170pt), label: "make deploy", label-dx: 40pt),
+    edge((420pt, 170pt), (420pt, 91pt), label: "pull image", dash: "dashed", label-dx: -45pt),
+    edge((540pt, 198pt), (640pt, 198pt), both: true),
+  )
+  #v(4pt)
+  #bullets(size: 12.5pt,
+    [Satu _script_ memasang semua yang disediakan server pelatihan: git server dengan registry dan runner, k3s, infrastruktur lab, _namespace_, dan _kubeconfig_ untuk _pipeline_.],
+    [Syaratnya: domain sendiri atau nama gratis dari DuckDNS, tiga _record_ DNS (`git.`, `auth.`, `app.`) ke IP VPS, dan port 80/443 terbuka. Langkah lengkapnya ada di Lab 10, Langkah 11.],
+  )
 ]
 
 #slide(kicker: "Jenkins", title: [Pemetaan ke Bitbucket dan Jenkins _on-premise_])[

@@ -1,0 +1,10 @@
+# git.<domain>: Forgejo (web, git over HTTPS, container registry).
+# auth.<domain>, app.<domain>: Traefik of k3s, plain HTTP on port 8080
+# (traefik-config.yaml); TLS ends here, so Ingresses need no tls section.
+git.{$DOMAIN} {
+	reverse_proxy 127.0.0.1:3000
+}
+
+auth.{$DOMAIN}, app.{$DOMAIN} {
+	reverse_proxy {$NODE_IP}:8080
+}

@@ -1,0 +1,78 @@
+# OAuth2 server (Ory Hydra, the image of compose.yaml), PostgreSQL-backed: a
+# restarted pod keeps the clients and the signing keys. Public at
+# https://auth.${DOMAIN}/ (token, JWKS, discovery only); the admin API stays
+# inside the cluster. The issuer is that URL; the services inside the
+# cluster use it too (through Caddy and Traefik), so the "iss" claim and
+# OAUTH_ISSUER match everywhere.
+# --dev: Hydra serves plain HTTP; Caddy terminates TLS.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: hydra
+  namespace: infra
+stringData:
+  DSN: "postgres://hydra:${HYDRA_DB_PASSWORD}@postgres.infra.svc.cluster.local:5432/hydra?sslmode=disable"
+  SECRETS_SYSTEM: "${HYDRA_SYSTEM_SECRET}"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hydra
+  namespace: infra
+spec:
+  selector: { app: hydra }
+  ports:
+    - { name: public, port: 4444 }
+    - { name: admin, port: 4445 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hydra
+  namespace: infra
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: hydra }
+  template:
+    metadata:
+      labels: { app: hydra }
+    spec:
+      enableServiceLinks: false
+      initContainers:
+        - name: migrate
+          image: ${HYDRA_IMAGE}
+          args: ["migrate", "sql", "up", "-e", "--yes"]
+          envFrom:
+            - secretRef: { name: hydra }
+      containers:
+        - name: hydra
+          image: ${HYDRA_IMAGE}
+          args: ["serve", "all", "--dev"]
+          envFrom:
+            - secretRef: { name: hydra }
+          env:
+            - { name: URLS_SELF_ISSUER, value: "https://auth.${DOMAIN}/" }
+            - { name: STRATEGIES_ACCESS_TOKEN, value: jwt }
+          ports:
+            - { name: public, containerPort: 4444 }
+            - { name: admin, containerPort: 4445 }
+          readinessProbe:
+            httpGet: { path: /health/ready, port: 4444 }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hydra
+  namespace: infra
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: auth.${DOMAIN}
+      http:
+        paths:
+          - { path: /oauth2/token, pathType: Exact, backend: { service: { name: hydra, port: { name: public } } } }
+          - { path: /.well-known, pathType: Prefix, backend: { service: { name: hydra, port: { name: public } } } }

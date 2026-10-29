@@ -1,0 +1,54 @@
+# Git server of the single-VPS setup (setup.sh): Forgejo with its container
+# registry and Actions, behind Caddy, which also forwards the cluster's host
+# names to Traefik. Values come from .env next to this file, written by
+# setup.sh.
+services:
+  forgejo:
+    image: codeberg.org/forgejo/forgejo:16.0.6
+    restart: unless-stopped
+    environment:
+      USER_UID: "1000"
+      USER_GID: "1000"
+      FORGEJO__server__DOMAIN: git.${DOMAIN:?DOMAIN is required}
+      FORGEJO__server__ROOT_URL: https://git.${DOMAIN:?DOMAIN is required}/
+      FORGEJO__server__HTTP_PORT: "3000"
+      # Git over HTTPS only: port 22 belongs to the host's sshd.
+      FORGEJO__server__DISABLE_SSH: "true"
+      FORGEJO__server__OFFLINE_MODE: "true"
+      FORGEJO__database__DB_TYPE: sqlite3
+      FORGEJO__security__INSTALL_LOCK: "true"
+      FORGEJO__security__SECRET_KEY: ${FORGE_SECRET_KEY:?FORGE_SECRET_KEY is required}
+      FORGEJO__security__INTERNAL_TOKEN: ${FORGE_INTERNAL_TOKEN:?FORGE_INTERNAL_TOKEN is required}
+      FORGEJO__service__DISABLE_REGISTRATION: "true"
+      FORGEJO__service__REQUIRE_SIGNIN_VIEW: "true"
+      FORGEJO__repository__DEFAULT_PRIVATE: private
+      FORGEJO__mailer__ENABLED: "false"
+      FORGEJO__actions__ENABLED: "true"
+      # Workflows use run: steps only; never fetch actions from the internet.
+      FORGEJO__actions__DEFAULT_ACTIONS_URL: self
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - forgejo-data:/data
+
+  # Host network: Caddy reaches Forgejo on 127.0.0.1:3000 and Traefik on the
+  # node address (NODE_IP:8080). Certificates from Let's Encrypt (HTTP-01),
+  # one per host name.
+  caddy:
+    image: caddy:2.11.7
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      DOMAIN: ${DOMAIN:?DOMAIN is required}
+      NODE_IP: ${NODE_IP:?NODE_IP is required}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - forgejo
+
+volumes:
+  forgejo-data:
+  caddy-data:
+  caddy-config:

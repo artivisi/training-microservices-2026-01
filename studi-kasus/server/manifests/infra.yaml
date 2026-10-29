@@ -1,0 +1,178 @@
+# Lab infrastructure in the cluster, namespace "infra": the images of
+# studi-kasus/compose.yaml, one instance each.
+#   postgres.infra.svc.cluster.local:5432  one database + role per service
+#   kafka.infra.svc.cluster.local:9092     topic ${NAME}.transfer-events
+#   otel.infra.svc.cluster.local:4317      OTLP gRPC (otel-lgtm; Grafana on 3000, port-forward)
+# Hydra is in hydra.yaml, applied after its database exists.
+# enableServiceLinks: false everywhere: Kubernetes would inject
+# KAFKA_PORT=tcp://... for the Service "kafka", and the Kafka image turns
+# every KAFKA_* variable into a broker setting.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: infra
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres
+  namespace: infra
+stringData:
+  POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: infra
+spec:
+  selector: { app: postgres }
+  ports:
+    - { name: postgres, port: 5432 }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: infra
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels: { app: postgres }
+  template:
+    metadata:
+      labels: { app: postgres }
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: postgres
+          image: ${POSTGRES_IMAGE}
+          env:
+            - { name: POSTGRES_USER, value: postgres }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: postgres, key: POSTGRES_PASSWORD } }
+          ports:
+            - { name: postgres, containerPort: 5432 }
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "postgres"] }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql }
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: local-path
+        resources:
+          requests: { storage: 5Gi }
+---
+# publishNotReadyAddresses: the broker resolves its own advertised address
+# while it starts, before its readiness probe passes.
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka
+  namespace: infra
+spec:
+  selector: { app: kafka }
+  publishNotReadyAddresses: true
+  ports:
+    - { name: kafka, port: 9092 }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kafka
+  namespace: infra
+spec:
+  serviceName: kafka
+  replicas: 1
+  selector:
+    matchLabels: { app: kafka }
+  template:
+    metadata:
+      labels: { app: kafka }
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: kafka
+          image: ${KAFKA_IMAGE}
+          env:
+            - { name: KAFKA_NODE_ID, value: "1" }
+            - { name: KAFKA_PROCESS_ROLES, value: "broker,controller" }
+            - { name: KAFKA_LISTENERS, value: "PLAINTEXT://:9092,CONTROLLER://:9093" }
+            - { name: KAFKA_ADVERTISED_LISTENERS, value: "PLAINTEXT://kafka.infra.svc.cluster.local:9092" }
+            - { name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP, value: "PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT" }
+            - { name: KAFKA_INTER_BROKER_LISTENER_NAME, value: PLAINTEXT }
+            - { name: KAFKA_CONTROLLER_LISTENER_NAMES, value: CONTROLLER }
+            - { name: KAFKA_CONTROLLER_QUORUM_VOTERS, value: "1@localhost:9093" }
+            - { name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR, value: "1" }
+            - { name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR, value: "1" }
+            - { name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR, value: "1" }
+            - { name: KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS, value: "0" }
+            # The topic is created by setup.sh, as in compose.yaml.
+            - { name: KAFKA_AUTO_CREATE_TOPICS_ENABLE, value: "false" }
+            - { name: KAFKA_LOG_DIRS, value: /var/lib/kafka/data }
+            - { name: KAFKA_HEAP_OPTS, value: "-Xms256m -Xmx512m" }
+          ports:
+            - { name: kafka, containerPort: 9092 }
+          readinessProbe:
+            tcpSocket: { port: 9092 }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 100m, memory: 512Mi }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/kafka/data }
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: local-path
+        resources:
+          requests: { storage: 5Gi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel
+  namespace: infra
+spec:
+  selector: { app: otel-lgtm }
+  ports:
+    - { name: otlp-grpc, port: 4317, appProtocol: grpc }
+    - { name: otlp-http, port: 4318 }
+    - { name: grafana, port: 3000 }
+---
+# Traces and logs only; no volume (gone on restart), as on the laptop.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-lgtm
+  namespace: infra
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: otel-lgtm }
+  template:
+    metadata:
+      labels: { app: otel-lgtm }
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: otel-lgtm
+          image: ${OTEL_LGTM_IMAGE}
+          ports:
+            - { containerPort: 4317 }
+            - { containerPort: 4318 }
+            - { containerPort: 3000 }
+          readinessProbe:
+            tcpSocket: { port: 4317 }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 100m, memory: 512Mi }
