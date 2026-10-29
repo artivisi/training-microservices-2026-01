@@ -35,7 +35,7 @@
     [10:30 – 12:00], [_Containerization_, konfigurasi, Kubernetes, pemetaan ke OpenShift, HPA, dan *Lab 9* (1): seluruh sistem berjalan di k3d], [Demo + _hands-on_],
     [12:00 – 13:00], [Istirahat makan siang], [—],
     [13:00 – 13:30], [*Lab 9* (2): _rolling update_, perubahan konfigurasi, _probe_], [_Hands-on_],
-    [13:30 – 14:15], [CI/CD per service dan pemetaannya ke Jenkins dan GitHub Actions; GitOps sekilas], [Presentasi + demo],
+    [13:30 – 14:15], [CI/CD per service dan pemetaannya ke Jenkins dan GitHub Actions; GitOps], [Presentasi + demo],
     [14:15 – 15:45], [*Lab 10*: dari _commit_ hingga _rolling update_], [_Hands-on_],
     [16:00 – 17:00], [Peta _concern_ lengkap, ringkasan keputusan desain, diskusi dan tanya jawab], [Presentasi + diskusi],
   )
@@ -1009,7 +1009,120 @@ pipeline {
     ],
   )
   #v(10pt)
-  #note[GitOps dibahas sebagai arah pengembangan. Lab tidak memasang _tools_ GitOps. Konsepnya cukup dipahami agar organisasi dapat menilainya ketika sudah siap.]
+  #note[Contoh _drift_ di Lab 10: `make deploy` hanya menjalankan `kubectl set image`. Perubahan di `k8s/overlays/server/config.yaml` baru sampai ke _cluster_ setelah `make k8s-apply-server` dijalankan manual, dan `kubectl edit` oleh siapa pun bertahan sampai ada yang menimpanya.]
+]
+
+#slide(kicker: "GitOps", title: [Empat prinsip GitOps])[
+  #table(
+    columns: (0.9fr, 1.4fr, 1.4fr),
+    [Prinsip], [Artinya], [Kondisi di Lab 10],
+    [_Declarative_], [_State_ yang diinginkan ditulis sebagai manifest, bukan sebagai urutan perintah], [Manifest Kustomize sudah ada, tetapi _deploy_ menjalankan perintah imperatif `kubectl set image`],
+    [_Versioned and immutable_], [_State_ disimpan di Git. Setiap perubahan menjadi _commit_ baru dan versi lama tetap bisa dipulihkan], [_Tag image_ yang sedang berjalan tidak tercatat di repositori, hanya di anotasi `change-cause` di _cluster_],
+    [_Pulled automatically_], [_Agent_ di dalam _cluster_ mengambil _state_ dari repositori], [Runner mendorong perubahan ke _cluster_ dengan _kubeconfig_ milik peserta],
+    [_Continuously reconciled_], [_Agent_ terus membandingkan _state_ di repositori dengan _state_ _cluster_ dan memperbaiki selisihnya], [Tidak ada pembanding. Selisih baru terlihat bila ada yang memeriksa manual],
+  )
+  #v(6pt)
+  #text(size: 11pt, fill: slate)[Rumusan prinsip dari OpenGitOps (proyek CNCF), versi 1.0.0.]
+]
+
+#slide(kicker: "GitOps", title: [Repositori aplikasi dan repositori konfigurasi])[
+  #diagram(height: 250pt,
+    at(0pt, 20pt, node("developer", kind: "ext", width: 110pt)),
+    at(180pt, 20pt, node("repo aplikasi", sub: "kode + Dockerfile", kind: "infra", width: 140pt)),
+    at(400pt, 20pt, node("CI", sub: "test, image, push", kind: "infra", width: 140pt)),
+    at(640pt, 20pt, node("registry", sub: "tag = SHA", kind: "infra", width: 150pt)),
+    at(180pt, 175pt, node("reviewer", sub: "tim rilis", kind: "ext", width: 140pt)),
+    at(400pt, 175pt, node("repo konfigurasi", sub: "manifest per environment", kind: "infra", width: 160pt)),
+    at(640pt, 175pt, node("cluster", sub: "agent GitOps", width: 150pt)),
+    edge((110pt, 48pt), (180pt, 48pt), label: "push"),
+    edge((320pt, 48pt), (400pt, 48pt), label: "trigger"),
+    edge((540pt, 48pt), (640pt, 48pt), label: "push image"),
+    edge((470pt, 76pt), (470pt, 175pt), label: "commit tag image", label-dx: 60pt),
+    edge((320pt, 203pt), (400pt, 203pt), label: "approve PR"),
+    edge((640pt, 203pt), (560pt, 203pt), label: "pull"),
+    edge((715pt, 175pt), (715pt, 76pt), label: "pull image", dash: "dashed", label-dx: 45pt),
+  )
+  #bullets(size: 12.5pt,
+    [CI tidak lagi memegang _credential_ _cluster_. CI cukup memiliki akses tulis ke repositori konfigurasi.],
+    [Promosi dev → staging → _production_ berupa _pull request_ yang menyalin _tag image_ ke _overlay_ berikutnya. Persetujuan rilis dicatat sebagai _review_ PR.],
+  )
+]
+
+#code-slide(kicker: "GitOps", title: [Isi repositori konfigurasi dan _step_ CI],
+  side: [
+    - Struktur _base_ dan _overlay_ sama dengan `studi-kasus/k8s`. Setiap _environment_ menjadi satu _overlay_
+    - Setiap rilis hanya mengubah baris `newTag`, sehingga _diff_ PR mudah dibaca
+    - _Step_ `deploy` di _pipeline_ aplikasi diganti _commit_ ke repositori konfigurasi. Test, _build image_, dan _push_ tetap sama
+    - Secret tidak disimpan sebagai teks biasa di Git. Pilihannya: Sealed Secrets, SOPS, atau External Secrets Operator yang membaca dari _secret manager_
+  ],
+)[
+```yaml
+# repo konfigurasi: transfer/overlays/prod/kustomization.yaml
+resources:
+  - ../../base
+patches:
+  - path: config.yaml
+images:
+  - name: studi-kasus/transfer
+    newName: registry.example/bank/transfer
+    newTag: 3f2a9c1e7b
+```
+```sh
+# step pengganti `make deploy` di pipeline transfer
+git clone "$CONFIG_REPO" config && cd config/transfer/overlays/dev
+kustomize edit set image \
+  studi-kasus/transfer=$REGISTRY/$IMAGE_OWNER/transfer:$VERSION
+git commit -am "transfer $VERSION" && git push
+```
+#source(ilustrasi: true)
+]
+
+#code-slide(kicker: "GitOps", title: [_Agent_ GitOps dan pemetaannya ke OpenShift],
+  side: [
+    - Dua _agent_ yang umum: Argo CD dan Flux, keduanya proyek CNCF berstatus _graduated_
+    - OpenShift menyediakan Red Hat OpenShift GitOps, _operator_ berbasis Argo CD dengan dukungan Red Hat
+    - `selfHeal` mengembalikan perubahan manual di _cluster_. `prune` menghapus objek yang sudah dihapus dari repositori
+    - Argo CD memeriksa repositori secara berkala (sekitar 3 menit) atau langsung saat menerima _webhook_ dari git server
+    - Status `Synced`/`OutOfSync` dan `Healthy`/`Degraded` per aplikasi terlihat di UI dan CLI
+  ],
+)[
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: transfer-prod
+  namespace: openshift-gitops
+spec:
+  project: default
+  source:
+    repoURL: https://git.example/bank/deploy-config.git
+    targetRevision: main
+    path: transfer/overlays/prod
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: transfer-prod
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+```
+#source(ilustrasi: true)
+]
+
+#slide(kicker: "GitOps", title: [Model _push_ dan GitOps per aspek])[
+  #table(
+    columns: (0.8fr, 1.3fr, 1.3fr),
+    [Aspek], [Model _push_ (Lab 10, Jenkins)], [GitOps],
+    [_Credential_ _cluster_], [Di runner atau Jenkins], [Hanya di _agent_ di dalam _cluster_],
+    [Jalur perubahan], [_Pipeline_, ditambah `kubectl` manual], [Hanya _commit_ ke repositori konfigurasi],
+    [_Drift_], [Tidak terdeteksi], [Dilaporkan `OutOfSync`, dikembalikan bila `selfHeal` aktif],
+    [_Rollback_], [`kubectl rollout undo` atau menjalankan ulang _pipeline_ versi lama], [`git revert` di repositori konfigurasi],
+    [Jejak audit], [_Log job_ CI], [Riwayat _commit_ dan persetujuan PR],
+    [Peran Jenkins], [_Test_, _build_, _push_, _deploy_], [_Test_, _build_, _push_, _commit_ _tag image_],
+    [Hasil _deploy_], [`rollout status` di _log pipeline_], [Status aplikasi di _agent_. _Pipeline_ selesai sebelum _rollout_ selesai],
+  )
+  #v(6pt)
+  #note[Biaya GitOps: satu repositori tambahan per sistem, penanganan Secret di luar Git, dan urutan _deploy_ antarobjek (misalnya migrasi database sebelum Deployment) yang harus diatur di _agent_. Lab tidak memasang _tools_ GitOps. Konsepnya cukup dipahami agar organisasi dapat menilainya ketika sudah siap.]
 ]
 
 #lab-slide("10", [Dari _commit_ hingga _rolling update_],
