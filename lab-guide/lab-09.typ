@@ -825,6 +825,8 @@ Location: /transfers/3f0c...
 {"id":"3f0c...","from_account":"1111111111","to_account":"2222222222","amount":"100000","status":"COMPLETED","created_at":"...","updated_at":"..."}
 ```]
 
+#note[*Traefik belum siap.* k3s memasang Traefik sebagai _ingress controller_ melalui _job_ Helm setelah _cluster_ dibuat, dan proses tersebut dapat selesai lebih lambat dari `make k3d-up` dan `make k8s-apply`. Selama Traefik belum _ready_, `curl` ke `localhost:28080` menghasilkan `curl: (52) Empty reply from server`. Tunggu dengan `kubectl -n kube-system rollout status deploy/traefik`, lalu ulangi _request_. Jawaban `not found` dari perintah tersebut berarti _job_ Helm belum membuat Deployment `traefik`; tunggu beberapa detik dan ulangi.]
+
 Log _pod_ `transfer` memuat baris `"msg":"transfer completed"`, dan log _pod_ `notification` memuat `"msg":"notification sent"` dengan `transfer_id` yang sama:
 
 #perintah[```bash
@@ -1051,7 +1053,7 @@ Jalankan pemeriksaan berikut dari direktori `studi-kasus/` dengan _cluster_ `ban
 
 *`curl localhost:28080/transfers` menghasilkan `404 page not found`.* Traefik membutuhkan beberapa puluh detik setelah `make k3d-up` hingga siap, dan Ingress baru dikenali setelah _manifest_ diterapkan. Periksa `kubectl -n kube-system get pods` dan `kubectl -n bank get ingress`. _Path_ selain `/transfers` memang tidak diteruskan oleh Ingress.
 
-*`curl: (52) Empty reply from server` tepat setelah `make k8s-apply`.* `rollout status` sudah melaporkan _pod_ siap, tetapi Traefik baru menerima daftar _endpoint_ yang baru satu atau dua detik kemudian. Tunggu sebentar, lalu ulangi _request_. Jawaban `401` untuk _request_ tanpa _token_ menandakan bahwa _request_ sudah sampai ke `transfer`.
+*`curl: (52) Empty reply from server` dari `localhost:28080`.* Ada dua penyebab. Pertama, Traefik belum berjalan: selama Traefik belum _ready_, _load balancer_ k3d menutup koneksi tanpa jawaban, dan `kubectl -n kube-system get pods` menampilkan `traefik` dengan `READY` `0/1`. Tunggu dengan `kubectl -n kube-system rollout status deploy/traefik`, lalu ulangi _request_. Kedua, `rollout status` di `make k8s-apply` sudah melaporkan _pod_ siap, tetapi Traefik baru menerima daftar _endpoint_ yang baru satu atau dua detik kemudian; ulangi _request_. Jawaban `401` untuk _request_ tanpa _token_ menandakan bahwa _request_ sudah sampai ke `transfer`.
 
 *Transfer ditolak `401` dengan _token_ yang baru dibuat.* `OAUTH_ISSUER` di ConfigMap tidak sama dengan nilai `iss` di _token_. Nilainya harus tepat `http://localhost:14444/`, termasuk garis miring di akhir. Jika Hydra di-_restart_, `make infra-up` membuat ulang _client_ OAuth2, dan _token_ lama tidak berlaku lagi.
 

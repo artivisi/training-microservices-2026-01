@@ -803,7 +803,7 @@ spec:
     - `VERSION=1.0.1`, `set image`, `rollout status`, `rollout undo`
   ],
   "lab-08",
-  [#note[`make k3d-up` menunggu 40–60 detik sampai DNS _cluster_ mengenal `host.k3d.internal`. Bila _pod_ masuk `CrashLoopBackOff` dengan pesan `no such host` setelah Docker atau laptop di-_restart_, jalankan `k3d cluster stop bank` lalu `k3d cluster start bank`.]],
+  [#note[`make k3d-up` menunggu 40–60 detik sampai DNS _cluster_ mengenal `host.k3d.internal`. Bila _pod_ masuk `CrashLoopBackOff` dengan pesan `no such host` setelah Docker atau laptop di-_restart_, jalankan `k3d cluster stop bank` lalu `k3d cluster start bank`. Bila `curl` ke `localhost:28080` menghasilkan `Empty reply from server`, Traefik belum siap: tunggu `kubectl -n kube-system rollout status deploy/traefik`, lalu ulangi.]],
 )
 
 // ════════════════════════════════════════════════════════════════════════════
