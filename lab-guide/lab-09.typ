@@ -8,6 +8,7 @@ Setelah menyelesaikan lab ini, peserta mampu:
 
 - menulis _multi-stage Dockerfile_ yang menghasilkan _binary_ Go statis di atas _image_ kosong (`FROM scratch`), berjalan sebagai _user_ non-_root_ dan tetap berfungsi dengan UID apa pun yang diberikan _platform_;
 - menjalankan ketiga service sebagai _container_ di Docker Compose dengan _root filesystem_ _read-only_;
+- menjelaskan hubungan _container_, _pod_, dan _node_, serta arti _scheduling_ sebagai penempatan _pod_ ke _node_;
 - membuat _cluster_ Kubernetes lokal dengan k3d, memasukkan _image_ ke _cluster_ tanpa _registry_, lalu menerapkan _manifest_ Kustomize yang sudah disediakan;
 - membaca isi _manifest_ (Deployment, Service, ConfigMap, Secret, Ingress, _probe_, _security context_) dan menjelaskan alasan setiap pengaturan;
 - mengubah sistem yang sedang berjalan di _cluster_: _scale_, perubahan konfigurasi, _rolling update_ dengan _tag image_ baru, serta _rollback_;
@@ -25,7 +26,53 @@ Lab ini memindahkan ketiga service ke dalam _container_ dalam tiga tahap:
 
 _Manifest_ Kubernetes untuk tahap ketiga sudah disediakan di _checkpoint_ `lab-09`. Peserta tidak perlu menulisnya dari awal, cukup menyalin _manifest_ tersebut, membaca bagian pentingnya, menerapkannya ke _cluster_, lalu mengubahnya melalui beberapa latihan.
 
-Susunan sistem di akhir lab:
+=== Alasan Memilih Kubernetes dan k3d
+
+#table(
+  columns: (1fr, 3.6fr),
+  table.header([Pertimbangan], [Keterangan]),
+  [Kebutuhan], [Ketiga service harus dijalankan, diperbarui tanpa menghentikan layanan, dijalankan ulang otomatis saat macet, dan dapat menemukan alamat satu sama lain. Cara menjalankannya harus sama di laptop, di server _testing_, dan di _production_],
+  [Opsi yang dipertimbangkan], [Docker Compose di beberapa VM, HashiCorp Nomad, atau Kubernetes (_vanilla_, OpenShift, atau layanan Kubernetes _managed_ milik penyedia _cloud_). Untuk Kubernetes di laptop: k3d, minikube, kind, atau Kubernetes bawaan Docker Desktop],
+  [Pilihan di studi kasus], [Setiap service dikemas sebagai _container image_ dan dijalankan di Kubernetes. Untuk training, Kubernetes dijalankan dengan k3d],
+  [Yang diperoleh], [_Image_ yang sama digunakan dari laptop sampai _production_. Kubernetes bersifat deklaratif: kondisi yang diinginkan ditulis di _manifest_, lalu Kubernetes menyesuaikan isi _cluster_ dengan _manifest_ tersebut. Kubernetes juga menjalankan ulang _container_ yang gagal (_self-healing_), menyediakan _rolling update_, nama DNS untuk setiap Service, dan _load balancing_. _Manifest_ yang sama dapat digunakan di OpenShift dan di layanan Kubernetes _managed_ milik penyedia _cloud_. k3d menjalankan k3s (distribusi Kubernetes yang ringan) di dalam _container_ Docker: _cluster_ dibuat dengan `make k3d-up` dan dihapus dengan `make k3d-down`, kebutuhan RAM-nya kecil, Traefik (_ingress controller_) sudah terpasang di k3s, _load balancer_ milik k3d meneruskan _port_ 28080 di laptop ke Traefik, dan `k3d image import` memasukkan _image_ ke _cluster_ tanpa _registry_],
+  [Yang dikorbankan], [Kubernetes adalah platform tambahan yang harus dipelajari dan dioperasikan (_manifest_, RBAC, _upgrade_ _cluster_). _Cluster_ k3d hanya ditujukan untuk pengembangan dan pengujian di laptop. Komponen bawaan k3s seperti Traefik dan metrics-server belum tentu tersedia di _cluster_ lain. k3s tidak sama dengan OpenShift: perbedaan seperti SCC dan Route dibahas di sesi OpenShift pada Hari 4],
+)
+
+Dibandingkan k3d, minikube menyediakan banyak _add-on_ dan dapat berjalan di dalam VM maupun _container_. kind juga menjalankan Kubernetes di dalam Docker, tetapi _Ingress_ dan Service bertipe LoadBalancer membutuhkan komponen tambahan (cloud-provider-kind) yang dijalankan terpisah. Kubernetes bawaan Docker Desktop hanya tersedia bila menggunakan Docker Desktop.
+
+=== _Container_, _Pod_, _Node_, dan _Scheduling_
+
+Kubernetes menyusun beban kerja dalam beberapa tingkat:
+
+#perintah[```
+ cluster
+ ├── control plane: API server, scheduler, controller, etcd
+ ├── node 1 (VM atau mesin fisik; di k3d: container Docker k3d-bank-server-0)
+ │     kubelet + container runtime
+ │     ├── pod transfer-...    IP 10.42.0.14
+ │     │     └── container transfer
+ │     └── pod account-...     IP 10.42.0.11
+ │           └── container account
+ └── node 2 ...
+       └── pod notification-...
+             └── container notification
+```]
+
+- _Container_ adalah proses yang dijalankan dari satu _image_.
+- _Pod_ berisi satu atau lebih _container_ yang berbagi alamat IP, port, dan _volume_, dan selalu berjalan di satu _node_ yang sama. _Pod_ adalah unit terkecil yang ditempatkan Kubernetes. _Container_ kedua yang dideklarasikan di _pod_ yang sama disebut _sidecar_, misalnya Vault Agent yang mengambil _secret_ dari Vault lalu menulisnya ke _volume_ bersama untuk dibaca aplikasi. Di lab ini setiap _pod_ berisi satu _container_. _Container_ debug pada bagian _Troubleshooting_ di bawah juga menjadi _container_ kedua di _pod_ yang sama, tetapi berupa _ephemeral container_ yang ditambahkan sementara, bukan bagian dari _manifest_.
+- _Node_ adalah mesin yang menjalankan kubelet dan _container runtime_. Kubelet hanya menjalankan _container_ milik _pod_ yang sudah ditetapkan ke _node_-nya.
+
+Kata _schedule_ di Kubernetes berarti menentukan _node_ tempat sebuah _pod_ berjalan, bukan menentukan waktu. Setelah Deployment di-_apply_, _controller_ membuat ReplicaSet, lalu ReplicaSet membuat _pod_ yang belum memiliki _node_ (status `Pending`). _Scheduler_ kemudian:
+
++ membuang _node_ yang tidak memenuhi syarat _pod_ (_filter_): sisa CPU dan memori lebih kecil dari _requests_ _pod_, `nodeSelector` atau _affinity_ tidak cocok, _taint_ tanpa _toleration_, atau _node_ yang di-_cordon_;
++ memberi nilai _node_ yang tersisa (_score_), misalnya agar _replica_ satu Deployment tersebar ke _node_ yang berbeda;
++ menulis nama _node_ terpilih ke `spec.nodeName` _pod_ (_bind_). Kubelet di _node_ tersebut lalu mengambil _image_, menjalankan _container_, dan memulai _probe_.
+
+Arti yang berhubungan dengan waktu hanya ada di CronJob, yaitu _field_ `schedule: "0 1 * * *"` yang menentukan kapan Job dijalankan. _Pod_ dari Job tersebut tetap melalui _scheduling_ yang sama untuk mendapatkan _node_.
+
+_Scheduling_ dilakukan sekali untuk setiap _pod_. _Pod_ yang sudah berjalan tidak pernah dipindahkan ke _node_ lain. Bila _node_ di-_drain_ atau mati, _pod_ di sana dihapus, ReplicaSet membuat _pod_ pengganti dengan nama baru, dan _scheduler_ memilihkan _node_ untuk _pod_ pengganti tersebut. Bagian Melihat Hasil _Scheduling_ memperlihatkan hasilnya di k3d, dan percobaan dengan beberapa _node_ ada di Eksplorasi Mandiri.
+
+=== Susunan Sistem di Akhir Lab
 
 #perintah[```
  laptop
@@ -50,20 +97,6 @@ Susunan sistem di akhir lab:
 ```]
 
 Pembagian ini mengikuti praktik umum di _production_: aplikasi berjalan di _cluster_, sedangkan database, _message broker_, dan _authorization server_ sering dikelola terpisah (_managed service_ atau _cluster_ khusus data).
-
-=== Alasan Memilih Kubernetes dan k3d
-
-#table(
-  columns: (1fr, 3.6fr),
-  table.header([Pertimbangan], [Keterangan]),
-  [Kebutuhan], [Ketiga service harus dijalankan, diperbarui tanpa menghentikan layanan, dijalankan ulang otomatis saat macet, dan dapat menemukan alamat satu sama lain. Cara menjalankannya harus sama di laptop, di server _testing_, dan di _production_],
-  [Opsi yang dipertimbangkan], [Docker Compose di beberapa VM, HashiCorp Nomad, atau Kubernetes (_vanilla_, OpenShift, atau layanan Kubernetes _managed_ milik penyedia _cloud_). Untuk Kubernetes di laptop: k3d, minikube, kind, atau Kubernetes bawaan Docker Desktop],
-  [Pilihan di studi kasus], [Setiap service dikemas sebagai _container image_ dan dijalankan di Kubernetes. Untuk training, Kubernetes dijalankan dengan k3d],
-  [Yang diperoleh], [_Image_ yang sama digunakan dari laptop sampai _production_. Kubernetes bersifat deklaratif: kondisi yang diinginkan ditulis di _manifest_, lalu Kubernetes menyesuaikan isi _cluster_ dengan _manifest_ tersebut. Kubernetes juga menjalankan ulang _container_ yang gagal (_self-healing_), menyediakan _rolling update_, nama DNS untuk setiap Service, dan _load balancing_. _Manifest_ yang sama dapat digunakan di OpenShift dan di layanan Kubernetes _managed_ milik penyedia _cloud_. k3d menjalankan k3s (distribusi Kubernetes yang ringan) di dalam _container_ Docker: _cluster_ dibuat dengan `make k3d-up` dan dihapus dengan `make k3d-down`, kebutuhan RAM-nya kecil, Traefik (_ingress controller_) sudah terpasang di k3s, _load balancer_ milik k3d meneruskan _port_ 28080 di laptop ke Traefik, dan `k3d image import` memasukkan _image_ ke _cluster_ tanpa _registry_],
-  [Yang dikorbankan], [Kubernetes adalah platform tambahan yang harus dipelajari dan dioperasikan (_manifest_, RBAC, _upgrade_ _cluster_). _Cluster_ k3d hanya ditujukan untuk pengembangan dan pengujian di laptop. Komponen bawaan k3s seperti Traefik dan metrics-server belum tentu tersedia di _cluster_ lain. k3s tidak sama dengan OpenShift: perbedaan seperti SCC dan Route dibahas di sesi OpenShift pada Hari 4],
-)
-
-Dibandingkan k3d, minikube menyediakan banyak _add-on_ dan dapat berjalan di dalam VM maupun _container_. kind juga menjalankan Kubernetes di dalam Docker, tetapi _Ingress_ dan Service bertipe LoadBalancer membutuhkan komponen tambahan (cloud-provider-kind) yang dijalankan terpisah. Kubernetes bawaan Docker Desktop hanya tersedia bila menggunakan Docker Desktop.
 
 == Titik Awal
 
@@ -837,6 +870,38 @@ kubectl -n bank logs deploy/transfer --tail=20
 kubectl -n bank logs deploy/notification --tail=20
 ```]
 
+=== Melihat Hasil _Scheduling_
+
+Konsep _pod_, _node_, dan _scheduling_ dijelaskan di bagian Gambaran. Bagian ini memperlihatkan hasilnya di _cluster_ `bank` yang sedang berjalan.
+
+#perintah[```bash
+kubectl get nodes -o wide
+kubectl -n bank get pods -o wide
+kubectl -n bank get events --field-selector reason=Scheduled
+```]
+
+_Cluster_ `bank` hanya memiliki satu _node_, `k3d-bank-server-0`, yang juga terlihat sebagai _container_ di `docker ps`. Kolom `NODE` semua _pod_ berisi nama tersebut, dan setiap _event_ `Scheduled` berbunyi `Successfully assigned bank/<pod> to k3d-bank-server-0`.
+
+Buat satu _pod_ yang meminta CPU lebih banyak dari kapasitas _node_:
+
+#perintah[```bash
+kubectl -n bank run besar --image=busybox:1.37.0 --restart=Never \
+  --overrides='{"spec": {"containers": [{"name": "besar",
+    "image": "busybox:1.37.0", "command": ["sleep", "3600"],
+    "resources": {"requests": {"cpu": "64"}}}]}}'
+kubectl -n bank get pod besar -o wide
+kubectl -n bank describe pod besar | tail -3
+kubectl -n bank delete pod besar
+```]
+
+_Pod_ tetap `Pending` dengan kolom `NODE` berisi `<none>`, dan _event_-nya:
+
+#perintah[```
+Warning  FailedScheduling  ...  default-scheduler  0/1 nodes are available: 1 Insufficient cpu. ...
+```]
+
+_Image_ tidak pernah di-_pull_ dan _container_ tidak pernah dibuat, karena kubelet baru bekerja setelah _pod_ memiliki _node_. Perbandingannya adalah _requests_ dengan kapasitas _allocatable_ _node_ (`kubectl describe node k3d-bank-server-0`, bagian `Allocatable` dan `Allocated resources`), bukan pemakaian CPU saat itu.
+
 === Latihan Mengubah Sistem di _Cluster_
 
 Latihan berikut mengubah sistem yang sedang berjalan. Selama latihan, buka terminal lain dan amati perubahan _pod_:
@@ -1208,7 +1273,7 @@ Jalankan pemeriksaan berikut dari direktori `studi-kasus/` dengan _cluster_ `ban
 == Eksplorasi Mandiri
 
 + *_Scale_ `account` dan koneksi gRPC.* Jalankan `kubectl -n bank scale deployment/account --replicas=3`, kirim sepuluh transfer, lalu bandingkan log ketiga _pod_ `account` (`kubectl -n bank logs <pod>`). Semua panggilan gRPC dari satu _pod_ `transfer` tetap menuju satu _pod_ `account`. Jelaskan penyebabnya dan cari tahu cara mengubahnya dengan _headless Service_ serta konfigurasi `round_robin` di klien gRPC. Perhatikan juga bahwa `make fault-slow` melalui `port-forward` hanya mengenai satu _pod_ `account`, karena _fault injection_ disimpan di memori setiap _pod_.
-+ *_Debugging_ tanpa _shell_.* _Image_ `scratch` tidak memiliki _shell_. Masukkan _image_ `golang:1.27.2-alpine` (yang sudah di-_pull_ untuk _build_ dan memiliki _shell_) ke _cluster_ dengan `k3d image import -c bank golang:1.27.2-alpine`, lalu jalankan perintah berikut untuk menambahkan _ephemeral container_ ke _pod_ tersebut: `echo '{"securityContext":{"runAsUser":65532}}' > /tmp/debug.json`, kemudian `kubectl -n bank debug -it <pod-transfer> --image=golang:1.27.2-alpine --target=transfer --custom=/tmp/debug.json -- sh`. `runAsNonRoot: true` di _security context_ _pod_ juga berlaku untuk _ephemeral container_, sedangkan `golang:1.27.2-alpine` tidak memiliki instruksi `USER` sehingga berjalan sebagai `root`; tanpa _profile_ `--custom` tersebut, kubelet menolak menjalankan _container_ dengan status `CreateContainerConfigError`. Dari dalamnya, coba `wget -qO- localhost:8082/readyz`. _Ephemeral container_ berbagi _network namespace_ dengan _pod_ target, sehingga `localhost` di dalamnya adalah _pod_ `transfer`.
++ *_Scheduling_ di beberapa _node_.* Buat _cluster_ kedua dengan tiga _node_, terpisah dari _cluster_ `bank`: `k3d cluster create jadwal --agents 2 --image rancher/k3s:v1.36.5-k3s1 --no-lb --kubeconfig-update-default=false`, lalu `export KUBECONFIG=$(k3d kubeconfig write jadwal)` di terminal tersebut. Jalankan `kubectl create deployment web --image=registry.k8s.io/pause:3.10 --replicas=6` dan lihat kolom `NODE` di `kubectl get pods -o wide`: pada uji coba, keenam _pod_ tersebar 2/2/2. Jalankan `kubectl cordon k3d-jadwal-agent-1`, lalu `kubectl scale deploy/web --replicas=9`: _pod_ baru tidak masuk ke `agent-1`, tetapi dua _pod_ lamanya tetap di sana. Jalankan `kubectl drain k3d-jadwal-agent-0 --ignore-daemonsets --delete-emptydir-data`: _pod_ di `agent-0` di-_evict_, lalu penggantinya dengan nama baru muncul di `server-0`. Hapus _cluster_ ini dengan `k3d cluster delete jadwal`.
 + *Simulasi UID OpenShift.* Tambahkan _patch_ di _overlay_ k3d yang mengisi `runAsUser: 1000690000` pada `securityContext` _pod_ `transfer`, terapkan, dan pastikan _pod_ tetap _ready_. Setelah itu, coba _image_ dengan `USER root` (atau tanpa `USER`) dan amati pesan kubelet ketika `runAsNonRoot: true` menolak _image_ tersebut (`kubectl describe pod`).
 + *Dua _replica_ `transfer`.* _Scale_ `transfer` menjadi 2, kirim beberapa transfer, lalu pastikan dengan `make outbox` bahwa setiap baris _outbox_ hanya dikirim sekali ke Kafka, karena _relay_ mengunci baris dengan `for update skip locked`. Aktifkan `make fault-error RATE=1` dan amati `/debug/circuit-breaker` di setiap _pod_ `transfer` (dengan `kubectl port-forward pod/<nama> 28082:8082`): setiap _replica_ memiliki status _circuit breaker_ sendiri.
 
