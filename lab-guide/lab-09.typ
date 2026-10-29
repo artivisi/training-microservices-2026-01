@@ -10,7 +10,8 @@ Setelah menyelesaikan lab ini, peserta mampu:
 - menjalankan ketiga service sebagai _container_ di Docker Compose dengan _root filesystem_ _read-only_;
 - membuat _cluster_ Kubernetes lokal dengan k3d, memasukkan _image_ ke _cluster_ tanpa _registry_, lalu menerapkan _manifest_ Kustomize yang sudah disediakan;
 - membaca isi _manifest_ (Deployment, Service, ConfigMap, Secret, Ingress, _probe_, _security context_) dan menjelaskan alasan setiap pengaturan;
-- mengubah sistem yang sedang berjalan di _cluster_: _scale_, perubahan konfigurasi, _rolling update_ dengan _tag image_ baru, serta _rollback_.
+- mengubah sistem yang sedang berjalan di _cluster_: _scale_, perubahan konfigurasi, _rolling update_ dengan _tag image_ baru, serta _rollback_;
+- memeriksa _pod_ dari _image_ tanpa _shell_ dengan `kubectl debug`: konfigurasi yang dibaca proses, isi _file_, _name resolution_, dan port service tujuan.
 
 == Gambaran
 
@@ -827,6 +828,8 @@ Location: /transfers/3f0c...
 
 #note[*Traefik belum siap.* k3s memasang Traefik sebagai _ingress controller_ melalui _job_ Helm setelah _cluster_ dibuat, dan proses tersebut dapat selesai lebih lambat dari `make k3d-up` dan `make k8s-apply`. Selama Traefik belum _ready_, `curl` ke `localhost:28080` menghasilkan `curl: (52) Empty reply from server`. Tunggu dengan `kubectl -n kube-system rollout status deploy/traefik`, lalu ulangi _request_. Jawaban `not found` dari perintah tersebut berarti _job_ Helm belum membuat Deployment `traefik`; tunggu beberapa detik dan ulangi.]
 
+#note[*Alamat di kolom `ADDRESS`.* `kubectl -n bank get ingress` menampilkan alamat seperti `192.168.107.2` di kolom `ADDRESS`. Alamat tersebut adalah IP _container_ _node_ k3d di jaringan Docker `k3d-bank`, yang dilaporkan Traefik sebagai `EXTERNAL-IP` Service `LoadBalancer`-nya. Dari laptop, selalu gunakan `localhost:28080`, yaitu port yang dibuka `k3d cluster create -p 28080:80@loadbalancer`. Alamat _container_ hanya bisa dibuka langsung dari laptop bila Docker berjalan tanpa VM (Linux) atau bila _runtime_ meneruskan jaringan _container_ ke laptop (OrbStack di macOS). Docker Desktop di macOS dan Windows menjalankan _container_ di dalam VM, sehingga alamat tersebut tidak bisa dijangkau dan `curl` berhenti dengan _timeout_.]
+
 Log _pod_ `transfer` memuat baris `"msg":"transfer completed"`, dan log _pod_ `notification` memuat `"msg":"notification sent"` dengan `transfer_id` yang sama:
 
 #perintah[```bash
@@ -928,6 +931,139 @@ kubectl -n bank get deployment transfer -o jsonpath='{.spec.template.spec.contai
 ```]
 
 _Image_ kembali ke `studi-kasus/transfer:1.0.0`, dengan pola penggantian _pod_ yang sama seperti _rolling update_. `rollout undo` dapat menampilkan peringatan tentang anotasi `last-applied-configuration`. Peringatan tersebut tidak berpengaruh pada _rollback_ dan dapat diabaikan.
+
+=== _Troubleshooting_ dengan `kubectl debug`
+
+_Image_ ketiga service dibangun dari `scratch`, sehingga tidak berisi _shell_ maupun _tools_ apa pun. `kubectl exec` ke dalam _container_ tersebut gagal:
+
+#perintah[```bash
+kubectl -n bank exec deploy/transfer -- sh
+```]
+
+#perintah[```
+... exec: "sh": executable file not found in $PATH
+```]
+
+`kubectl debug` menambahkan _ephemeral container_ ke _pod_ yang sedang berjalan, tanpa me-_restart_ _pod_ tersebut. _Ephemeral container_ menggunakan _image_ lain yang berisi _tools_, di sini `busybox`. _Container_ ini berbagi jaringan dengan _pod_, sehingga alamat, DNS, dan port yang terlihat sama persis dengan yang dilihat service. Dengan opsi `--target=transfer`, _container_ ini juga berbagi _process namespace_ dengan _container_ `transfer`: proses `transfer` terlihat sebagai PID 1, _environment variable_-nya bisa dibaca di `/proc/1/environ`, dan isi _file system_-nya bisa dibaca di `/proc/1/root/`.
+
+==== Menjalankan _Container_ Debug
+
+Coba terlebih dahulu tanpa opsi tambahan:
+
+#perintah[```bash
+POD=$(kubectl -n bank get pod -l app.kubernetes.io/name=transfer -o jsonpath='{.items[0].metadata.name}')
+kubectl -n bank debug -it $POD --image=busybox:1.37.0 --target=transfer -- sh
+```]
+
+Perintah ini tidak pernah menampilkan _prompt_. Hentikan dengan `Ctrl+C`, lalu periksa _event_ _pod_:
+
+#perintah[```bash
+kubectl -n bank describe pod $POD | tail -3
+```]
+
+#perintah[```
+Warning  Failed  ...  Error: container has runAsNonRoot and image will run as root ...
+```]
+
+`securityContext` di tingkat _pod_ (`runAsNonRoot: true`, bagian _Security Context_ di atas) juga berlaku untuk _ephemeral container_, sedangkan `busybox` berjalan sebagai `root`. Selain itu, proses `transfer` berjalan sebagai UID 65532 dengan semua _capability_ dihapus. Proses lain hanya bisa membaca `/proc/1/environ` dan `/proc/1/root` milik proses tersebut bila memiliki _capability_ `SYS_PTRACE`.
+
+_File_ `k8s/debug/root.yaml` berisi potongan spesifikasi _container_ yang menjalankan _container_ debug sebagai `root`, khusus untuk _container_ tersebut. `--profile=general` menambahkan `SYS_PTRACE`. Jalankan lagi dengan kedua opsi tersebut:
+
+#perintah[```bash
+kubectl -n bank debug -it $POD --image=busybox:1.37.0 --target=transfer \
+  --profile=general --custom=k8s/debug/root.yaml -- sh
+```]
+
+Perintah-perintah berikut dijalankan di _prompt_ `/ #` milik _container_ debug.
+
+#note[_Namespace_ dengan Pod Security `restricted`, termasuk _namespace_ peserta di server pelatihan Lab 10 dan _project_ OpenShift dengan SCC `restricted-v2`, menolak _container_ `root`. Di sana, _container_ debug hanya bisa berjalan sebagai _user_ biasa, sehingga pemeriksaan terbatas pada jaringan dan DNS. Setiap _user_ yang boleh membuat _ephemeral container_ (RBAC `pods/ephemeralcontainers`) juga bisa membaca isi Secret yang dibaca _pod_. Di _production_, batasi hak tersebut seperti hak membaca Secret.]
+
+==== Empat Pemeriksaan
+
+*Konfigurasi yang benar-benar dibaca proses.* ConfigMap dan Secret di _cluster_ bisa berbeda dengan nilai yang dibaca proses, misalnya ketika ConfigMap diubah tetapi _pod_ belum di-_restart_. `/proc/1/environ` berisi _environment variable_ proses `transfer` saat dimulai, dipisahkan karakter NUL:
+
+#perintah[```bash
+tr '\0' '\n' < /proc/1/environ | sort
+```]
+
+Hasilnya memuat nilai dari ConfigMap (`ACCOUNT_GRPC_ADDR=account:9091`, `KAFKA_TOPIC=transfer-events`) dan dari Secret (`DATABASE_URL=postgres://transfer:transfer123@...`) dalam bentuk teks biasa.
+
+*Keberadaan dan isi _file_.* Isi _file system_ _container_ `transfer` terlihat di `/proc/1/root/`. _Image_ `scratch` hanya berisi _binary_ dan _CA certificate_ dari Dockerfile. Direktori lainnya ditambahkan Kubernetes saat _pod_ berjalan, misalnya _token_ ServiceAccount:
+
+#perintah[```bash
+ls -l /proc/1/root/ /proc/1/root/etc/ssl/certs/
+ls /proc/1/root/var/run/secrets/kubernetes.io/serviceaccount/
+cat /proc/1/root/var/run/secrets/kubernetes.io/serviceaccount/namespace
+```]
+
+*_Name resolution_.* `/etc/resolv.conf` menunjukkan DNS _cluster_ dan daftar _search domain_. Karena daftar tersebut, nama pendek `account` diterjemahkan menjadi `account.bank.svc.cluster.local`:
+
+#perintah[```bash
+cat /etc/resolv.conf
+nslookup account
+nslookup host.k3d.internal
+```]
+
+`nslookup` milik `busybox` mencoba setiap _search domain_, sehingga hasilnya juga memuat beberapa baris `NXDOMAIN` untuk kombinasi lain seperti `account.svc.cluster.local`. Yang menentukan adalah baris `Name:` dan `Address:`. Bila tidak ada baris `Name:` sama sekali, nama tersebut memang tidak dikenal DNS _cluster_.
+
+*Port service tujuan.* `nc -z` hanya membuka koneksi TCP lalu menutupnya, dan `wget` mengirim _request_ HTTP:
+
+#perintah[```bash
+nc -zv -w 2 account 9091
+nc -zv -w 2 account 9092
+wget -qO- account:8081/readyz
+```]
+
+Port 9091 menjawab `open`. Port 9092 menghasilkan `Connection timed out`, bukan _connection refused_: Service `account` tidak mendefinisikan port tersebut, sehingga paket ke alamat Service di port itu dibuang tanpa jawaban. Bandingkan dengan port yang didefinisikan Service dan alamat _pod_ di belakangnya, dari terminal laptop:
+
+#perintah[```bash
+kubectl -n bank get svc account
+kubectl -n bank get endpointslice -l kubernetes.io/service-name=account
+```]
+
+Keluar dari _container_ debug dengan `exit`. _Ephemeral container_ tidak bisa dihapus dari _pod_; statusnya tetap tercatat sebagai `Terminated` sampai _pod_ diganti.
+
+==== Kasus: Port yang Salah
+
+Ubah alamat gRPC `account` di ConfigMap `transfer` ke port yang salah, tanpa _restart_:
+
+#perintah[```bash
+kubectl -n bank patch configmap transfer -p '{"data":{"ACCOUNT_GRPC_ADDR":"account:9092"}}'
+```]
+
+Jalankan _container_ debug pada _pod_ yang sama, lalu baca `/proc/1/environ`. Nilainya masih `account:9091`, karena proses membaca _environment variable_ hanya saat dimulai. Transfer melalui Ingress masih `COMPLETED`.
+
+Sekarang _restart_, lalu kirim transfer:
+
+#perintah[```bash
+kubectl -n bank rollout restart deployment/transfer
+kubectl -n bank rollout status deployment/transfer
+TOKEN=$(make -s token)
+curl -sS -X POST localhost:28080/transfers -H "Authorization: Bearer $TOKEN" \
+  -d '{"from_account":"1111111111","to_account":"2222222222","amount":"1"}'
+```]
+
+_Rollout_ berhasil karena _readiness probe_ `transfer` hanya memeriksa database miliknya sendiri. Transfer dijawab `502` dengan status `FAILED` dan `failure_reason` `debit failed: account service error` setelah sekitar 5 detik, yaitu waktu yang dihabiskan _retry_. Log _pod_ baru memuat `dial tcp 10.43.x.x:9092: i/o timeout`. Ambil nama _pod_ baru ke `POD`, jalankan _container_ debug, lalu pastikan penyebabnya: `/proc/1/environ` kini berisi `account:9092`, `nc -zv -w 2 account 9092` gagal, sedangkan port 9091 terbuka.
+
+==== Kasus: Nama Service yang Salah
+
+#perintah[```bash
+kubectl -n bank patch configmap transfer -p '{"data":{"ACCOUNT_GRPC_ADDR":"acount:9091"}}'
+kubectl -n bank rollout restart deployment/transfer
+kubectl -n bank rollout status deployment/transfer
+```]
+
+Transfer kembali `FAILED`, tetapi lebih cepat, dan log _pod_ baru memuat `name resolver error: produced zero addresses`. Di _container_ debug, `nslookup acount` tidak menghasilkan baris `Name:`, sedangkan `nslookup account` berhasil.
+
+Kembalikan ConfigMap ke isi _overlay_, lalu _restart_:
+
+#perintah[```bash
+kubectl apply -k k8s/overlays/k3d
+kubectl -n bank rollout restart deployment/transfer
+kubectl -n bank rollout status deployment/transfer
+```]
+
+Kedua kasus juga terlihat di log `transfer`. `kubectl debug` memastikan penyebabnya dari sisi _pod_ itu sendiri: nilai yang benar-benar dibaca proses, jawaban DNS _cluster_, dan port yang benar-benar terbuka. Pemeriksaan ini dibutuhkan ketika log tidak cukup jelas, misalnya ketika _library_ hanya melaporkan _timeout_.
 
 === _Horizontal Pod Autoscaler_ (Opsional)
 
@@ -1040,6 +1176,10 @@ Jalankan pemeriksaan berikut dari direktori `studi-kasus/` dengan _cluster_ `ban
 
 
 == Masalah Umum
+
+*`curl` ke alamat di kolom `ADDRESS` Ingress berhenti dengan _timeout_.* Alamat tersebut adalah IP _container_ _node_ k3d, yang tidak bisa dijangkau dari laptop dengan Docker Desktop (lihat catatan di bagian Transfer melalui Ingress). Gunakan `localhost:28080`.
+
+*`kubectl debug` tidak pernah menampilkan _prompt_.* _Container_ debug ditolak, biasanya karena `runAsNonRoot` (`kubectl -n bank describe pod <pod> | tail -3`). Tambahkan `--profile=general --custom=k8s/debug/root.yaml`, dan jalankan perintah dari direktori `studi-kasus`.
 
 *_Pod_ berstatus `ErrImagePull` atau `ImagePullBackOff`.* _Image_ dengan _tag_ yang diminta tidak ada di _cluster_, sehingga kubelet mencoba melakukan _pull_ dari Docker Hub. Penyebabnya `make k3d-import` belum dijalankan, dijalankan dengan `VERSION` yang berbeda, atau _cluster_ dibuat ulang setelah _import_. Jalankan `make k3d-import VERSION=<tag>` dengan _tag_ yang sama dengan `newTag` di `kustomization.yaml`, lalu hapus _pod_ yang gagal agar dibuat ulang.
 

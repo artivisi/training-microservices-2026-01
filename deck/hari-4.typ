@@ -789,6 +789,33 @@ spec:
   #note(kind: "warn")[Di _cluster_ sungguhan, infrastruktur memiliki nama DNS sendiri sehingga perbedaan alamat _issuer_ seperti ini tidak muncul. Bagian ini khusus untuk lab di laptop.]
 ]
 
+#code-slide(kicker: "Troubleshooting", title: [`kubectl debug` untuk _image_ tanpa _shell_],
+  side: [
+    - _Image_ `scratch` tidak berisi `sh`, sehingga `kubectl exec` gagal
+    - `kubectl debug` menambah _ephemeral container_ berisi _tools_ ke _pod_ yang berjalan, tanpa _restart_
+    - _Container_ debug berbagi jaringan dengan _pod_. `--target` menambah _process namespace_: proses service menjadi PID 1
+    - `runAsNonRoot` di tingkat _pod_ menolak `busybox` (_root_). `root.yaml` mengizinkan _root_ khusus untuk _container_ debug, `--profile=general` menambah `SYS_PTRACE`
+    - _Namespace_ `restricted` dan SCC `restricted-v2` menolak _container root_: hanya pemeriksaan jaringan dan DNS
+  ],
+)[
+```bash
+kubectl -n bank debug -it $POD --image=busybox:1.37.0 \
+  --target=transfer --profile=general \
+  --custom=k8s/debug/root.yaml -- sh
+
+# nilai ConfigMap/Secret yang dibaca proses
+tr '\0' '\n' < /proc/1/environ | sort
+# file di container transfer
+ls -l /proc/1/root/ /proc/1/root/etc/ssl/certs/
+# name resolution
+cat /etc/resolv.conf; nslookup account
+# port service tujuan
+nc -zv -w 2 account 9091
+wget -qO- account:8081/readyz
+```
+#source(("studi-kasus/k8s/debug/root.yaml", "lab-09"))
+]
+
 #lab-slide("9", [Menjalankan seluruh sistem di k3d],
   [
     - Mengemas tiga service menjadi _image_ minimal dan _non-root_
@@ -801,6 +828,7 @@ spec:
     - `kubectl scale` notification menjadi 3 dan 4 _replica_
     - Hapus `KAFKA_GROUP_ID` dari ConfigMap notification, _apply_, lalu `rollout restart`; kembalikan nilainya dan `rollout restart` lagi
     - `VERSION=1.0.1`, `set image`, `rollout status`, `rollout undo`
+    - `kubectl debug`: konfigurasi, _file_, DNS, dan port dari dalam _pod_; kasus port dan nama service yang salah
   ],
   "lab-08",
   [#note[`make k3d-up` menunggu 40–60 detik sampai DNS _cluster_ mengenal `host.k3d.internal`. Bila _pod_ masuk `CrashLoopBackOff` dengan pesan `no such host` setelah Docker atau laptop di-_restart_, jalankan `k3d cluster stop bank` lalu `k3d cluster start bank`. Bila `curl` ke `localhost:28080` menghasilkan `Empty reply from server`, Traefik belum siap: tunggu `kubectl -n kube-system rollout status deploy/traefik`, lalu ulangi.]],

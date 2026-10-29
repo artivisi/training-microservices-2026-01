@@ -1,0 +1,14 @@
+# Partial container spec for kubectl debug --custom (Lab 9): the ephemeral
+# debug container runs as root, overriding the pod's runAsNonRoot for this
+# container only. Together with --profile=general (adds CAP_SYS_PTRACE) it
+# can read /proc/1/environ and /proc/1/root of the target container, whose
+# process runs as UID 65532 with GID 0 (the kubelet passes only the image's
+# UID to the runtime).
+#   kubectl -n bank debug -it <pod> --image=busybox:1.37.0 --target=transfer \
+#     --profile=general --custom=k8s/debug/root.yaml -- sh
+# A namespace with Pod Security "restricted" (the training server, OpenShift's
+# restricted SCC) rejects a root container: there, debug as a non-root user
+# for network and DNS checks only.
+securityContext:
+  runAsUser: 0
+  runAsNonRoot: false
