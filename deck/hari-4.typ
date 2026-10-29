@@ -334,7 +334,7 @@ ENTRYPOINT ["/transfer"]
       - `scratch` tidak memiliki `/etc/passwd`, sehingga nama pengguna tidak bisa digunakan
     ],
     card([UID acak], accent: gold.darken(15%))[
-      - OpenShift dengan SCC `restricted-v2` menjalankan _container_ dengan UID acak dari rentang milik _namespace_
+      - OpenShift dengan SCC (_Security Context Constraints_) `restricted-v2` menjalankan _container_ dengan UID acak dari rentang milik _namespace_
       - _Binary_ harus tetap berjalan dengan UID berapa pun
       - Service tidak menulis ke _filesystem_: _log_ ke _stdout_, data ke database
     ],
@@ -604,7 +604,7 @@ containers:
   #note(kind: "warn")[Kesalahan umum: _liveness_ memeriksa database. Saat database mati, semua _pod_ di-_restart_ bersamaan, padahal _restart_ tidak memperbaiki database.]
 ]
 
-#code-slide(kicker: "Security context", title: [_Security context_ yang lolos SCC `restricted-v2`],
+#code-slide(kicker: "Security context", title: [_Security context_ yang memenuhi SCC `restricted-v2`],
   side: [
     - Tidak ada `runAsUser`: platform yang memilih UID, sesuai perilaku OpenShift
     - `readOnlyRootFilesystem` aman karena service tidak menulis _file_
