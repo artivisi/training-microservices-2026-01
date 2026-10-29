@@ -1,0 +1,16 @@
+# Merged by k3s into its bundled Traefik chart. Caddy owns ports 80 and 443
+# on this host, so Traefik's LoadBalancer listens on 8080 (HTTP) and 8443
+# (unused) and receives the traffic of auth.<domain> and app.<domain> from
+# Caddy.
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    ports:
+      web:
+        exposedPort: 8080
+      websecure:
+        exposedPort: 8443

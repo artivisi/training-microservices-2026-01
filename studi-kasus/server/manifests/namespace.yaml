@@ -1,0 +1,82 @@
+# Namespace ${NAME}: what the platform provides for the pipeline. The
+# services' own objects (ConfigMap, Service, Deployment, Ingress) come from
+# the pipeline (k8s/overlays/server); the Secrets below are the ones that
+# overlay expects to exist and removes from its own output.
+# Pod Security "restricted": the base manifests already comply (non-root, no
+# privilege escalation, capabilities dropped, seccomp), close to OpenShift's
+# restricted SCC.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ${NAME}
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: deployer
+  namespace: ${NAME}
+---
+# Long-lived token for the kubeconfig of the pipeline (repository secret
+# KUBE_CONFIG) and of root on this server.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: deployer-token
+  namespace: ${NAME}
+  annotations:
+    kubernetes.io/service-account.name: deployer
+type: kubernetes.io/service-account-token
+---
+# The built-in "edit" role, bound inside this namespace only.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: deployer-edit
+  namespace: ${NAME}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: edit
+subjects:
+  - kind: ServiceAccount
+    name: deployer
+    namespace: ${NAME}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: registry-credentials
+  namespace: ${NAME}
+type: kubernetes.io/dockerconfigjson
+stringData:
+  .dockerconfigjson: '${DOCKER_CONFIG_JSON}'
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: account
+  namespace: ${NAME}
+  labels: { app.kubernetes.io/name: account }
+stringData:
+  DATABASE_URL: "postgres://${NAME}_account:${DB_ACCOUNT_PASSWORD}@postgres.infra.svc.cluster.local:5432/${NAME}_account?sslmode=disable"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: transfer
+  namespace: ${NAME}
+  labels: { app.kubernetes.io/name: transfer }
+stringData:
+  DATABASE_URL: "postgres://${NAME}_transfer:${DB_TRANSFER_PASSWORD}@postgres.infra.svc.cluster.local:5432/${NAME}_transfer?sslmode=disable"
+  OAUTH_CLIENT_SECRET: "${TRANSFER_CLIENT_SECRET}"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: notification
+  namespace: ${NAME}
+  labels: { app.kubernetes.io/name: notification }
+stringData:
+  DATABASE_URL: "postgres://${NAME}_notification:${DB_NOTIFICATION_PASSWORD}@postgres.infra.svc.cluster.local:5432/${NAME}_notification?sslmode=disable"

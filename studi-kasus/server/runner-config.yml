@@ -1,0 +1,23 @@
+# Forgejo runner of this server. Label "host": jobs run directly on this
+# machine as user runner (no job container); the workflows expect git, make,
+# go, docker and kubectl here.
+log:
+  level: info
+  job_level: info
+runner:
+  file: /home/runner/.runner
+  # 4 vCPU: a job is mostly go vet/test plus a docker build, about 2 cores
+  # at peak. A push that changes proto/ runs two workflows at once.
+  capacity: 2
+  timeout: 30m
+  shutdown_timeout: 10m
+  fetch_timeout: 30s
+  fetch_interval: 2s
+  report_interval: 1s
+  labels: ["host:host"]
+cache:
+  enabled: false
+container:
+  docker_host: "-"
+host:
+  workdir_parent: /home/runner/work
